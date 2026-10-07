@@ -1,0 +1,7 @@
+node_modules/
+_scratch/
+logs/
+*.tgz
+*.log
+_selftest.log.jsonl
+.DS_Store

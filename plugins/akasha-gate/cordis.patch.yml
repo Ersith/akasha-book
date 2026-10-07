@@ -1,0 +1,6 @@
+- insert:
+    - id: akasha-gate
+      name: '@akasha-book/gate'
+      config:
+        # 全部路径可按需覆盖；默认 ~/.akasha（见 index.js 的 DEFAULTS）
+        sectionOrder: 700

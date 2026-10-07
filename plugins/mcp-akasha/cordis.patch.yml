@@ -1,0 +1,10 @@
+- insert:
+    - id: mcp-akasha
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: akasha
+        transport: stdio
+        # 按你的实际路径修改：node 可执行文件 + 本包 core/mcp.mjs 的绝对路径（或用 PATH 中的 node）
+        command: 'node'
+        args: ['<AKASHA_DIR>/mcp.mjs']
+        failOnStartupError: false

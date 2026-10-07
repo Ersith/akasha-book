@@ -1,0 +1,8 @@
+- insert:
+    - id: akasha-sleep
+      name: '@akasha-book/sleep'
+      config:
+        # 路径默认 ~/.akasha（见 lib/index.js 的 DEFAULTS）；调度参数如下
+        minIntervalHours: 6
+        timerCheckMs: 3600000
+        contextOrder: 130

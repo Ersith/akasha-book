@@ -1,0 +1,7 @@
+- insert:
+    - id: akasha-session
+      name: '@akasha-book/session'
+      config:
+        # sessionsRoot 指向你的宿主会话档案目录（默认 ~/.dsh/sessions）
+        contextOrder: 134
+        minIndexIntervalMs: 30000

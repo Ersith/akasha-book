@@ -1,0 +1,7 @@
+- insert:
+    - id: akasha-hooks
+      name: '@akasha-book/hooks'
+      config:
+        # 路径默认 ~/.akasha（见 index.js）；以下为可选示例
+        idleDebounceMs: 600000
+        logToolResults: true
