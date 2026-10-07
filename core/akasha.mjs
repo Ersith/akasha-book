@@ -2,7 +2,7 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, stats, lookup, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
+import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
 import { sleepRun } from './sleep.mjs';
 import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, SESSION_DEFAULTS } from './session.mjs';
 

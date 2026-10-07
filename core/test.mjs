@@ -834,6 +834,12 @@ t('CLI：lookup 日期三分——未知计数提示 + 非法日期拒绝', () =
   const r = cli(['lookup', '阿卡夏', '--since', '2026-10-08']);
   assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || ''));
   assert.ok((r.stdout || '').includes('日期未知'), (r.stdout || '').slice(0, 300));
+  const u = cli(['lookup', '阿卡夏', '--since', '2026-10-08', '--undated', '--report', '--json']);
+  assert.equal(u.status, 0, (u.stdout || '') + (u.stderr || ''));
+  const obj = JSON.parse(u.stdout);
+  assert.ok(obj.stats && typeof obj.stats.undated === 'number', 'report 应带 stats：' + (u.stdout || '').slice(0, 200));
+  const flagged = obj.hits.filter((h) => h.undated === true).length;
+  assert.equal(flagged, obj.stats.undated, '并入数与「日期未知」统计应一致（数据无关断言）：' + JSON.stringify(obj.stats));
   const bad = cli(['lookup', '阿卡夏', '--since', '2026-13-40']);
   assert.equal(bad.status, 1, (bad.stdout || '') + (bad.stderr || ''));
   assert.ok(((bad.stdout || '') + (bad.stderr || '')).includes('非法日期'), (bad.stdout || '') + (bad.stderr || ''));

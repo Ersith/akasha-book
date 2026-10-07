@@ -269,10 +269,12 @@ export function lookupDetailed(query, opts = {}) {
       if (sc.score <= 0) continue; // 统计只看「关键词命中者」的日期归桶
       const b = dateBucket(r, opts);
       if (b.bucket === 'out') { stats.excluded += 1; continue; }
-      if (b.bucket === 'undated' && !opts.includeUndated) {
-        stats.undated += 1;
-        if (stats.undatedSamples.length < 3) stats.undatedSamples.push({ store: name, id: r.id, snippet: hay.slice(0, 60) });
-        continue;
+      if (b.bucket === 'undated') {
+        stats.undated += 1; // 计数不随并入开关变（报告口径一致）
+        if (!opts.includeUndated) {
+          if (stats.undatedSamples.length < 3) stats.undatedSamples.push({ store: name, id: r.id, snippet: hay.slice(0, 60) });
+          continue;
+        }
       }
       if (b.timeSource) stats.timeSource[b.timeSource] += 1;
       if (b.bucket === 'in') stats.dated += 1;

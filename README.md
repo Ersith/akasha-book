@@ -31,7 +31,7 @@
 ```bash
 cd core
 node init-example.mjs      # 初始化示例库（六库中性示例 + frontier 文献基石）
-node test.mjs              # 77 项自检（全绿 = 可交付）
+node test.mjs              # 82 项自检（全绿 = 可交付）
 node akasha.mjs brief 修订  # 主题简报（跨六库取料，带来源态与时间坐标）
 node akasha.mjs lookup 信任 # 检索
 node akasha.mjs mirror match 虚构 危险   # 镜像结构匹配

@@ -66,7 +66,7 @@ id；term / trigger / behavior / resolution / source 全部必填（string）。
 
 - 两轴分开：`event_time` 回答「何时发生的」；`logged_at` 回答「何时记下的」——修订链每行都有 `logged_at` ⇒「某条何时被改」可查。
 - 校验：两字段若存在须为非空字符串。
-- 检索过滤口径：`--since / --until` 按「`event_time` 优先、`logged_at` 回退」的日期级字符串比较（UTC）；无时间戳条目在带过滤时被排除。
+- 检索过滤口径：`--since / --until` 按「`event_time` 优先、`logged_at` 回退」的日期级字符串比较（UTC）；无时间戳条目在带过滤时被排除（**2026-10-07 起：输出默认提示「另有 N 条日期未知」——未知≠该时段没有；`--undated` 并入、`--report` 出完整报告**）。
 
 ## 校验命令
 
@@ -89,7 +89,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 `node akasha.mjs brief <主题> [--per N]`（MCP：`akasha_brief`）——把「先查再答」从逐条 lookup 升级为按主题取料：
 
 - 主题词按空格/逗号切分，对六库 `LOOKUP_FIELDS` 计分：整词命中 ×1；含中文且 ≥3 字的词追加相邻二字（bigram）回退 ×0.25（2026-10-07 起）——词组未原样出现也能召回；**回退分 <1 = 弱命中（疑似相关），整词级 ≥1 = 强命中**，「确定不知道」看强命中为零；
-- `--since / --until`（YYYY-MM-DD，lookup / brief / cross 通用）：按 `event_time`（优先）|| `logged_at` 的日期级比较过滤（UTC 口径）；无时间戳条目被排除；brief 每条命中带 `time` 坐标；
+- `--since / --until`（YYYY-MM-DD，lookup / brief / cross 通用）：按 `event_time`（优先）|| `logged_at` 的日期级比较过滤（UTC 口径）；无时间戳条目被排除（**默认提示「另有 N 条日期未知」；`--undated` 并入、`--report` 完整报告；非法日期即拒**）；brief 每条命中带 `time` 坐标；
 - frontier 命中附加状态权重（已实践 3 > 已复现 2 > 高引用 1 > 待验证 0），每库默认 top 3（`--per` 可调）；
 - 输出带来源态提示：库内引用标注「记得·库内」；无命中时明确「确定不知道，不要编」。
 

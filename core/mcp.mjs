@@ -1,7 +1,7 @@
 // 阿卡夏之书（Akasha）v0 —— 最小 MCP stdio server（JSON-RPC 2.0 逐行）。
 // 工具（17）：check / lookup / price / stats / orphan_add / frontier_due / audit / brief / kit / promote / revise / cross / summary / show / mirror_match / metrics / session_lookup
 import { createInterface } from 'node:readline';
-import { checkAll, lookup, lookupDetailed, normalizeDateArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
+import { checkAll, lookupDetailed, normalizeDateArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
 import { lookupSegments } from './session.mjs';
 
 const TOOLS = [
