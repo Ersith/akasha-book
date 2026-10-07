@@ -475,15 +475,18 @@ export function renderTree(storeFile, session) {
   return lines.join('\n');
 }
 
-/** 循环观测汇总（P0 干跑，2026-10-07）：只读 hooks 记录 → phase/type/session 计数 + 最近摘录（坏行容忍）。 */
+/** 循环观测汇总（P0 干跑，2026-10-07）：只读 hooks 记录 → phase/type/session 计数 + 最近摘录（坏行容忍）。
+ *  含「修复前/后分组」：早于首个修正版插件重启时刻的命中为历史残迹（punct 类误报），≠新问题。 */
+export const LOOP_WATCH_P0_FIXED_AT = '2026-10-07T11:57:00.000Z';
 export function loopWatchStats(records, { since } = {}) {
-  const s = { total: 0, byPhase: {}, byType: {}, bySession: {}, probes: 0, recent: [] };
+  const s = { total: 0, hitsPreFix: 0, hitsPostFix: 0, byPhase: {}, byType: {}, bySession: {}, probes: 0, recent: [] };
   for (const r of records ?? []) {
     if (!r) continue;
     if (r.kind === 'loop-watch-probe') { s.probes += 1; continue; }
     if (r.kind !== 'loop-watch') continue;
     if (since && String(r.ts || '').slice(0, 10) < String(since).slice(0, 10)) continue;
     s.total += 1;
+    if (String(r.ts || '') >= LOOP_WATCH_P0_FIXED_AT) s.hitsPostFix += 1; else s.hitsPreFix += 1;
     const ph = r.phase ?? '?';
     s.byPhase[ph] = (s.byPhase[ph] ?? 0) + 1;
     const t = r.hit?.type ?? '?';

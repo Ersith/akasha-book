@@ -663,23 +663,26 @@ if (lib) {
       assert.ok(hitD.length >= 1, 'extra 入评分 hay（节点入库后）：' + JSON.stringify(hitD.map((h) => h.id)));
       rmSync(dir, { recursive: true, force: true });
     });
-    t('session：loopWatchStats 汇总（phase/type/session 计数 + 坏行容忍 + 最近摘录）', () => {
+    t('session：loopWatchStats 汇总（phase/type/session 计数 + 修复前/后分组 + 坏行容忍 + 最近摘录）', () => {
       const recs = [
         { kind: 'loop-watch', ts: '2026-10-07T01:00:00Z', phase: 'stream', session: 'a1', turn: 1, stream: 'reasoning', hit: { type: 'exact', excerpt: 'x'.repeat(80) } },
         { kind: 'loop-watch', ts: '2026-10-07T01:01:00Z', phase: 'turn', session: 'a1', turn: 1, stream: 'reasoning', hit: { type: 'variant', excerpt: 'y' } },
         { kind: 'loop-watch', ts: '2026-10-07T01:02:00Z', phase: 'stream', session: 'b2', turn: 2, stream: 'text', hit: { type: 'punct', excerpt: 'z' } },
+        { kind: 'loop-watch', ts: '2026-10-07T12:00:00Z', phase: 'stream', session: 'a1', turn: 3, stream: 'text', hit: { type: 'exact', excerpt: 'later' } },
         { kind: 'loop-watch-probe', session: 'a1', type: 'x-delta' },
         { kind: 'session-index', session: 'a1' },
         null
       ];
       const s = sessionMod.loopWatchStats(recs);
-      assert.equal(s.total, 3);
-      assert.equal(s.byPhase.stream, 2);
+      assert.equal(s.total, 4);
+      assert.equal(s.hitsPreFix, 3, '修复前=' + s.hitsPreFix);
+      assert.equal(s.hitsPostFix, 1, '修复后=' + s.hitsPostFix);
+      assert.equal(s.byPhase.stream, 3);
       assert.equal(s.byPhase.turn, 1);
-      assert.equal(s.byType.exact, 1);
-      assert.equal(s.bySession.a1, 2);
+      assert.equal(s.byType.exact, 2);
+      assert.equal(s.bySession.a1, 3);
       assert.equal(s.probes, 1);
-      assert.equal(s.recent.length, 3);
+      assert.equal(s.recent.length, 4);
       assert.ok(s.recent[0].excerpt.length <= 60, '摘录截断');
       const since = sessionMod.loopWatchStats(recs, { since: '2026-10-08' });
       assert.equal(since.total, 0);
