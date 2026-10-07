@@ -52,3 +52,9 @@
 - 官方社区坐标（2026-10-07 核实，官方 README 现行版）：**Discord** `https://discord.gg/4MrtZUhpxg`；**GitHub Discussions** `https://github.com/deepseek-ai/deepseek-harness/discussions`；插件发现＝`dsh-plugin` topic。
 - 发布渠道终态（2026-10-07）：Discord 发帖需频道权限（本项目未取得）——**采用 GitHub 轨**（仓库公开 + Release 附件 + `dsh-plugin` topic 官方发现机制）；Discord/GitHub Discussions 链接仅作参考，不做主动发帖。
 - 回滚：`git push origin :refs/tags/v0.1.0` 后删除对应 Release 即回退该版；整体撤回＝仓库转私有或删除。**数据不动**（发布仅含源码/文档/示例数据）。
+
+## R7 · 维护修复推送（2026-10-07 晚）
+
+- 修复：`session index` 增加**非规范路径守卫**——不再以整条路径作会话键（防「路径造伪会话」）；回归哨兵入双套件（源 78/78 / 本包 78/78）。
+- 触发：压缩后复检中的「冻结副本幂等测试」暴露旧回退行为（本机侧已清理 2434 条路径键记录并留备份；**本包不含该类数据**）。
+- 改动复核：仅代码文本（`core/akasha.mjs` 守卫段 + `core/test.mjs` 哨兵）；按 R5 约定**复跑等价全模式扫描**——零禁项（允许项同前）。

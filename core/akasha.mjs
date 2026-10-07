@@ -280,8 +280,17 @@ switch (cmd) {
         file = found;
       }
       if (!sid) {
-        const m = /session-([0-9a-fA-F-]{8,})/.exec(file);
-        sid = m ? m[1] : file;
+        // Only a canonical archive path yields a session id: a path segment `session-<hex…>`
+        // (host layout …\session-<id>\session.v4.jsonl.zstd). If the pattern does not match we
+        // refuse instead of falling back to the whole path — that fallback silently mints a
+        // bogus "path-keyed" session (reproduced 2026-10-07 with a frozen-copy idempotency test).
+        const m = /[\\/]session-([0-9a-fA-F][0-9a-fA-F-]{7,})(?=[\\/]|$)/.exec(file);
+        if (!m) {
+          print(null, '未能在路径中识别会话 id（规范形态：…\\session-<id>\\session.v4.jsonl.zstd）。\n如确需以该文件建段，请显式指定会话：session index <文件> --session <id>');
+          code = 1;
+          break;
+        }
+        sid = m[1];
       }
       const r = indexSession({ file, session: sid, storeFile, metaFile, full: !!flags.full });
       print(r, `已索引：${r.session} 新增 ${r.added} 段（跳过 ${r.skipped}，坏行 ${r.parseFails}）；lastSeq ${r.lastSeq}`);
