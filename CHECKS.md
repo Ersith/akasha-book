@@ -70,3 +70,11 @@
 - 改动：`plugins/akasha-session` → **0.2.4**——索引观测增 `lagMs`（事件循环延迟采样）与 **`session-index-slow`（>1.5s 告警线）**；README 同步。
 - 起因：重启核验发现「**源码已改、安装副本未更**」（lagMs 零落线）——流程教训入册：**插件改动投产三段＝`npm pack` → `plugin_manager install_bundle` → 重启**；只改源目录不生效。
 - 验证：宿主侧 0.2.4 已安装（restart-required，等待下次重启激活）；本包 selftest 18/18。
+
+## R10 · 复检批（2026-10-07 深夜；当晚变更的"两遍+举一反三"）
+
+- **F1 统计口径**：`--undated` 并入时 `stats.undated` 归零（计数被并入分支跳过）→ 修（**计数不随并入开关变**）+ 不变式断言「并入数＝统计数」（数据无关）。
+- **F2 非 ASCII 外发编码（举一反三主犯）**：先前 repo description 乱码（已修）后**同族扫描** → 又抓出 **Release v0.1.0 名称与正文**同款 `?????`（PS→API 未走 UTF-8）→ UTF-8 重写，复核零乱码。API 写入面（description / release name / release body）**三处全扫完毕**。
+- **F3 数据依赖断言**：本包测试在示例库（undated=0）上挂——属"夹具失真"同族 → 改 **JSON 一致性断言**（`hits.undated 数 === stats.undated`），两套件通用。
+- 同步：README 计数 77→**82**（根+core）、SCHEMA 过滤口径补「默认提示/并入/报告」措辞。
+- Sweeps：插件安装三段式核验（source==installed **sha256 一致**）；z19–z24 复跑全部幂等跳过；双套件 **82/82 × 2**；OSS 推送 `b197ca2`。
