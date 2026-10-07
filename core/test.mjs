@@ -766,14 +766,17 @@ t('CLI：show 可运行（exit 0，含 id）', () => {
   assert.ok((r.stdout || '').includes('canon-akasha-usage'), (r.stdout || '').slice(0, 200));
 });
 t('CLI：session index 拒绝非规范路径（防「路径造伪会话」）', () => {
-  const dir = mkdtempSync(join(ROOT, 'tmp-noncanon-'));
-  const f = join(dir, 'session-freeze-abc12345', 'session.v4.jsonl.zstd');
-  mkdirSync(dirname(f), { recursive: true });
-  writeFileSync(f, Buffer.from('28b52ffd', 'hex'));
-  const r = cli(['session', 'index', f]);
-  assert.equal(r.status, 1, (r.stdout || '') + (r.stderr || ''));
-  assert.ok(((r.stdout || '') + (r.stderr || '')).includes('未能'), (r.stdout || '') + (r.stderr || ''));
-  rmSync(dir, { recursive: true, force: true });
+  const dir = mkdtempSync(join(SCRATCH, 'tmp-noncanon-'));
+  try {
+    const f = join(dir, 'session-freeze-abc12345', 'session.v4.jsonl.zstd');
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, Buffer.from('28b52ffd', 'hex'));
+    const r = cli(['session', 'index', f]);
+    assert.equal(r.status, 1, (r.stdout || '') + (r.stderr || ''));
+    assert.ok(((r.stdout || '') + (r.stderr || '')).includes('未能'), (r.stdout || '') + (r.stderr || ''));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 t('CLI：sleep --dry 可运行（exit 0，dry-run 不落盘）', () => {
   const r = cli(['sleep', '--dry']);
