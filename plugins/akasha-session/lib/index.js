@@ -98,6 +98,16 @@ export function apply(ctx, config = {}) {
 
   const readMeta = () => { try { return JSON.parse(readFileSync(cfg.metaFile, 'utf8')); } catch { return null; } };
 
+  // 事件循环延迟采样（2026-10-07，观测用；unref 不拖住进程）：每秒 tick 偏差 ≈ 采样期阻塞。
+  let loopLastTick = Date.now();
+  let loopLagMs = 0;
+  const loopTimer = setInterval(() => {
+    const now = Date.now();
+    loopLagMs = Math.max(0, now - loopLastTick - 1000);
+    loopLastTick = now;
+  }, 1000);
+  if (typeof loopTimer.unref === 'function') loopTimer.unref();
+
   // 每会话去抖（进程内；重启后首触发即补跑，不丢段）。
   const lastIndexedAt = new Map();
   // 档案快照（size + mtimeMs）：两者都相同 ⇒ 没有新字节，跳过重读；**只在索引成功后记账**（失败可重试）。
@@ -241,7 +251,9 @@ export function apply(ctx, config = {}) {
       const t0 = Date.now();
       const r = core().indexSession({ file, session: sid, storeFile: cfg.storeFile, metaFile: cfg.metaFile });
       if (st) lastStat.set(sid, { size: st.size, mtimeMs: st.mtimeMs }); // 只记成功：失败后同档可重试
-      log({ kind: 'session-index', session: sid, trigger, turn: extra.turn ?? null, added: r.added, skipped: r.skipped, parseFails: r.parseFails, frameFails: r.frameFails ?? 0, ms: Date.now() - t0 });
+      const dur = Date.now() - t0;
+      log({ kind: 'session-index', session: sid, trigger, turn: extra.turn ?? null, added: r.added, skipped: r.skipped, parseFails: r.parseFails, frameFails: r.frameFails ?? 0, ms: dur, lagMs: loopLagMs });
+      if (dur > 1500) log({ kind: 'session-index-slow', session: sid, trigger, ms: dur, lagMs: loopLagMs, added: r.added }); // >1.5s 告警线（2026-10-07 补4）
     } catch (error) {
       const msg = String(error?.message ?? error);
       const hint = /not yet fully loaded|does not provide an export named|Cannot find module/.test(msg) ? '（疑似宿主模块代缓存——重启桌面端后恢复）' : '';
