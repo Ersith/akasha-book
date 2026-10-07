@@ -64,3 +64,9 @@
 - 改动：core `lib.mjs`（`normalizeDateArg` / `dateBucket` / `dateCoverageStats` / `lookupDetailed`）、`akasha.mjs`（lookup / brief / cross 的日期提示与非法日期拒绝）、`mcp.mjs`（`akasha_lookup` 增 `report` / `undated`）、`session.mjs`（配对改为**全量记录**维护 + `emitFrom` 控产出；读取视图 `collapseActionVersions` 归并完成版；`--all` 看历史）、`test.mjs`（+4 哨兵）。
 - 验证：源 / 本包双套件 **82/82**；活体实测：日期过滤默认提示「另有 N 条日期未知（例）/ M 条范围外排除」、非法日期拒绝（exit 1）；真库一次性 `--full` 重建补 8 条历史漏配。
 - 复扫：等价全模式扫描**零禁项**（允许项同前）。
+
+## R9 · 插件 0.2.4 推送（2026-10-07 深夜）
+
+- 改动：`plugins/akasha-session` → **0.2.4**——索引观测增 `lagMs`（事件循环延迟采样）与 **`session-index-slow`（>1.5s 告警线）**；README 同步。
+- 起因：重启核验发现「**源码已改、安装副本未更**」（lagMs 零落线）——流程教训入册：**插件改动投产三段＝`npm pack` → `plugin_manager install_bundle` → 重启**；只改源目录不生效。
+- 验证：宿主侧 0.2.4 已安装（restart-required，等待下次重启激活）；本包 selftest 18/18。
