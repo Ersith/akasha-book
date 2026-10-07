@@ -79,6 +79,7 @@ if (mod) {
     fire(handlers);
     let idx = readLines(log).filter((l) => l.kind === 'session-index');
     assert.equal(idx.length, 1, JSON.stringify(readLines(log)));
+    assert.ok(typeof idx[0].lagMs === 'number', '索引线应含事件循环延迟采样 lagMs：' + JSON.stringify(idx[0]));
     assert.equal(idx[0].added, 2);
     assert.equal(idx[0].session, 'abc12345');
     assert.equal(idx[0].frameFails, 0, '观测线应带 frameFails');
