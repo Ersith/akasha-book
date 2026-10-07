@@ -40,3 +40,13 @@
 - 验证：core `test.mjs` **77/77**（示例库口径）；四插件 selftest 全绿（session 18/18；含审计累积与门控箭头回归哨兵）。
 - 全模式扫描：仅两类允许项——① 本记录自身的模式说明（本轮起改为**描述式写法**，不再含字面路径）；② 论文源起叙事中的「苦力怕」（虚构游戏生物、公版素材，判定保留）。
 - 新约定：**包内任何改动 → 重跑等价全模式扫描**；插件默认值一律 `homedir()` 运行时计算（源码不含用户目录字面量）；跨运行环境断言以「双路信号任一命中」为形态（见 core `readSessionArchive` 截断帧信号）。
+
+## R6 · 发布上线（2026-10-07 晚）
+
+- 目标：GitHub 开源发布（账号 `Ersith`）——仓库 **`Ersith/akasha-book`**（public，默认分支 main）；初版 commit `3bb7834`（48 文件 / 5814 行）、tag **v0.1.0**、Release 附件 **6 件**（五插件 tgz + 论文 md）；README 安装行微调 commit `6f33be5`。
+- 发布前门（全绿）：core `test.mjs` **77/77**、四插件 selftest 全绿；凭据全程未落屏（仅进程内使用）；打包与仓库内容按 R5 口径。
+- 消费者侧冒烟：Release 附件公开下载 **HTTP 200**（`akasha-book-session-0.2.3.tgz`）。
+- 版权与许可：`LICENSE` = MIT（Copyright (c) 2026 Ersith）；插件 `private:true` 保留（npm 轨启用时再移除）。
+- 发布轨：GitHub 直装 / Release 附件（本轨）；**npm 轨未启用**（`@akasha-book` scope 可用性待核）。
+- 已知小项：仓库 Topics 经 API 两次设置未生效（令牌权限面所致，静默无报错）——可在仓库 Settings → Topics 手动补。
+- 回滚：`git push origin :refs/tags/v0.1.0` 后删除对应 Release 即回退该版；整体撤回＝仓库转私有或删除。**数据不动**（发布仅含源码/文档/示例数据）。
