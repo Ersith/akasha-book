@@ -48,5 +48,6 @@
 - 消费者侧冒烟：Release 附件公开下载 **HTTP 200**（`akasha-book-session-0.2.3.tgz`）。
 - 版权与许可：`LICENSE` = MIT（Copyright (c) 2026 Ersith）；插件 `private:true` 保留（npm 轨启用时再移除）。
 - 发布轨：GitHub 直装 / Release 附件（本轨）；**npm 轨未启用**（`@akasha-book` scope 可用性待核）。
-- 已知小项：仓库 Topics 经 API 两次设置未生效（令牌权限面所致，静默无报错）——可在仓库 Settings → Topics 手动补。
+- 已知小项：仓库 Topics 经 API 两次设置未生效（令牌权限面所致，静默无报错）——**需在 GitHub 仓库页 Settings → Topics 手动补**，官方要求必填 **`dsh-plugin`**（官方 README「Community and support」指定：加该 topic 以获得插件可发现性），建议一并加 `agent-memory` / `llm-agents` / `memory` / `mcp` / `deepseek-harness`。
+- 官方社区坐标（2026-10-07 核实，官方 README 现行版）：**Discord** `https://discord.gg/4MrtZUhpxg`；**GitHub Discussions** `https://github.com/deepseek-ai/deepseek-harness/discussions`；插件发现＝`dsh-plugin` topic。
 - 回滚：`git push origin :refs/tags/v0.1.0` 后删除对应 Release 即回退该版；整体撤回＝仓库转私有或删除。**数据不动**（发布仅含源码/文档/示例数据）。
