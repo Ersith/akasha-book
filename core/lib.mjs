@@ -166,6 +166,52 @@ function inRange(r, since, until) {
   return true;
 }
 
+/** 日期参数归一（接受 YYYY-MM-DD 或 ISO 8601；一律按 UTC 取日）。返回 {ok:true, day}|{ok:false, error}。 */
+export function normalizeDateArg(input) {
+  const raw = String(input ?? '').trim();
+  if (!raw) return { ok: true, day: null };
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ].+)?$/.exec(raw);
+  if (!m) return { ok: false, error: `非法日期：${raw}（应为 YYYY-MM-DD 或 ISO 8601，含时区按 UTC 归一）` };
+  const day = `${m[1]}-${m[2]}-${m[3]}`;
+  const probe = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(probe.getTime()) || probe.toISOString().slice(0, 10) !== day) return { ok: false, error: `非法日期：${raw}` };
+  if (raw.length > 10) {
+    const t = new Date(raw);
+    if (Number.isNaN(t.getTime())) return { ok: false, error: `非法日期：${raw}` };
+    return { ok: true, day: t.toISOString().slice(0, 10) };
+  }
+  return { ok: true, day };
+}
+
+/** 日期三分（单条）：in=范围内 / out=范围外 / undated=无戳（无法定年，不参与"该时段发生了什么"判断）；附 timeSource。 */
+export function dateBucket(r, { since, until } = {}) {
+  const hasEvt = !!r.event_time;
+  const ts = tsOf(r);
+  const src = ts ? (hasEvt ? 'event_time' : 'logged_at') : null;
+  if (!since && !until) return { bucket: 'in', timeSource: src };
+  if (!ts) return { bucket: 'undated', timeSource: null };
+  const day = String(ts).slice(0, 10);
+  if (since && day < String(since).slice(0, 10)) return { bucket: 'out', timeSource: src };
+  if (until && day > String(until).slice(0, 10)) return { bucket: 'out', timeSource: src };
+  return { bucket: 'in', timeSource: src };
+}
+
+/** 全库日期覆盖统计（供 cross/brief 的"日期未知"提示；与关键词无关的粗口径）。 */
+export function dateCoverageStats({ since, until } = {}) {
+  const stats = { undated: 0, excluded: 0, total: 0 };
+  if (!since && !until) return stats;
+  for (const name of STORES) {
+    const { records } = loadStore(name);
+    for (const r of currentRecords(records)) {
+      stats.total += 1;
+      const b = dateBucket(r, { since, until });
+      if (b.bucket === 'undated') stats.undated += 1;
+      else if (b.bucket === 'out') stats.excluded += 1;
+    }
+  }
+  return stats;
+}
+
 // 对位比较的主行（每条记录“说什么”的那一行，不截断）。
 const PRIMARY_LINE = {
   canon: (r) => String(r.claim ?? ''),
@@ -206,24 +252,40 @@ export function cross(query, opts = {}) {
   return { query: q, groups, total, hint };
 }
 
-export function lookup(query, opts = {}) {
+export function lookupDetailed(query, opts = {}) {
   const q = String(query || '').trim().toLowerCase();
-  if (!q) return [];
+  const stats = { dated: 0, undated: 0, undatedSamples: [], excluded: 0, timeSource: { event_time: 0, logged_at: 0 } };
+  if (!q) return { hits: [], stats };
   const tokens = tokenize(q);
   const hits = [];
   for (const name of STORES) {
     const { records } = loadStore(name);
     for (const r of currentRecords(records)) {
-      if (!inRange(r, opts.since, opts.until)) continue;
       const hay = (LOOKUP_FIELDS[name] || [])
         .map(f => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || '')))
         .join(' | ');
       const hayL = hay.toLowerCase();
       const sc = scoreTokens(hayL, tokens);
-      if (sc.score > 0) hits.push({ store: name, id: r.id, score: sc.score, snippet: hay.slice(0, 120) });
+      if (sc.score <= 0) continue; // 统计只看「关键词命中者」的日期归桶
+      const b = dateBucket(r, opts);
+      if (b.bucket === 'out') { stats.excluded += 1; continue; }
+      if (b.bucket === 'undated' && !opts.includeUndated) {
+        stats.undated += 1;
+        if (stats.undatedSamples.length < 3) stats.undatedSamples.push({ store: name, id: r.id, snippet: hay.slice(0, 60) });
+        continue;
+      }
+      if (b.timeSource) stats.timeSource[b.timeSource] += 1;
+      if (b.bucket === 'in') stats.dated += 1;
+      const hit = { store: name, id: r.id, score: sc.score, snippet: hay.slice(0, 120) };
+      if (b.bucket === 'undated') hit.undated = true;
+      hits.push(hit);
     }
   }
-  return hits.sort((a, b) => b.score - a.score).slice(0, 20);
+  return { hits: hits.sort((a, b) => b.score - a.score).slice(0, 20), stats };
+}
+
+export function lookup(query, opts = {}) {
+  return lookupDetailed(query, opts).hits;
 }
 
 // 主题简报：把「先查再答」从逐条 lookup 升级为按主题跨六库取料（带来源态与基石映射）。

@@ -687,6 +687,45 @@ if (lib) {
       const since = sessionMod.loopWatchStats(recs, { since: '2026-10-08' });
       assert.equal(since.total, 0);
     });
+    t('session：extractSegments 跨批配对（emitFrom：结果后到 → 补完成版；旧 pending 不重刷）', () => {
+      const recs = [
+        { type: 'tool/call', seq: 1, time: 1, data: { turn: 1, step: 1, callId: 'c1', name: 'pwsh', arguments: '{"command":"x"}' } },
+        { type: 'tool/result', seq: 2, time: 2, data: { turn: 1, step: 1, toolCallId: 'c1', content: 'done' } },
+        { type: 'tool/call', seq: 3, time: 3, data: { turn: 1, step: 2, callId: 'c2', name: 'pwsh', arguments: '{"command":"y"}' } }
+      ];
+      const b1 = sessionMod.extractSegments(recs.slice(0, 1), { session: 'sX', emitFrom: 0 });
+      assert.equal(b1.length, 1);
+      assert.ok(b1[0].gist.includes('（无结果）'));
+      const b2 = sessionMod.extractSegments(recs, { session: 'sX', emitFrom: 1 });
+      const completed = b2.filter((s) => s.kind === 'action' && s.gist.includes('↳'));
+      assert.equal(completed.length, 1, JSON.stringify(b2.map((s) => s.gist)));
+      assert.equal(completed[0].ptr.callSeq, 1, '完成版应指回原调用 callSeq');
+      const b3 = sessionMod.extractSegments(recs, { session: 'sX', emitFrom: 3 });
+      assert.equal(b3.length, 0, JSON.stringify(b3.map((s) => s.gist)));
+    });
+    t('session：动作版本归并（默认完成版唯一；all=true 见历史）', () => {
+      const dir = mkdtempSync(join(SCRATCH, 'akasha-ses-'));
+      try {
+        const store = join(dir, 'session.jsonl');
+        const base = { kind: 'action', session: 'sY', seq: 8, turn: 1, step: 1, tools: ['pwsh'], ptr: { seq: 7, callSeq: 7 } };
+        const rows = [
+          { ...base, id: 'seg-a', gist: 'pwsh：x（无结果）', logged_at: '2026-10-07T01:00:00Z' },
+          { ...base, id: 'seg-b', gist: 'pwsh：x ↳ ok', logged_at: '2026-10-07T02:00:00Z' },
+          { id: 'seg-c', kind: 'conclusion', session: 'sY', seq: 9, gist: 'pwsh 结论', logged_at: '2026-10-07T02:00:01Z' }
+        ];
+        writeFileSync(store, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+        const view = sessionMod.collapseActionVersions(rows);
+        const acts = view.filter((r) => r.kind === 'action');
+        assert.equal(acts.length, 1);
+        assert.equal(acts[0].id, 'seg-b', '应保留完成版');
+        const hits = sessionMod.lookupSegments('pwsh', { storeFile: store });
+        assert.ok(!hits.some((h) => h.id === 'seg-a'), '默认视图不得出现历史版本');
+        const hitsAll = sessionMod.lookupSegments('pwsh', { storeFile: store, all: true });
+        assert.ok(hitsAll.some((h) => h.id === 'seg-a'), 'all=true 应可见历史版本');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
     t('session：跨会话节点检索（无 --session 各会话各取最新代）', () => {
       const dir = mkdtempSync(join(SCRATCH, 'akasha-ses-'));
       const store = join(dir, 'session.jsonl');
@@ -790,6 +829,29 @@ t('CLI：lookup --since 过滤可运行（exit 0）', () => {
   const r = cli(['lookup', '阿卡夏', '--since', '2026-10-06']);
   assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || ''));
   assert.ok((r.stdout || '').length > 0);
+});
+t('CLI：lookup 日期三分——未知计数提示 + 非法日期拒绝', () => {
+  const r = cli(['lookup', '阿卡夏', '--since', '2026-10-08']);
+  assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || ''));
+  assert.ok((r.stdout || '').includes('日期未知'), (r.stdout || '').slice(0, 300));
+  const bad = cli(['lookup', '阿卡夏', '--since', '2026-13-40']);
+  assert.equal(bad.status, 1, (bad.stdout || '') + (bad.stderr || ''));
+  assert.ok(((bad.stdout || '') + (bad.stderr || '')).includes('非法日期'), (bad.stdout || '') + (bad.stderr || ''));
+});
+t('lib：dateBucket / normalizeDateArg 三分与归一', () => {
+  const { dateBucket, normalizeDateArg } = lib;
+  assert.equal(normalizeDateArg('2026-10-07').day, '2026-10-07');
+  assert.equal(normalizeDateArg('2026-10-07T23:30:00+08:00').day, '2026-10-07');
+  assert.equal(normalizeDateArg('2026-10-07T23:30:00Z').ok, true);
+  assert.equal(normalizeDateArg('10/07/2026').ok, false);
+  assert.equal(normalizeDateArg('2026-13-40').ok, false);
+  const rec1 = { event_time: '2026-10-06', logged_at: '2026-10-07T01:00:00Z' };
+  assert.equal(dateBucket(rec1, { since: '2026-10-06', until: '2026-10-06' }).bucket, 'in');
+  assert.equal(dateBucket(rec1, { since: '2026-10-06', until: '2026-10-06' }).timeSource, 'event_time');
+  const rec2 = { logged_at: '2026-10-07T01:00:00Z' };
+  assert.equal(dateBucket(rec2, { since: '2026-10-08' }).bucket, 'out');
+  assert.equal(dateBucket(rec2, {}).bucket, 'in');
+  assert.equal(dateBucket({}, { since: '2026-10-08' }).bucket, 'undated');
 });
 t('CLI：mirror match 可运行（exit 0，含镜像匹配）', () => {
   const r = cli(['mirror', 'match', '虚构', '危险']);

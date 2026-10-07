@@ -2,7 +2,7 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, stats, lookup, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
+import { checkAll, stats, lookup, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
 import { sleepRun } from './sleep.mjs';
 import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, SESSION_DEFAULTS } from './session.mjs';
 
@@ -36,11 +36,22 @@ switch (cmd) {
     break;
   }
   case 'lookup': {
-    const hits = lookup(rest.join(' '), { since: flags.since, until: flags.until });
-    print(hits, hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score}) ${h.snippet}`).join('\n') : '（无结果）');
+    const rSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: null };
+    const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
+    if (!rSel.ok || !rUnt.ok) { console.error(rSel.error || rUnt.error); code = 1; break; }
+    const { hits, stats } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated });
+    const lines = hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score})${h.undated ? ' [未定年]' : ''} ${h.snippet}`) : ['（无结果）'];
+    if (flags.since || flags.until) {
+      const ex = stats.undatedSamples.length ? '（例：' + stats.undatedSamples.map(s => s.id).join('、') + '）' : '';
+      lines.push(`· 另有 ${stats.undated} 条日期未知${ex}· ${stats.excluded} 条因日期范围排除。日期未知＝无法参与「该时段发生了什么」的判断，≠该时段没有它。`);
+      if (flags.report) lines.push(`· 报告：范围内 ${stats.dated} · 未知 ${stats.undated} · 范围外 ${stats.excluded} · 时间来源 event_time ${stats.timeSource.event_time} / logged_at ${stats.timeSource.logged_at}${flags.undated ? '（--undated 已并入）' : '（--undated 可并入）'}`);
+    }
+    print(flags.report ? { hits, stats } : hits, lines.join('\n'));
     break;
   }
   case 'brief': {
+    if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
+    if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
     const b = brief(rest.join(' '), { perStore: Number(flags.per) || 3, since: flags.since, until: flags.until });
     const lines = [`主题简报「${b.query}」：` + (b.groups.length ? `命中 ${b.groups.length} 库` : '无命中')];
     for (const g of b.groups) {
@@ -57,6 +68,10 @@ switch (cmd) {
       }
     }
     if (b.note) lines.push(b.note);
+    if (flags.since || flags.until) {
+      const cov = dateCoverageStats({ since: flags.since, until: flags.until });
+      lines.push(`· 日期说明：全库另有 ${cov.undated} 条日期未知未参与过滤（范围外 ${cov.excluded}）——未知≠该时段没有。`);
+    }
     print(b, lines.join('\n'));
     break;
   }
@@ -85,11 +100,19 @@ switch (cmd) {
     break;
   }
   case 'cross': {
+    if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
+    if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
     const c = cross(rest[0] || '', { perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until });
     const lines = [];
+    const dateNote = () => {
+      if (!(flags.since || flags.until)) return;
+      const cov = dateCoverageStats({ since: flags.since, until: flags.until });
+      lines.push(`· 日期说明：全库另有 ${cov.undated} 条日期未知未参与过滤（范围外 ${cov.excluded}）——未知≠该时段没有。`);
+    };
     if (!c.groups.length) {
       lines.push(`对位比较「${c.query || '（空）'}」：无命中。`);
       if (c.hint) lines.push('· ' + c.hint);
+      dateNote();
       print(c, lines.join('\n'));
       break;
     }
@@ -99,6 +122,7 @@ switch (cmd) {
       for (const item of g.items) lines.push(`  ${item.id} | ${item.line}`);
     }
     if (c.hint) lines.push('· ' + c.hint);
+    dateNote();
     print(c, lines.join('\n'));
     break;
   }
@@ -252,7 +276,7 @@ switch (cmd) {
     const helpLines = [
       '会话层（session layer）用法：',
       '  node akasha.mjs session index <sessionId|文件路径> [--session ID] [--root D] [--store F] [--meta F] [--full]',
-      '  node akasha.mjs session lookup <词> [--session ID] [--kind a,b] [--level nodes|segs] [--since D] [--until D] [--process] [--limit N] [--store F] [--json]',
+      '  node akasha.mjs session lookup <词> [--session ID] [--kind a,b] [--level nodes|segs] [--since D] [--until D] [--process] [--all] [--limit N] [--store F] [--json]',
       '  node akasha.mjs session context [--session ID] [--budget N] [--store F]',
       '  node akasha.mjs session stats [--store F] [--json]',
       '  node akasha.mjs session tree [--build] --session ID [--store F]   # 弧线树：--build 重建当前代',
@@ -306,6 +330,7 @@ switch (cmd) {
         since: flags.since,
         until: flags.until,
         includeProcess: !!flags.process,
+        all: !!flags.all,
         limit: Number(flags.limit) || 10
       });
       const lines = hits.length

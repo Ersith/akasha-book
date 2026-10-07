@@ -58,3 +58,9 @@
 - 修复：`session index` 增加**非规范路径守卫**——不再以整条路径作会话键（防「路径造伪会话」）；回归哨兵入双套件（源 78/78 / 本包 78/78）。
 - 触发：压缩后复检中的「冻结副本幂等测试」暴露旧回退行为（本机侧已清理 2434 条路径键记录并留备份；**本包不含该类数据**）。
 - 改动复核：仅代码文本（`core/akasha.mjs` 守卫段 + `core/test.mjs` 哨兵）；按 R5 约定**复跑等价全模式扫描**——零禁项（允许项同前）。
+
+## R8 · 日期三分与跨批配对修复推送（2026-10-07 晚）
+
+- 改动：core `lib.mjs`（`normalizeDateArg` / `dateBucket` / `dateCoverageStats` / `lookupDetailed`）、`akasha.mjs`（lookup / brief / cross 的日期提示与非法日期拒绝）、`mcp.mjs`（`akasha_lookup` 增 `report` / `undated`）、`session.mjs`（配对改为**全量记录**维护 + `emitFrom` 控产出；读取视图 `collapseActionVersions` 归并完成版；`--all` 看历史）、`test.mjs`（+4 哨兵）。
+- 验证：源 / 本包双套件 **82/82**；活体实测：日期过滤默认提示「另有 N 条日期未知（例）/ M 条范围外排除」、非法日期拒绝（exit 1）；真库一次性 `--full` 重建补 8 条历史漏配。
+- 复扫：等价全模式扫描**零禁项**（允许项同前）。

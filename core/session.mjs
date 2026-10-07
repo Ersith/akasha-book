@@ -159,8 +159,10 @@ function makeSeg(sid, sid8, { seq, time, turn, step, kind, gist, why, keywords, 
 const contentText = (content) =>
   Array.isArray(content) ? content.filter((x) => x && x.type === 'text' && typeof x.text === 'string').map((x) => x.text).join(' ') : '';
 
-/** 记录数组 → 段数组（纯函数；v0.1 机械启发式）。段序：assistant 内 conclusion 先、process 后。 */
-export function extractSegments(records, { session } = {}) {
+/** 记录数组 → 段数组（纯函数；v0.1 机械启发式）。段序：assistant 内 conclusion 先、process 后。
+ *  emitFrom：**配对/状态按传入的全量记录维护**（修复「中途索引切批 → 调用与结果分属两批」的漏配），
+ *  但只输出「须新产出」的段：结果 seq（或未配对调用的 call seq）> emitFrom。emitFrom=0 ⇒ 全量输出（--full 重建）。 */
+export function extractSegments(records, { session, emitFrom = 0 } = {}) {
   const sid = String(session ?? 'unknown');
   const sid8 = sid.slice(0, 8);
   const out = [];
@@ -176,14 +178,14 @@ export function extractSegments(records, { session } = {}) {
     const step = d.step ?? null;
     if (rec.type === 'user/message') {
       const text = contentText(d.content);
-      if (text) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'intent', gist: text, keywords: extractKeywords(text), ptr: { seq } }));
+      if (text && seq > emitFrom) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'intent', gist: text, keywords: extractKeywords(text), ptr: { seq } }));
     } else if (rec.type === 'assistant/message') {
       const items = Array.isArray(d.message?.content) ? d.message.content : [];
       const textItem = items.find((x) => x && x.type === 'text' && typeof x.text === 'string');
       const reasoningItem = items.find((x) => x && (x.type === 'reasoning' || x.type === 'thinking') && typeof x.text === 'string');
       if (reasoningItem) lastReasoning.set(`${turn}:${step}`, firstLine(reasoningItem.text));
-      if (textItem) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'conclusion', gist: textItem.text, keywords: extractKeywords(textItem.text), ptr: { seq } }));
-      if (reasoningItem) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'process', gist: reasoningItem.text, keywords: extractKeywords(reasoningItem.text), ptr: { seq } }));
+      if (textItem && seq > emitFrom) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'conclusion', gist: textItem.text, keywords: extractKeywords(textItem.text), ptr: { seq } }));
+      if (reasoningItem && seq > emitFrom) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'process', gist: reasoningItem.text, keywords: extractKeywords(reasoningItem.text), ptr: { seq } }));
     } else if (rec.type === 'tool/call') {
       const callId = d.callId ?? `seq-${seq}`;
       pending.set(callId, { seq, time, turn, step, name: String(d.name ?? '?'), args: String(d.arguments ?? '') });
@@ -192,14 +194,17 @@ export function extractSegments(records, { session } = {}) {
       const p = callId ? pending.get(callId) : null;
       if (p) {
         pending.delete(callId);
-        const resultText = contentText(d.content) || contentText(d.message?.content);
-        const why = lastReasoning.get(`${p.turn}:${p.step}`) ?? '';
-        const gist = `${p.name}：${cut(cleanText(p.args), 120)} ↳ ${cut(cleanText(resultText), 160)}`;
-        out.push(makeSeg(sid, sid8, { seq, time, turn: p.turn, step: p.step, kind: 'action', gist, why, keywords: extractKeywords(gist + ' ' + p.args, [p.name]), tools: [p.name], ptr: { seq, callSeq: p.seq } }));
+        if (seq > emitFrom) {
+          const resultText = contentText(d.content) || contentText(d.message?.content);
+          const why = lastReasoning.get(`${p.turn}:${p.step}`) ?? '';
+          const gist = `${p.name}：${cut(cleanText(p.args), 120)} ↳ ${cut(cleanText(resultText), 160)}`;
+          out.push(makeSeg(sid, sid8, { seq, time, turn: p.turn, step: p.step, kind: 'action', gist, why, keywords: extractKeywords(gist + ' ' + p.args, [p.name]), tools: [p.name], ptr: { seq, callSeq: p.seq } }));
+        }
       }
     }
   });
   for (const p of pending.values()) {
+    if (p.seq <= emitFrom) continue; // 旧批未配对不再重复冲刷（其残更早已留档；结果后到 → 走完成版）
     const why = lastReasoning.get(`${p.turn}:${p.step}`) ?? '';
     const gist = `${p.name}：${cut(cleanText(p.args), 120)}（无结果）`;
     out.push(makeSeg(sid, sid8, { seq: p.seq, time: p.time, turn: p.turn, step: p.step, kind: 'action', gist, why, keywords: extractKeywords(gist + ' ' + p.args, [p.name]), tools: [p.name], ptr: { seq: p.seq, callSeq: p.seq } }));
@@ -239,13 +244,9 @@ export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.store
   const prev = meta.sessions?.[sid] ?? {};
   const lastSeq = Number.isInteger(prev.lastSeq) ? prev.lastSeq : 0;
   let maxSeq = lastSeq;
-  const fresh = [];
-  records.forEach((rec, i) => {
-    const seq = seqOf(rec, i);
-    if (seq > maxSeq) maxSeq = seq;
-    if (full || seq > lastSeq) fresh.push(rec);
-  });
-  const segs = extractSegments(fresh, { session: sid });
+  records.forEach((rec, i) => { const seq = seqOf(rec, i); if (seq > maxSeq) maxSeq = seq; });
+  // 配对按「全量记录」维护（修复中途索引切批的漏配）；产出只取新：emitFrom=lastSeq（--full 时 0）。
+  const segs = extractSegments(records, { session: sid, emitFrom: full ? 0 : lastSeq });
   const existing = new Set(loadStore('session', storeFile).records.map((r) => r.id));
   const incoming = segs.filter((x) => !existing.has(x.id));
   const skipped = segs.length - incoming.length;
@@ -265,8 +266,26 @@ export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.store
   return { session: sid, added: incoming.length, skipped, lastSeq: maxSeq, parseFails, frameFails, frameTruncated };
 }
 
-/** 会话层检索：默认 意图/动作/结论/节点（结论 +1.0 优先）；process 仅 includeProcess 或显式 kind；level='nodes'|'segs' 过滤；节点只取当前代。 */
-export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, limit = 10, level } = {}) {
+/** 动作版本归并（**读取视图**；存储仍 append-only）：同一 call（session:ptr.callSeq）默认只回一版——
+ *  优先「已完成」（gist 含 ↳），同态取最新 logged_at；all=true 时原样返回（历史可见）。 */
+export function collapseActionVersions(records) {
+  const done = (v) => (String(v.gist ?? '').includes('↳') ? 1 : 0);
+  const actions = new Map();
+  const rest = [];
+  for (const r of records) {
+    if (r.kind !== 'action') { rest.push(r); continue; }
+    const key = `${r.session}|${r.ptr?.callSeq ?? r.ptr?.seq ?? r.seq}`;
+    const prev = actions.get(key);
+    if (!prev) { actions.set(key, r); continue; }
+    const better = done(r) > done(prev) || (done(r) === done(prev) && String(r.logged_at ?? '') >= String(prev.logged_at ?? ''));
+    if (better) actions.set(key, r);
+  }
+  return [...rest, ...actions.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+}
+
+/** 会话层检索：默认 意图/动作/结论/节点（结论 +1.0 优先）；process 仅 includeProcess 或显式 kind；level='nodes'|'segs' 过滤；节点只取当前代。
+ *  all=true：动作不做版本归并（用于看历史版本）。 */
+export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, limit = 10, level, all = false } = {}) {
   const q = String(query ?? '').trim();
   if (!q) return [];
   const tokens = tokenize(q);
@@ -278,6 +297,7 @@ export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, 
   else if (level === 'segs') kinds = SEG_KINDS;
   else kinds = [...SEG_KINDS, 'node'];
   const records = loadStore('session', storeFile).records;
+  const view = all ? records : collapseActionVersions(records);
   let genBy = null;
   if (kinds.includes('node')) {
     genBy = new Map(); // 各会话各取最新代——跨会话查询不得互相遮挡（终局复核 F1）
@@ -287,7 +307,7 @@ export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, 
     }
   }
   const hits = [];
-  for (const r of records) {
+  for (const r of view) {
     if (session && r.session !== session) continue;
     if (!kinds.includes(r.kind)) continue;
     if (r.kind === 'node' && (Number(r.treegen) || 0) !== genBy.get(r.session)) continue; // 旧代不参与检索

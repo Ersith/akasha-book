@@ -1,12 +1,12 @@
 // 阿卡夏之书（Akasha）v0 —— 最小 MCP stdio server（JSON-RPC 2.0 逐行）。
 // 工具（17）：check / lookup / price / stats / orphan_add / frontier_due / audit / brief / kit / promote / revise / cross / summary / show / mirror_match / metrics / session_lookup
 import { createInterface } from 'node:readline';
-import { checkAll, lookup, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
+import { checkAll, lookup, lookupDetailed, normalizeDateArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
 import { lookupSegments } from './session.mjs';
 
 const TOOLS = [
   { name: 'akasha_check', description: '校验阿卡夏之书（akasha）全部数据文件（可机检门控的雏形）', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'akasha_lookup', description: '在六库中机械检索；since / until 可选（YYYY-MM-DD，按事件时间/记录时间过滤，无戳条目被排除）', inputSchema: { type: 'object', properties: { query: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' } }, required: ['query'] } },
+  { name: 'akasha_lookup', description: '在六库中机械检索；since / until 可选（YYYY-MM-DD，按事件时间/记录时间过滤）。**有日期过滤时建议 report:true**——返回 { hits, stats }（含「日期未知 N 条」与样本、范围外计数、timeSource）；undated:true 把日期未知并入 hits（标 undated）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, report: { type: 'boolean' }, undated: { type: 'boolean' } }, required: ['query'] } },
   { name: 'akasha_price', description: '按 严重度 × 不可逆性 × 代价 计算情绪定价标签（valence / arousal）；applyStore/applyId 可选=计算后回写该条目（修订链）', inputSchema: { type: 'object', properties: { severity: { type: 'number' }, irreversibility: { type: 'number' }, cost: { type: 'number' }, good: { type: 'boolean' }, applyStore: { type: 'string' }, applyId: { type: 'string' } }, required: ['severity', 'irreversibility', 'cost'] } },
   { name: 'akasha_stats', description: '结果计数器：各存储计数与来源分布', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'akasha_frontier_due', description: '列出到期需复审的前沿层（frontier）条目', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -21,7 +21,7 @@ const TOOLS = [
   { name: 'akasha_show', description: '按 id 跨六库直读（命中旧版本时返回所查版本全文 + 附注当前版本 id，不自动跳转）', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
   { name: 'akasha_mirror_match', description: '镜像结构匹配：按情境文本匹配镜像库（五元组 + patterns 加权），返回最接近的结构模式', inputSchema: { type: 'object', properties: { text: { type: 'string' }, limit: { type: 'number' } }, required: ['text'] } },
   { name: 'akasha_metrics', description: '结果计数器：工具成功率 / 门控拦截 / 审计线 / 引用命中 / 修订链统计（since 可选）', inputSchema: { type: 'object', properties: { since: { type: 'string' } }, additionalProperties: false } },
-  { name: 'akasha_session_lookup', description: '会话层检索（结论优先；默认不含过程段，process=true 纳入；since/until 可选）', inputSchema: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, process: { type: 'boolean' }, limit: { type: 'number' } }, required: ['query'] } }
+  { name: 'akasha_session_lookup', description: '会话层检索（结论优先；默认不含过程段，process=true 纳入；默认动作版本归并＝只回完成版，all=true 看历史；since/until 可选）', inputSchema: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, process: { type: 'boolean' }, all: { type: 'boolean' }, limit: { type: 'number' } }, required: ['query'] } }
 ];
 
 function handle(msg) {
@@ -39,7 +39,15 @@ function handle(msg) {
     try {
       let value = null;
       if (name === 'akasha_check') value = checkAll();
-      else if (name === 'akasha_lookup') value = lookup(a.query, { since: a.since, until: a.until });
+      else if (name === 'akasha_lookup') {
+        const since = a.since ? normalizeDateArg(a.since) : { ok: true, day: null };
+        const until = a.until ? normalizeDateArg(a.until) : { ok: true, day: null };
+        if (!since.ok || !until.ok) { value = { error: since.error || until.error }; }
+        else {
+          const detailed = lookupDetailed(a.query, { since: since.day, until: until.day, includeUndated: a.undated === true });
+          value = a.report === true ? detailed : detailed.hits;
+        }
+      }
       else if (name === 'akasha_price') {
         const p = price(a);
         if (a.applyStore && a.applyId) {
@@ -60,7 +68,7 @@ function handle(msg) {
       else if (name === 'akasha_show') value = show(String(a.id ?? ''));
       else if (name === 'akasha_mirror_match') value = mirrorMatch(String(a.text ?? ''), { limit: a.limit });
       else if (name === 'akasha_metrics') value = metrics({ since: a.since });
-      else if (name === 'akasha_session_lookup') value = lookupSegments(String(a.query ?? ''), { session: a.session, kind: a.kind, since: a.since, until: a.until, includeProcess: a.process === true, limit: a.limit });
+      else if (name === 'akasha_session_lookup') value = lookupSegments(String(a.query ?? ''), { session: a.session, kind: a.kind, since: a.since, until: a.until, includeProcess: a.process === true, all: a.all === true, limit: a.limit });
       else if (name === 'akasha_orphan_add') {
         value = appendRecord('orphan', {
           id: 'orphan-' + Date.now().toString(36),
