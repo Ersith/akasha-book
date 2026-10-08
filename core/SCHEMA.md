@@ -147,6 +147,38 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 - severity：`agent-error` → 中，其余 → 低；`--dry` 只报不写（默认执行）。
 - 闭环：失败/拦截 → hooks 记录 → sleep 蒸馏 → inbox 待办 → promote 入孤案库。
 
+## 睡眠计划（sleep --plan，wave2 §2 第一批，2026-10-08）
+
+`node akasha.mjs sleep --plan [--out F] [--today YYYY-MM-DD] [--theta 0.8] [--max 20] [--orphan-days 90] [--stale-days 365] [--log F] [--json]`
+
+**只读六库**：不调 `appendRecord` / `revise` / `retire`，不动睡眠水位线（`sleep-state.json`），只写一个计划文件（缺省 `logs/sleep-plan-<today>.json`；`--out` 指定；指向存储文件即拒）。`--apply` / `--rollback` 尚未实现，传入即报错退出 1——等计划输出评审后再做。MCP 不加入口。
+
+计划形状：
+
+```
+{ planId, version: 1, mode: "plan-only", createdAt,
+  params:  { today, theta, maxOps, orphanDays, staleDays },
+  basis:   { <store>: { bytes, sha256 } },        // 六库文件指纹（缺文件：{ bytes:0, sha256:null, missing:true }）
+  inputs:  { hooksLog: { bytes, sha256 } },        // canon-stale 引用计数的来源
+  ops: [ { op:"merge",   store, keep, absorb:[ids], reason, mergedText:null, evidence },
+         { op:"discard", store, id, reason, evidence } ],
+  truncated: { total, dropped }, excluded: { protocol, promoted }, skipped: [ { rule, why } ] }
+```
+
+- **确定性**：`planId = "plan-" + sha256({ params, basis, inputs, ops })` 前 16 位；`createdAt` 不参与。同库、同日志、同参数 ⇒ 同 ops、同 planId。库变一个字节 ⇒ basis 变 ⇒ planId 变（将来 apply 据此拒绝过期计划）。
+- **merge**（同库、都在当前集）：
+  - `near-duplicate`：主文本 token Jaccard ≥ θ。主文本：canon=`claim`；mirror=`situation`+`behavior`；lexicon=`term`+`trigger`；pricing=`behavior`。token = `tokenize` 切词，含中文的词再拆相邻二字。orphan 零权重，不参与合并。
+  - `duplicate-url`（frontier）：url 精确相等（与 `audit` 同口径）。
+  - keep = 链根 `logged_at` 最早者（同则根 id 字典序）；keep 只吸收与它**本身** ≥ θ 的条目（每个 absorb 在 `evidence.pairs` 里都有直接相似度）。`mergedText` 恒为 `null`——合并文本由模型 / 人填，代码不生成语义文本。
+- **discard**（先于 merge 判定）：
+  - `snapshot-superseded`：canon 链根 id 形如 `<主题>-YYYYMMDD`，同主题存在日期更晚的当前快照；
+  - `canon-stale-unused`：`last_reviewed` 超过 `staleDays`，且 hooks 日志里 `kind:"usage"` 从未引用该链上任何 id。**日志缺失 = 引用数未知 → 不出此类 op**（记入 `skipped`）；
+  - `orphan-aging`：`created` 超过 `orphanDays`，且这段时间内链上没有修订（无确认）。
+- **永不进计划**：协议条（`isProtocolId`）、带 `promoted_from` 的链（升格记录，§1 的源段关系不在这里动）、已退役条目（不在当前集）、frontier 的 discard（只走 `frontier recheck`）。每条记录至多出现在一个 op 里。
+- **上限**：按（merge 先于 discard → 库序 → reason → id）排序后取前 K（`--max`，缺省 20），截去数记在 `truncated`。
+
+**P4 立场（已定，下一批实现，本批未实现）**：`revokes` 不走 `allowResurrect` 的门——存在撤销某墓碑的 `revokes` 时，即便 `allowResurrect:true` 也拒绝再追加同一 id（文案「已恢复为当前版本，要改走 revise」）；回滚验收比**当前集**的 `(根 id, 正文)`，不比逐行，历史行一条不删。
+
 ## 修订链（append-only 之上的更正）
 
 「追加式更正不改原文」的正式机制——**任何记录可以带 `supersedes: <被修订 id>`**：

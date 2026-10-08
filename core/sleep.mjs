@@ -3,8 +3,9 @@
 // 新增：sleepRun（含 --dry / 同日报告不覆盖 / report/state/inbox 写失败观测线）+ shouldSleep（去抖判断）。
 // 手动触发：node akasha.mjs sleep [--dry] —— 与插件自动触发共用同一水位线 sleep-state.json（不重复蒸馏、不丢增量）。
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { ROOT, audit, recallSignals, redact, writeFileAtomic } from './lib.mjs';
+import { dirname, join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { ROOT, STORES, audit, currentRecords, isProtocolId, parseJsonl, recallSignals, redact, storePath, tokenize, writeFileAtomic } from './lib.mjs';
 
 export const SLEEP_DEFAULTS = {
   log: join(ROOT, 'logs', 'hooks.jsonl'),
@@ -223,4 +224,240 @@ export function renderRecallLine(failures, nowMs = Date.now(), windowMs = 180000
   const tools = [...new Set(recent.map((f) => String(f.tool || '未知')))].slice(0, 4);
   const minutes = Math.round(windowMs / 60000);
   return `阿卡夏·回查提示：近 ${minutes} 分钟内 ${recent.length} 次失败（${tools.join(' / ')}）——先查库（lookup / brief 相关主题）再继续；失败回查：库里本来有没有能救它的东西？`;
+}
+
+// —— 睡眠期合并 / 丢弃：只出计划（wave2 §2 第一批，2026-10-08）——
+// `sleep --plan` 只读六库、只写 logs/ 下的计划文件；不调 appendRecord / revise / retire，不动水位线。
+// --apply / 回滚 / revokes 等计划评审过后再做（下一批；P4 立场见 SCHEMA「睡眠计划」）。
+// 规则全是机械的、可复算：同一份库 + 同一份日志 + 同一组参数 ⇒ 同一组 ops、同一个 planId（createdAt 不进 planId）。
+export const PLAN_DEFAULTS = Object.freeze({ theta: 0.8, maxOps: 20, orphanDays: 90, staleDays: 365 });
+const PLAN_OP_ORDER = { merge: 0, discard: 1 };
+const PLAN_CJK_RE = /[\u3400-\u9fff\uf900-\ufaff]/;
+const SNAPSHOT_RE = /^(.+)-(\d{8})$/;
+
+/** 计划用的主文本（每库一种；frontier 不比文本，只比 url；orphan 零权重，不进合并）。 */
+export function planPrimaryText(store, r) {
+  const s = (v) => (typeof v === 'string' ? v : '');
+  if (store === 'canon') return s(r.claim);
+  if (store === 'mirror') return `${s(r.situation)} ${s(r.behavior)}`;
+  if (store === 'lexicon') return `${s(r.term)} ${s(r.trigger)}`;
+  if (store === 'pricing') return s(r.behavior);
+  return '';
+}
+
+/** 计划用的 token 集（纯函数）：沿用 lib.tokenize 切词；含中文的词再拆相邻二字（中文不靠空格分词，整句会成一个 token）。 */
+export function planTokens(text) {
+  const out = new Set();
+  for (const tok of tokenize(text)) {
+    if (!PLAN_CJK_RE.test(tok) || tok.length < 2) { out.add(tok); continue; }
+    for (let i = 0; i < tok.length - 1; i += 1) out.add(tok.slice(i, i + 2));
+  }
+  return out;
+}
+
+/** token Jaccard（纯函数）：|A∩B| / |A∪B|；两边都空 → 0（空文本不算相似）。 */
+export function jaccard(a, b) {
+  if (!a.size && !b.size) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter += 1;
+  return inter / (a.size + b.size - inter);
+}
+
+const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+const fingerprint = (file) => {
+  if (!existsSync(file)) return { buf: null, fp: { bytes: 0, sha256: null, missing: true } };
+  const buf = readFileSync(file);
+  return { buf, fp: { bytes: buf.length, sha256: sha256(buf) } };
+};
+const dayDiff = (a, b) => Math.floor((Date.parse(b) - Date.parse(a)) / 86400000);
+const day10 = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : '');
+const byStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** 修订链视图：每条当前记录 → 根 id、链上全部 id、链上是否带 promoted_from。 */
+function chainView(records) {
+  const byId = new Map(records.map((r) => [r.id, r]));
+  const rootOf = (r) => { let c = r; const seen = new Set(); while (c && typeof c.supersedes === 'string' && byId.has(c.supersedes) && !seen.has(c.id)) { seen.add(c.id); c = byId.get(c.supersedes); } return c; };
+  return currentRecords(records).filter((r) => typeof r.id === 'string' && r.id).map((r) => {
+    const chain = []; let c = r; const seen = new Set();
+    while (c && !seen.has(c.id)) { seen.add(c.id); chain.unshift(c); c = typeof c.supersedes === 'string' ? byId.get(c.supersedes) : null; }
+    const root = rootOf(r) || r;
+    return { rec: r, rootId: root.id, rootLoggedAt: typeof root.logged_at === 'string' ? root.logged_at : '', chainIds: chain.map((x) => x.id), chain, promoted: chain.some((x) => x.promoted_from != null) };
+  });
+}
+
+/** hooks 日志里 kind:"usage" 的引用计数（只读）；文件缺失 → null（不知道 ≠ 零引用）。 */
+function usageFromLog(buf) {
+  if (!buf) return null;
+  const usage = new Map();
+  for (const raw of buf.toString('utf8').split(/\r?\n/)) {
+    if (!raw.trim()) continue;
+    let rec; try { rec = JSON.parse(raw); } catch { continue; }
+    if (rec && rec.kind === 'usage' && Array.isArray(rec.ids)) for (const id of rec.ids) usage.set(String(id), (usage.get(String(id)) ?? 0) + 1);
+  }
+  return usage;
+}
+
+/**
+ * 生成睡眠计划（只读）。opts：
+ *   files    —— { <store>: 路径 }（缺省 storePath；测试注入临时库）
+ *   log      —— hooks.jsonl（canon-stale 的引用计数来源；缺省 logs/hooks.jsonl）
+ *   today    —— YYYY-MM-DD（缺省 UTC 今天；进 params 与 planId）
+ *   theta / maxOps / orphanDays / staleDays —— 见 PLAN_DEFAULTS
+ *   out      —— 计划文件路径；缺省 logs/sleep-plan-<today>.json；false = 不落盘（纯计算）
+ *   now      —— createdAt 用的时间（缺省 new Date()；不进 planId）
+ * 返回 { ok, plan, planFile }；不调用任何写库函数。
+ */
+export function sleepPlan(opts = {}) {
+  try {
+    const today = opts.today ? String(opts.today).slice(0, 10) : new Date().toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(today) || Number.isNaN(Date.parse(today))) return { ok: false, error: 'today 须为 YYYY-MM-DD：' + opts.today };
+    const num = (v, d) => (v === undefined || v === null || v === true || v === '' ? d : Number(v));
+    const params = {
+      today,
+      theta: num(opts.theta, PLAN_DEFAULTS.theta),
+      maxOps: num(opts.maxOps, PLAN_DEFAULTS.maxOps),
+      orphanDays: num(opts.orphanDays, PLAN_DEFAULTS.orphanDays),
+      staleDays: num(opts.staleDays, PLAN_DEFAULTS.staleDays)
+    };
+    if (!(params.theta > 0 && params.theta <= 1)) return { ok: false, error: 'theta 须在 (0, 1]：' + opts.theta };
+    for (const k of ['maxOps', 'orphanDays', 'staleDays']) if (!Number.isInteger(params[k]) || params[k] < 0) return { ok: false, error: `${k} 须为非负整数：` + params[k] };
+
+    // 1) 读库 + 指纹（同一份字节既算指纹又解析，保证 basis 与 ops 对应同一快照）
+    const files = opts.files || {};
+    const basis = {}; const views = {}; const badLines = {};
+    for (const store of STORES) {
+      const { buf, fp } = fingerprint(files[store] || storePath(store));
+      basis[store] = fp;
+      const parsed = buf ? parseJsonl(buf.toString('utf8')) : { records: [], errors: [] };
+      if (parsed.errors.length) badLines[store] = parsed.errors.length;
+      views[store] = chainView(parsed.records);
+    }
+    const logFile = opts.log || SLEEP_DEFAULTS.log;
+    const logFp = fingerprint(logFile);
+    const usage = usageFromLog(logFp.buf);
+    const inputs = { hooksLog: logFp.fp };
+
+    // 2) 资格：协议条、带 promoted_from 的链、已退役（currentRecords 已排除）永不进计划
+    const excluded = { protocol: 0, promoted: 0 };
+    const eligible = {};
+    for (const store of STORES) {
+      eligible[store] = views[store].filter((v) => {
+        if (v.chainIds.some(isProtocolId)) { excluded.protocol += 1; return false; }
+        if (v.promoted) { excluded.promoted += 1; return false; }
+        return true;
+      }).sort((a, b) => byStr(a.rootLoggedAt, b.rootLoggedAt) || byStr(a.rootId, b.rootId) || byStr(a.rec.id, b.rec.id));
+    }
+
+    const used = new Set(); // `${store}\u0000${id}`：一条记录至多出现在一个 op 里
+    const key = (store, id) => store + '\u0000' + id;
+    const discards = []; const merges = []; const skipped = [];
+
+    // 3) discard（先于 merge：被取代的旧快照不该被当成合并的 keep）
+    //   a. canon 快照被更新快照取代：根 id 形如 <主题>-YYYYMMDD，同主题有更晚日期的当前快照
+    //      （同主题的「更新快照」从全部当前 canon 里找——哪怕它本身因 promoted_from 不进计划，也照样算取代者）
+    const eligibleCanon = new Set(eligible.canon.map((v) => v.rec.id));
+    const snaps = new Map();
+    for (const v of views.canon) {
+      if (v.chainIds.some(isProtocolId)) continue;
+      const m = SNAPSHOT_RE.exec(v.rootId);
+      if (!m) continue;
+      if (!snaps.has(m[1])) snaps.set(m[1], []);
+      snaps.get(m[1]).push({ v, date: m[2] });
+    }
+    for (const [stem, list] of [...snaps.entries()].sort((a, b) => byStr(a[0], b[0]))) {
+      if (list.length < 2) continue;
+      list.sort((a, b) => byStr(b.date, a.date) || byStr(a.v.rootId, b.v.rootId));
+      const newest = list[0];
+      for (const { v, date } of list.slice(1)) {
+        if (date === newest.date || !eligibleCanon.has(v.rec.id)) continue;
+        discards.push({ op: 'discard', store: 'canon', id: v.rec.id, reason: 'snapshot-superseded', evidence: { stem, snapshotDate: date, supersededBy: newest.v.rec.id, newerDate: newest.date } });
+        used.add(key('canon', v.rec.id));
+      }
+    }
+    //   b. canon-stale（last_reviewed 超过 staleDays）且 usage 从未引用过链上任何 id；没有日志 = 不知道 → 不出此类 op
+    if (usage === null) skipped.push({ rule: 'canon-stale-unused', why: 'hooks 日志不存在：引用次数未知，不按「从未引用」处理' });
+    else {
+      for (const v of eligible.canon) {
+        if (used.has(key('canon', v.rec.id))) continue;
+        const lr = day10(v.rec.last_reviewed);
+        if (!lr) continue;
+        const age = dayDiff(lr, today);
+        if (!(age > params.staleDays)) continue;
+        const refs = v.chainIds.reduce((n, id) => n + (usage.get(id) ?? 0), 0);
+        if (refs > 0) continue;
+        discards.push({ op: 'discard', store: 'canon', id: v.rec.id, reason: 'canon-stale-unused', evidence: { last_reviewed: lr, ageDays: age, staleDays: params.staleDays, usageRefs: 0, chainIds: v.chainIds } });
+        used.add(key('canon', v.rec.id));
+      }
+    }
+    //   c. orphan-aging：created 超过 orphanDays，且这段时间里链上没有修订（无确认）
+    for (const v of eligible.orphan) {
+      const created = day10(v.rec.created) || day10(v.chain[0].created);
+      if (!created) continue;
+      const age = dayDiff(created, today);
+      if (!(age > params.orphanDays)) continue;
+      const lastRevision = v.chain.filter((x) => typeof x.supersedes === 'string').map((x) => day10(x.logged_at)).filter(Boolean).sort().pop() || null;
+      if (lastRevision && dayDiff(lastRevision, today) <= params.orphanDays) continue;
+      discards.push({ op: 'discard', store: 'orphan', id: v.rec.id, reason: 'orphan-aging', evidence: { created, ageDays: age, orphanDays: params.orphanDays, lastRevision, severity: v.rec.severity ?? null } });
+      used.add(key('orphan', v.rec.id));
+    }
+    //   frontier 永不 discard（只走 frontier recheck）——这里没有规则，不是遗漏。
+
+    // 4) merge：同库当前集；keep = 根 logged_at 最早（同则根 id 字典序）；贪心——keep 只吸收与它本身 ≥ θ 的条目（每个 absorb 都有直接证据）
+    for (const store of ['canon', 'mirror', 'lexicon', 'pricing']) {
+      const cands = eligible[store].filter((v) => !used.has(key(store, v.rec.id))).map((v) => ({ v, toks: planTokens(planPrimaryText(store, v.rec)) })).filter((c) => c.toks.size > 0);
+      const taken = new Set();
+      for (let i = 0; i < cands.length; i += 1) {
+        if (taken.has(i)) continue;
+        const absorb = []; const pairs = [];
+        for (let j = i + 1; j < cands.length; j += 1) {
+          if (taken.has(j)) continue;
+          const sim = jaccard(cands[i].toks, cands[j].toks);
+          if (sim >= params.theta) { taken.add(j); absorb.push(cands[j].v.rec.id); pairs.push({ id: cands[j].v.rec.id, jaccard: +sim.toFixed(4) }); }
+        }
+        if (!absorb.length) continue;
+        taken.add(i);
+        merges.push({ op: 'merge', store, keep: cands[i].v.rec.id, absorb, reason: 'near-duplicate', mergedText: null, evidence: { theta: params.theta, field: store === 'canon' ? 'claim' : store === 'mirror' ? 'situation+behavior' : store === 'lexicon' ? 'term+trigger' : 'behavior', pairs } });
+        for (const id of [cands[i].v.rec.id, ...absorb]) used.add(key(store, id));
+      }
+    }
+    //   frontier：同 url（与 audit duplicate-url 同口径：精确相等）
+    const byUrl = new Map();
+    for (const v of eligible.frontier) {
+      if (used.has(key('frontier', v.rec.id)) || typeof v.rec.url !== 'string' || !v.rec.url) continue;
+      if (!byUrl.has(v.rec.url)) byUrl.set(v.rec.url, []);
+      byUrl.get(v.rec.url).push(v);
+    }
+    for (const [url, list] of [...byUrl.entries()].sort((a, b) => byStr(a[0], b[0]))) {
+      if (list.length < 2) continue;
+      const [keep, ...rest] = list; // eligible 已按 keep 优先级排好
+      merges.push({ op: 'merge', store: 'frontier', keep: keep.rec.id, absorb: rest.map((v) => v.rec.id), reason: 'duplicate-url', mergedText: null, evidence: { url, statuses: Object.fromEntries(list.map((v) => [v.rec.id, v.rec.status ?? null])) } });
+    }
+
+    // 5) 排序 + 截断到 K
+    const storeIdx = (s) => STORES.indexOf(s);
+    const all = [...merges, ...discards].sort((a, b) =>
+      PLAN_OP_ORDER[a.op] - PLAN_OP_ORDER[b.op] || storeIdx(a.store) - storeIdx(b.store) || byStr(a.reason, b.reason) || byStr(a.keep ?? a.id, b.keep ?? b.id));
+    const ops = all.slice(0, params.maxOps);
+    const truncated = { total: all.length, dropped: all.length - ops.length };
+
+    const planId = 'plan-' + sha256(JSON.stringify({ v: 1, params, basis, inputs, ops })).slice(0, 16);
+    const plan = {
+      planId, version: 1, mode: 'plan-only',
+      createdAt: (opts.now instanceof Date ? opts.now : new Date()).toISOString(),
+      params, basis, inputs, ops, truncated, excluded, skipped,
+      ...(Object.keys(badLines).length ? { badLines } : {}),
+      note: '只读计划：未改六库。mergedText 留给模型 / 人填写；--apply / 回滚 / revokes 尚未实现（待本计划评审）。'
+    };
+    let planFile = null;
+    if (opts.out !== false) {
+      planFile = opts.out || join(SLEEP_DEFAULTS.reportDir, `sleep-plan-${today}.json`);
+      const resolved = new Set(STORES.map((s) => resolve(files[s] || storePath(s))));
+      if (resolved.has(resolve(planFile))) return { ok: false, error: '拒绝把计划写到存储文件上：' + planFile };
+      mkdirSync(dirname(planFile), { recursive: true });
+      writeFileAtomic(planFile, JSON.stringify(plan, null, 2) + '\n');
+    }
+    return { ok: true, plan, planFile };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error).slice(0, 300) };
+  }
 }

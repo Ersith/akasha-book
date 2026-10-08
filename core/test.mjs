@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
+import { createHash } from 'node:crypto';
 import * as gateMod from '../plugins/akasha-gate/index.js';
 
 // zstd 自 Node v23.8.0 / v22.15.0 起可用；旧 Node 上依赖 zstd 的用例记 SKIP（不计失败、不计通过），其余照跑。
@@ -1378,6 +1379,147 @@ t('CLI：session promote 缺 --to 拒绝；dry 不写；--apply 才写', () => {
   assert.ok((apply.stdout || '').includes('已升格'));
   assert.ok(existsSync(orphanFile));
   rmSync(dir, { recursive: true, force: true });
+});
+
+// —— wave2 §2 第一批：sleep --plan（只读计划；中性临时夹具，不读真库数据口径）——
+function planFixture() {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-plan-'));
+  const J = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+  const files = Object.fromEntries(lib.STORES.map((s) => [s, join(dir, s + '.jsonl')]));
+  const src = { type: '官方', ref: 'fixture' };
+  writeFileSync(files.canon, J([
+    { id: 'canon-akasha-usage', claim: 'the build cache must be cleared after toolchain upgrade', source: src, last_reviewed: '2020-01-01' },
+    { id: 'canon-fx-cache-a', claim: 'the build cache must be cleared after toolchain upgrade', source: src, last_reviewed: '2026-09-01', logged_at: '2026-01-01T00:00:00Z' },
+    { id: 'canon-fx-cache-b', claim: 'the build cache must be cleared after every toolchain upgrade', source: src, last_reviewed: '2026-09-01', logged_at: '2026-02-01T00:00:00Z' },
+    { id: 'canon-fx-cache-gone', claim: 'the build cache must be cleared after toolchain upgrade', source: src, last_reviewed: '2026-09-01', logged_at: '2025-01-01T00:00:00Z' },
+    { id: 'canon-fx-cache-gone-retired', retires: 'canon-fx-cache-gone', retired_at: '2026-03-01', claim: 'x', source: src, last_reviewed: '2026-09-01' },
+    { id: 'canon-fx-cache-promo', claim: 'the build cache must be cleared after toolchain upgrade', source: src, last_reviewed: '2026-09-01', logged_at: '2024-01-01T00:00:00Z', promoted_from: { store: 'session', id: 'seg-aaaaaaaa-1-bbbbbbbb', session: 'aaaaaaaa', seq: 1, at: '2026-01-01T00:00:00Z' } },
+    { id: 'canon-fx-topic-20260101', claim: 'topic inventory as observed on 2026-01-01: three plugins', source: src, last_reviewed: '2026-01-01' },
+    { id: 'canon-fx-topic-20260101-r2', supersedes: 'canon-fx-topic-20260101', claim: 'topic inventory as observed on 2026-01-01: three plugins (corrected)', source: src, last_reviewed: '2026-01-01' },
+    { id: 'canon-fx-topic-20260601', claim: 'topic inventory as observed on 2026-06-01: five plugins and a bridge', source: src, last_reviewed: '2026-06-01' },
+    { id: 'canon-fx-stale-unused', claim: 'an old quiet fact about legacy encodings', source: src, last_reviewed: '2024-01-01' },
+    { id: 'canon-fx-stale-used', claim: 'an old busy fact about locale fallbacks', source: src, last_reviewed: '2024-01-01' }
+  ]));
+  writeFileSync(files.mirror, J([
+    { id: 'mirror-fx-1', story: 'fixture', situation: '深夜赶工连续改配置', behavior: '不备份直接覆盖线上文件', outcome: 'o', social_reaction: 's', emotion: 'e', logged_at: '2026-03-01T00:00:00Z' },
+    { id: 'mirror-fx-2', story: 'fixture', situation: '深夜赶工连续改配置', behavior: '不备份就直接覆盖线上文件', outcome: 'o', social_reaction: 's', emotion: 'e', logged_at: '2026-04-01T00:00:00Z' },
+    { id: 'mirror-fx-3', story: 'fixture', situation: '团队评审前先自测', behavior: '列清单逐项打勾', outcome: 'o', social_reaction: 's', emotion: 'e' }
+  ]));
+  const orphan = (id, created, extra = {}) => ({ id, summary: 'fixture ' + id, observed: 'o', hypothesis: 'h', would_confirm: 'c', would_refute: 'r', severity: '低', created, ...extra });
+  writeFileSync(files.orphan, J([
+    orphan('orphan-fx-old', '2026-01-01'),
+    orphan('orphan-fx-new', '2026-09-01'),
+    orphan('orphan-fx-touched', '2026-01-01'),
+    orphan('orphan-fx-touched-r2', '2026-01-01', { supersedes: 'orphan-fx-touched', logged_at: '2026-09-20T00:00:00Z' })
+  ]));
+  writeFileSync(files.pricing, J([{ id: 'price-fx-1', behavior: 'skip the dry run before a bulk rename', valence: -0.6, severity_default: 3 }]));
+  writeFileSync(files.lexicon, J([{ id: 'lex-fx-1', term: '踏空', trigger: 't', behavior: 'b', resolution: 'r', source: 's' }]));
+  writeFileSync(files.frontier, J([
+    { id: 'frontier-fx-a', title: 'A', url: 'https://example.org/paper', topic: 't', status: '待验证', next_review: '2020-01-01', logged_at: '2026-01-01T00:00:00Z' },
+    { id: 'frontier-fx-b', title: 'B', url: 'https://example.org/paper', topic: 't', status: '高引用', next_review: '2020-01-01', logged_at: '2026-05-01T00:00:00Z' },
+    { id: 'frontier-fx-c', title: 'C', url: 'https://example.org/other', topic: 't', status: '待验证', next_review: '2020-01-01' }
+  ]));
+  const log = join(dir, 'hooks.jsonl');
+  writeFileSync(log, J([{ kind: 'usage', ids: ['canon-fx-stale-used'] }, { kind: 'tool', tool: 'shell', ok: true }]));
+  const snap = () => Object.fromEntries(lib.STORES.map((s) => [s, readFileSync(files[s], 'utf8')]));
+  return { dir, files, log, snap };
+}
+
+t('plan：planTokens 中文拆二字、英文整词；jaccard 空集为 0', () => {
+  const a = sleepMod.planTokens('改配置 build');
+  assert.deepEqual([...a].sort(), ['build', '改配', '配置'].sort());
+  assert.equal(sleepMod.jaccard(new Set(), new Set()), 0);
+  assert.equal(sleepMod.jaccard(new Set(['x', 'y']), new Set(['x', 'y'])), 1);
+  assert.equal(sleepMod.planPrimaryText('orphan', { summary: 'x' }), '', 'orphan 零权重，不进合并');
+});
+
+t('plan：只读出计划——六库字节不变、ops 符合规则、协议/升格/退役/frontier discard 永不出现、确定性', () => {
+  const fx = planFixture();
+  try {
+    const before = fx.snap();
+    const out = join(fx.dir, 'plan.json');
+    const r1 = sleepMod.sleepPlan({ files: fx.files, log: fx.log, today: '2026-10-08', out, now: new Date('2026-10-08T01:00:00Z') });
+    assert.equal(r1.ok, true, r1.error);
+    assert.deepEqual(fx.snap(), before, '六库字节必须不变');
+    const p = r1.plan;
+    const brief = p.ops.map((o) => o.op === 'merge' ? `merge:${o.store}:${o.keep}<${o.absorb.join(',')}:${o.reason}` : `discard:${o.store}:${o.id}:${o.reason}`);
+    assert.deepEqual(brief, [
+      'merge:canon:canon-fx-cache-a<canon-fx-cache-b:near-duplicate',
+      'merge:mirror:mirror-fx-1<mirror-fx-2:near-duplicate',
+      'merge:frontier:frontier-fx-a<frontier-fx-b:duplicate-url',
+      'discard:canon:canon-fx-stale-unused:canon-stale-unused',
+      'discard:canon:canon-fx-topic-20260101-r2:snapshot-superseded',
+      'discard:orphan:orphan-fx-old:orphan-aging'
+    ]);
+    const ids = new Set(p.ops.flatMap((o) => o.op === 'merge' ? [o.keep, ...o.absorb] : [o.id]));
+    for (const banned of ['canon-akasha-usage', 'canon-fx-cache-promo', 'canon-fx-cache-gone', 'canon-fx-cache-gone-retired', 'canon-fx-stale-used', 'orphan-fx-new', 'orphan-fx-touched-r2', 'frontier-fx-c']) assert.ok(!ids.has(banned), '不该进计划：' + banned);
+    assert.ok(!p.ops.some((o) => o.op === 'discard' && o.store === 'frontier'), 'frontier 永不 discard');
+    assert.ok(p.ops.every((o) => o.evidence && typeof o.evidence === 'object'), '每个 op 带 evidence');
+    assert.ok(p.ops.filter((o) => o.op === 'merge').every((o) => o.mergedText === null), 'mergedText 留空（代码不生成语义文本）');
+    assert.equal(p.ops[0].evidence.pairs[0].jaccard, 0.9);
+    assert.equal(p.excluded.protocol, 1); assert.equal(p.excluded.promoted, 1);
+    // basis 指纹 = 文件字节与 sha256
+    assert.equal(p.basis.canon.bytes, Buffer.byteLength(before.canon));
+    assert.equal(p.basis.canon.sha256, createHash('sha256').update(before.canon).digest('hex'));
+    assert.equal(p.inputs.hooksLog.sha256, createHash('sha256').update(readFileSync(fx.log)).digest('hex'));
+    assert.match(p.planId, /^plan-[0-9a-f]{16}$/);
+    assert.equal(JSON.parse(readFileSync(out, 'utf8')).planId, p.planId, '计划落盘到 out');
+    // 确定性：换个 createdAt 再跑，planId / ops 不变
+    const r2 = sleepMod.sleepPlan({ files: fx.files, log: fx.log, today: '2026-10-08', out: false, now: new Date('2027-01-01T00:00:00Z') });
+    assert.equal(r2.planFile, null);
+    assert.equal(r2.plan.planId, p.planId);
+    assert.deepEqual(r2.plan.ops, p.ops);
+    assert.notEqual(r2.plan.createdAt, p.createdAt);
+  } finally { rmSync(fx.dir, { recursive: true, force: true }); }
+});
+
+t('plan：K 上限截断、basis 变 ⇒ planId 变、无日志不判「从未引用」、拒写存储文件、参数校验', () => {
+  const fx = planFixture();
+  try {
+    const base = { files: fx.files, log: fx.log, today: '2026-10-08', out: false };
+    const full = sleepMod.sleepPlan(base).plan;
+    const cut = sleepMod.sleepPlan({ ...base, maxOps: 2 }).plan;
+    assert.equal(cut.ops.length, 2);
+    assert.deepEqual(cut.ops, full.ops.slice(0, 2), '截断取确定排序的前 K 个');
+    assert.deepEqual(cut.truncated, { total: full.ops.length, dropped: full.ops.length - 2 });
+    assert.notEqual(cut.planId, full.planId);
+    const noLog = sleepMod.sleepPlan({ ...base, log: join(fx.dir, 'missing.jsonl') }).plan;
+    assert.ok(!noLog.ops.some((o) => o.reason === 'canon-stale-unused'), '日志缺失 ⇒ 引用数未知 ⇒ 不出 stale-unused');
+    assert.equal(noLog.inputs.hooksLog.missing, true);
+    assert.ok(noLog.skipped.some((s) => s.rule === 'canon-stale-unused'));
+    appendFileSync(fx.files.pricing, JSON.stringify({ id: 'price-fx-2', behavior: 'unrelated', valence: 0.1, severity_default: 1 }) + '\n');
+    const after = sleepMod.sleepPlan(base).plan;
+    assert.notEqual(after.basis.pricing.sha256, full.basis.pricing.sha256);
+    assert.notEqual(after.planId, full.planId, '库变了 ⇒ planId 变（apply 将据此拒绝过期计划）');
+    assert.deepEqual(after.ops, full.ops);
+    const bad = sleepMod.sleepPlan({ ...base, out: fx.files.canon });
+    assert.equal(bad.ok, false); assert.match(bad.error, /存储文件/);
+    assert.equal(sleepMod.sleepPlan({ ...base, theta: 0 }).ok, false);
+    assert.equal(sleepMod.sleepPlan({ ...base, today: '2026-13-99' }).ok, false);
+  } finally { rmSync(fx.dir, { recursive: true, force: true }); }
+});
+
+t('CLI：sleep --plan 只写 --out、不动六库与水位线、两次 planId 相同；--apply 未实现即拒', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-plan-cli-'));
+  try {
+    const digest = () => lib.STORES.map((s) => existsSync(lib.storePath(s)) ? createHash('sha256').update(readFileSync(lib.storePath(s))).digest('hex') : '-').join(',');
+    const stateFile = join(ROOT, 'logs', 'sleep-state.json');
+    const stateBefore = existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : null;
+    const d0 = digest();
+    const args = (n) => ['sleep', '--plan', '--today', '2026-10-08', '--log', join(dir, 'none.jsonl'), '--out', join(dir, `p${n}.json`), '--json'];
+    const a = cli(args(1)); const b = cli(args(2));
+    assert.equal(a.status, 0, (a.stdout || '') + (a.stderr || ''));
+    assert.equal(b.status, 0, (b.stdout || '') + (b.stderr || ''));
+    const pa = JSON.parse(readFileSync(join(dir, 'p1.json'), 'utf8')); const pb = JSON.parse(a.stdout);
+    assert.equal(pa.planId, pb.planId);
+    assert.equal(pa.planId, JSON.parse(readFileSync(join(dir, 'p2.json'), 'utf8')).planId, '同库同参数 ⇒ 同 planId');
+    assert.ok(pa.ops.length <= 20);
+    assert.ok(!JSON.stringify(pa.ops).includes('canon-akasha-usage'), '协议条永不进计划');
+    assert.equal(digest(), d0, '六库字节不变');
+    assert.equal(existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : null, stateBefore, '水位线不动');
+    const ap = cli(['sleep', '--apply', join(dir, 'p1.json')]);
+    assert.equal(ap.status, 1); assert.match(ap.stderr, /尚未实现/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 t('gate：用法条围栏挡住提示注入', () => {

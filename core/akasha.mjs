@@ -3,7 +3,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue } from './lib.mjs';
-import { sleepRun } from './sleep.mjs';
+import { sleepPlan, sleepRun } from './sleep.mjs';
 import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
 const argv = process.argv.slice(2);
@@ -165,6 +165,21 @@ switch (cmd) {
     break;
   }
   case 'sleep': {
+    if (flags.plan) {
+      // wave2 §2 第一批：只出计划（只读六库，只写计划文件；不动水位线）。--apply / 回滚尚未实现。
+      if (flags.apply || flags.rollback) { console.error('sleep --apply / --rollback 尚未实现：先评审 --plan 的输出（wave2 §2 下一批）。'); code = 1; break; }
+      const pick = (k) => (typeof flags[k] === 'string' ? flags[k] : undefined);
+      const r = sleepPlan({ today: pick('today'), theta: pick('theta'), maxOps: pick('max'), orphanDays: pick('orphan-days'), staleDays: pick('stale-days'), log: pick('log'), out: pick('out') });
+      if (!r.ok) { console.error('睡眠计划失败：' + r.error); code = 1; break; }
+      const p = r.plan;
+      const lines = [`睡眠计划 ${p.planId}（只读；六库未改）：${p.ops.length} 个操作${p.truncated.dropped ? `（共 ${p.truncated.total}，按上限 ${p.params.maxOps} 截去 ${p.truncated.dropped}）` : ''}；计划文件 ${r.planFile}`];
+      for (const o of p.ops) lines.push(o.op === 'merge' ? `  merge   [${o.store}] ${o.keep} ← ${o.absorb.join(', ')}（${o.reason}）` : `  discard [${o.store}] ${o.id}（${o.reason}）`);
+      for (const s of p.skipped) lines.push(`  · 跳过规则 ${s.rule}：${s.why}`);
+      lines.push('  · mergedText 留空待填；--apply 尚未实现（待计划评审）。');
+      print({ ...p, planFile: r.planFile }, lines.join('\n'));
+      break;
+    }
+    if (flags.apply || flags.rollback) { console.error('sleep --apply / --rollback 尚未实现：先评审 --plan 的输出（wave2 §2 下一批）。'); code = 1; break; }
     const r = sleepRun({ trigger: 'manual', dry: !!flags.dry });
     if (!r.ok) { print(r, '睡眠失败：' + r.error); code = 1; break; }
     const head = r.dry ? '（dry-run）将蒸馏：' : '已蒸馏：';
@@ -438,7 +453,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
+    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
     code = cmd ? 1 : 0;
 }
 process.exit(code);
