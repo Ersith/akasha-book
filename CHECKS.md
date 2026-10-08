@@ -146,6 +146,6 @@
 ## R19 · npm 重发三件（2026-10-08 深夜）
 
 - **发布**：`@akasha-book/gate@1.2.1`、`hooks@1.2.1`、`session@0.2.5`（从 OSS 插件目录 `npm pack` → `npm publish --access public`；均 `+ published`；`dist-tags.latest` 已分别指向新版本）。
-- **完整性三重对账**：注册表 `dist.integrity`（sha512）与本地发送物**三件全等**；阳性对照：`gate` / `session` 的注册表 tarball 可下载且**与本地逐字节相同**；`hooks` 的 tarball 端点暂时 404（元数据与 dist 签名已就位）——已设后台重试；若持续不通将发 `1.2.2` 补发。
+- **完整性三重对账**：注册表 `dist.integrity`（sha512）与本地发送物**三件全等**；三件 tarball 均已在注册表可下载且**与本地逐字节相同**（`hooks` 端点曾短暂 404，属传播时差，数分钟后恢复：HTTP 200 / 5091B / 哈希全等）。
 - **隐私双扫（回应「有没有暴露隐私 / API」）**：本地发送物 12 文件 + 注册表拉回物 8 文件（gate/session）× 17 类强模式（本机路径 / 用户名 / 各 token 前缀 / 回环端口 / 工具链盘符 / 活树目录名…）——**全部零命中**；包内仅 4 类文件（index.js / package.json / README / cordis.patch.yml）；README 人眼抽验无个人信息；npm 凭据仅存本机 npmrc，从未进入包内容或输出。
 - **遗留**：`hooks` 版本列表残存历史 `0.0.0-stage` 占位（R11 staged 时代产物；无隐私问题；可选 `npm deprecate` 清理）；token 轮换仍待用户侧执行。
