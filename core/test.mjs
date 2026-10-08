@@ -1651,6 +1651,160 @@ t('全库不变式：无重复 id / 无悬空 supersedes·retires / 退役者不
 });
 
 
+
+// —— wave2 §3 可信度 + §2.2 MCP 只读计划（中性临时夹具；不改 core/data）——
+const credCanon = (id, type, extra = {}) => ({
+  id, claim: extra.claim || 'fixture claim about alpha-widget calibration', source: { type, ref: 'fixture' }, last_reviewed: extra.last_reviewed || '2026-09-01', ...extra,
+  ...(extra.source ? {} : {})
+});
+t('可信度：source.type 加「实验」；verification 只在修订版且 ref 必填；未知枚举拒绝', () => {
+  const base = { id: 'canon-fx-tier', claim: 'c', source: { type: '实验', ref: 'r' }, last_reviewed: '2026-01-01' };
+  assert.deepEqual(lib.validateRecord('canon', base), []);
+  assert.ok(lib.validateRecord('canon', { ...base, source: { type: '传闻', ref: 'r' } }).some((e) => e.includes('source.type')));
+  const rev = { ...base, id: 'canon-fx-tier-r1', supersedes: 'canon-fx-tier', verification: { kind: 'replay', at: '2026-02-01', ref: 'seg-aaaaaaaa-1-bbbbbbbb' } };
+  assert.deepEqual(lib.validateRecord('canon', rev), []);
+  assert.ok(lib.validateRecord('canon', { ...base, verification: { kind: 'replay', at: '2026-02-01', ref: 'x' } }).some((e) => e.includes('修订版')));
+  assert.ok(lib.validateRecord('canon', { ...rev, verification: { kind: 'replay', at: '2026-02-01' } }).some((e) => e.includes('ref')));
+  assert.ok(lib.validateRecord('canon', { ...rev, verification: { kind: 'guess', at: '2026-02-01', ref: 'x' } }).some((e) => e.includes('kind')));
+});
+t('可信度：链上验证改层；refute 权重 0 且默认不返回；show 逐版解释；升格无加成', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-tier-'));
+  try {
+    const file = join(dir, 'canon.jsonl');
+    const src = { type: '共识', ref: 'fixture' };
+    const rows = [
+      { id: 'canon-fx-tier', claim: 'alpha-widget calibration stays within one tick', source: src, last_reviewed: '2026-09-01' },
+      { id: 'canon-fx-tier-r1', supersedes: 'canon-fx-tier', claim: 'alpha-widget calibration stays within one tick', source: src, last_reviewed: '2026-09-01', verification: { kind: 'replay', at: '2026-09-02', ref: 'https://example.test/replay' } },
+      { id: 'canon-fx-tier-r2', supersedes: 'canon-fx-tier-r1', claim: 'alpha-widget calibration stays within one tick', source: src, last_reviewed: '2026-09-01', verification: { kind: 'refute', at: '2026-09-03', ref: 'https://example.test/refute' } },
+      { id: 'canon-fx-hi', claim: 'alpha-widget calibration stays within one tick', source: { type: '复现', ref: 'fixture' }, last_reviewed: '2026-09-01', logged_at: '2026-01-02T00:00:00Z' },
+      { id: 'canon-fx-lo', claim: 'alpha-widget calibration stays within one tick', source: { type: '共识', ref: 'fixture' }, last_reviewed: '2026-09-01', logged_at: '2026-01-01T00:00:00Z' },
+      { id: 'canon-fx-promo', claim: 'alpha-widget calibration stays within one tick', source: { type: '官方', ref: 'fixture' }, last_reviewed: '2026-09-01', promoted_from: { store: 'session', id: 'seg-aaaaaaaa-1-bbbbbbbb', session: 'aaaaaaaa', seq: 1, at: '2026-01-01T00:00:00Z' } }
+    ];
+    writeFileSync(file, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    const files = Object.fromEntries(lib.STORES.map((n) => [n, n === 'canon' ? file : join(dir, n + '.jsonl')]));
+    for (const n of lib.STORES) if (n !== 'canon') writeFileSync(files[n], '');
+    const chain = rows.slice(0, 3);
+    const mid = lib.credibilityOf('canon', chain.slice(0, 2), { today: '2026-10-08' });
+    assert.equal(mid.tier, 'T1'); assert.equal(mid.refuted, false); assert.equal(mid.weight, 1);
+    const end = lib.credibilityOf('canon', chain, { today: '2026-10-08' });
+    assert.equal(end.tier, 'T1'); assert.equal(end.refuted, true); assert.equal(end.weight, 0);
+    assert.deepEqual(end.steps.map((x) => x.tier + (x.refuted ? '!' : '')), ['T5', 'T1', 'T1!']);
+    const opts = { files, today: '2026-10-08' };
+    const hidden = lib.lookup('alpha-widget', opts).map((h) => h.id);
+    assert.ok(!hidden.includes('canon-fx-tier-r2'), 'refuted 默认不返回');
+    assert.deepEqual(hidden.filter((id) => id.startsWith('canon-fx-')), ['canon-fx-hi', 'canon-fx-promo', 'canon-fx-lo']);
+    const hi = lib.lookup('alpha-widget', opts).find((h) => h.id === 'canon-fx-hi');
+    const lo = lib.lookup('alpha-widget', opts).find((h) => h.id === 'canon-fx-lo');
+    assert.equal(hi.score, lo.score); assert.equal(hi.strong, true); assert.equal(lo.strong, true);
+    assert.ok(hi.rank > lo.rank, '同文本高层级排前，score/strong 不变');
+    assert.equal(lib.lookup('alpha-widget', opts).find((h) => h.id === 'canon-fx-promo').tier, 'T3', '升格不加成，层级=source.type');
+    const shown = lib.lookup('alpha-widget', { ...opts, includeRefuted: true }).find((h) => h.id === 'canon-fx-tier-r2');
+    assert.equal(shown.refuted, true); assert.equal(shown.strong, true, 'refute 不改 strong 的定义'); assert.equal(shown.rank, 0);
+    const sh = lib.show('canon-fx-tier-r2', { file, store: 'canon', today: '2026-10-08' });
+    assert.equal(sh.found, true);
+    assert.equal(sh.credibility.steps.length, 3);
+    assert.match(sh.credibility.steps[1].why, /replay/);
+    assert.match(sh.credibility.steps[2].why, /refute/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+t('可信度：时间门只降展示层（协议不衰减 / 快照 90 天 / 前沿 next_review / 常青 180 天），today 拨回即恢复', () => {
+  const canon = (id, extra = {}) => ({ id, claim: 'c', source: { type: '复现', ref: 'f' }, last_reviewed: '2026-01-01', ...extra });
+  const at = (today, rec, store) => lib.credibilityOf(store, [rec], { today });
+  const proto = at('2030-01-01', canon('canon-akasha-usage'), 'canon');
+  assert.equal(proto.cls, 'protocol'); assert.equal(proto.stale, false); assert.equal(proto.displayTier, 'T1');
+  const snap = canon('canon-fx-topic-20260101');
+  const snapFresh = at('2026-04-01', snap, 'canon');
+  const snapOld = at('2026-04-02', snap, 'canon');
+  assert.equal(snapFresh.cls, 'snapshot'); assert.equal(snapFresh.stale, false); assert.equal(snapFresh.displayTier, 'T1');
+  assert.equal(snapOld.stale, true); assert.equal(snapOld.displayTier, 'T2'); assert.equal(snapOld.tier, 'T1', '存储层不降');
+  assert.equal(snapOld.weight, 1, '排序系数仍用存储层');
+  const revised = [
+    { id: 'canon-fx-topic-20260101', claim: 'c', source: { type: '官方', ref: 'f' }, last_reviewed: '2026-01-01' },
+    { id: 'canon-fx-topic-20260101-r1', supersedes: 'canon-fx-topic-20260101', claim: 'c', source: { type: '官方', ref: 'f' }, last_reviewed: '2026-01-01' }
+  ];
+  assert.equal(lib.credibilityOf('canon', revised, { today: '2026-05-01' }).cls, 'snapshot', '快照看根 id');
+  const front = { id: 'frontier-fx', title: 't', url: 'https://example.test/a', topic: 't', status: '待验证', last_checked: '2026-01-01', next_review: '2026-06-01' };
+  assert.equal(at('2026-05-31', front, 'frontier').stale, false);
+  assert.equal(at('2026-06-01', front, 'frontier').stale, true);
+  assert.equal(at('2026-06-01', front, 'frontier').displayTier, null, '前沿无 source.type 时只打待复核，不发明层级');
+  const ever = canon('canon-fx-ever');
+  assert.equal(at('2026-06-30', ever, 'canon').stale, false);
+  assert.equal(at('2026-07-01', ever, 'canon').stale, true);
+  assert.equal(at('2026-07-01', ever, 'canon').displayTier, 'T2');
+  const low = canon('canon-fx-ever', { source: { type: '共识', ref: 'f' } });
+  const renewed = [low, { ...low, id: 'canon-fx-ever-r1', supersedes: 'canon-fx-ever', verification: { kind: 'experiment', at: '2026-06-01', ref: 'https://example.test/exp' } }];
+  const back = lib.credibilityOf('canon', renewed, { today: '2026-07-01' });
+  assert.equal(back.tier, 'T2', 'experiment 最高到 T2，不升到 T1'); assert.equal(back.stale, false, '验证日重置常青时钟');
+  const kept = lib.credibilityOf('canon', [ever, { ...ever, id: 'canon-fx-ever-r1', supersedes: 'canon-fx-ever', verification: { kind: 'experiment', at: '2026-06-01', ref: 'x' } }], { today: '2026-07-01' });
+  assert.equal(kept.tier, 'T1', '已是 T1 时 experiment 不降层');
+  assert.equal(lib.credibilityOf('canon', renewed, { today: '2026-12-01' }).stale, true);
+  const floor = lib.credibilityOf('canon', [canon('canon-fx-low', { source: { type: '共识', ref: 'f' }, last_reviewed: '2020-01-01' })], { today: '2026-10-08' });
+  assert.equal(floor.tier, 'T5'); assert.equal(floor.displayTier, 'T5'); assert.equal(floor.stale, true);
+});
+t('可信度：睡眠待办只提醒（refuted / 高频 T5），不改六库；召回漏计不因分层上升', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-tier-sleep-'));
+  try {
+    const canon = join(dir, 'canon.jsonl');
+    const J = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    writeFileSync(canon, J([
+      { id: 'canon-fx-t5', claim: 'c', source: { type: '共识', ref: 'f' }, last_reviewed: '2026-09-01' },
+      { id: 'canon-fx-gone', claim: 'c', source: { type: '共识', ref: 'f' }, last_reviewed: '2026-09-01' },
+      { id: 'canon-fx-gone-r1', supersedes: 'canon-fx-gone', claim: 'c', source: { type: '共识', ref: 'f' }, last_reviewed: '2026-09-01', verification: { kind: 'refute', at: '2026-09-02', ref: 'https://example.test/r' } }
+    ]));
+    const files = Object.fromEntries(lib.STORES.map((n) => [n, n === 'canon' ? canon : join(dir, n + '.jsonl')]));
+    for (const n of lib.STORES) if (n !== 'canon') writeFileSync(files[n], '');
+    const log = join(dir, 'hooks.jsonl');
+    const usage = { kind: 'usage', ids: ['canon-fx-t5'] };
+    writeFileSync(log, [usage, usage, usage, { kind: 'tool', tool: 'bash', ok: false }, { kind: 'turn-end' }].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    const before = readFileSync(canon, 'utf8');
+    const todos = lib.credibilityTodos({ files, log, today: '2026-10-08', verifyUsageMin: 3 });
+    assert.deepEqual(todos.map((t) => t.code + ':' + t.id), ['refuted:canon-fx-gone-r1', 'verify-candidate:canon-fx-t5']);
+    assert.equal(readFileSync(canon, 'utf8'), before);
+    assert.equal(lib.credibilityTodos({ files, log: join(dir, 'missing.jsonl'), today: '2026-10-08' }).some((t) => t.code === 'verify-candidate'), false);
+    const inbox = join(dir, 'inbox.jsonl');
+    const state = join(dir, 'state.json');
+    const run = sleepMod.sleepRun({ log, stateFile: state, inboxFile: inbox, reportDir: dir, files, trigger: 'manual', now: '2026-10-08T00:00:00Z' });
+    assert.equal(run.ok, true, run.error);
+    assert.equal(readFileSync(canon, 'utf8'), before, '睡眠不改六库');
+    const inboxText = readFileSync(inbox, 'utf8');
+    assert.ok(inboxText.includes('canon-fx-gone-r1') && inboxText.includes('verify-candidate'), inboxText.slice(0, 400));
+    const a = lib.recallSignals([{ kind: 'tool', tool: 'bash', ok: false, session: 's1' }, { kind: 'turn-end', session: 's1' }]);
+    const b = lib.recallSignals([{ kind: 'tool', tool: 'bash', ok: false, session: 's1' }, { kind: 'turn-end', session: 's1' }]);
+    assert.equal(a.misses, b.misses);
+    assert.equal(a.misses, 1, '分层不改召回计数口径');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+t('CLI：六库 --all 拒绝；--include-refuted 可用。MCP akasha_sleep_plan 只读（不写库、不写计划文件）', () => {
+  const noAll = cli(['lookup', '阿卡夏', '--all']);
+  assert.equal(noAll.status, 1);
+  assert.match(noAll.stderr, /没有 --all/);
+  const ok = cli(['lookup', '阿卡夏', '--include-refuted']);
+  assert.equal(ok.status, 0, (ok.stdout || '') + (ok.stderr || ''));
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-mcp-plan-'));
+  try {
+    const digest = () => lib.STORES.map((n) => createHash('sha256').update(readFileSync(lib.storePath(n))).digest('hex')).join(',');
+    const d0 = digest();
+    const probe = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'akasha_sleep_plan', arguments: { today: '2026-10-08' } } }) + '\n';
+    const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe });
+    assert.equal(r.status, 0, r.stderr || '');
+    const msg = JSON.parse((r.stdout || '').trim());
+    const body = JSON.parse(msg.result.content[0].text);
+    assert.equal(body.ok, true, body.error);
+    assert.equal(body.planFile, null, 'MCP 不落计划文件');
+    assert.equal(body.plan.mode, 'plan-only');
+    assert.match(body.plan.planId, /^plan-[0-9a-f]{16}$/);
+    const again = sleepMod.sleepPlan({ today: '2026-10-08', out: false });
+    assert.equal(again.plan.planId, body.plan.planId);
+    assert.equal(digest(), d0, '六库字节不变');
+    const listed = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n' });
+    const tools = JSON.parse(listed.stdout.trim()).result.tools;
+    const tool = tools.find((t) => t.name === 'akasha_sleep_plan');
+    assert.ok(tool, 'tools/list 应含 akasha_sleep_plan');
+    assert.equal(tool.inputSchema.properties.out, undefined, 'schema 不提供写文件参数');
+    assert.ok(!JSON.stringify(tool.inputSchema).includes('apply'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

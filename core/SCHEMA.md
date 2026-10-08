@@ -10,7 +10,7 @@
 |---|---|---|
 | id | string | 必填 |
 | claim | string | 一条可引用的事实断言 |
-| source.type | enum | 复现 / 官方 / 他人 / 共识 |
+| source.type | enum | 复现 / 实验 / 官方 / 他人 / 共识 |
 | source.ref | string | 出处（文档名 / RFC / 复现记录） |
 | source.version | string | 可选；版本（如 v24、RFC 9110） |
 | last_reviewed | string | 上次复核 YYYY-MM-DD（慢周期复核的锚） |
@@ -151,7 +151,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 `node akasha.mjs sleep --plan [--out F] [--today YYYY-MM-DD] [--theta 0.8] [--max 20] [--orphan-days 90] [--stale-days 365] [--log F] [--json]`
 
-**只读六库**：不调 `appendRecord` / `revise` / `retire`，不动睡眠水位线（`sleep-state.json`），只写一个计划文件（缺省 `logs/sleep-plan-<today>.json`；`--out` 指定；指向存储文件即拒）。`--apply` / `--rollback` 尚未实现，传入即报错退出 1——等计划输出评审后再做。MCP 不加入口。
+**只读六库**：不调 `appendRecord` / `revise` / `retire`，不动睡眠水位线（`sleep-state.json`），只写一个计划文件（缺省 `logs/sleep-plan-<today>.json`；`--out` 指定；指向存储文件即拒）。`--apply` / `--rollback` 尚未实现，传入即报错退出 1——等计划输出评审后再做。MCP 只读入口：`akasha_sleep_plan`（见下「可信度」之前的说明）。
 
 计划形状：
 
@@ -178,6 +178,52 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 - **上限**：按（merge 先于 discard → 库序 → reason → id）排序后取前 K（`--max`，缺省 20），截去数记在 `truncated`。
 
 **P4 立场（已定，下一批实现，本批未实现）**：`revokes` 不走 `allowResurrect` 的门——存在撤销某墓碑的 `revokes` 时，即便 `allowResurrect:true` 也拒绝再追加同一 id（文案「已恢复为当前版本，要改走 revise」）；回滚验收比**当前集**的 `(根 id, 正文)`，不比逐行，历史行一条不删。
+
+## MCP：`akasha_sleep_plan`（wave2 §2.2，只读）
+
+`tools/call` 名字 `akasha_sleep_plan`。参数只有 `today` / `theta` / `maxOps` / `orphanDays` / `staleDays`（都可选）。返回与 CLI `sleep --plan` 同一个计划对象，但 **`out: false`：不写计划文件、不写六库、不动水位线**，也没有 `apply`。日志与库路径固定为进程默认值，不接受模型传入路径。
+
+## 可信度（wave2 §3，2026-10-08）
+
+存量不重写：没有 `credibility` 字段。层级由代码从 `source.type` 和修订链上的 `verification` 推导（`credibilityOf`）。升格（`promoted_from`）**没有加成**，层级就是写下的 `source.type`。
+
+**为什么 T2（本人实验）高于 T3（官方文档）。** 实验是这套环境里自己跑出来的结果；官方文档写的是设计意图，版本一漂移就不是这台机器上的事实（快照类条目的既有纪律：带日期、不写常青断言）。所以本人受控实验压过官方文档。官方文档仍高于他人事故（T4）和未经验证的共识（T5）。实验不是复现：没走完回放的停在 T2，不得借「我试过」写成 T1。
+
+| 层 | 含义 | `source.type` | 排序系数 |
+|---|---|---|---|
+| T1 | 本人回放（复现成功） | 复现 | 1.0 |
+| T2 | 本人实验（受控尝试，未完整复现） | 实验 | 0.9 |
+| T3 | 官方文档 | 官方 | 0.8 |
+| T4 | 他人事故 / 经验 | 他人 | 0.65 |
+| T5 | 未验证共识 | 共识 | 0.5 |
+
+系数只乘 **排序权重**，并出现在命中行的展示标签上。不参与 `strong` / `weak`：`strong` 仍是整词命中 ≥ 1，孤案仍是 `zeroWeight`。没有 `source.type` 的库（mirror / orphan / pricing / lexicon，以及未带验证事件的 frontier）系数 = 1，不发明层级。
+
+**验证事件**（可选，只允许出现在带 `supersedes` 的修订版上）：
+
+```
+verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", at, ref }
+```
+
+`ref` 必填（会话 ptr、frontier id 或 URL）。沿链从根版 `source.type` 起步，逐条应用（修订版若改了 `source.type`，先按新类型重定，再应用本条 verification）：
+
+- `replay` → T1；`experiment` → 不超过 T2（已是 T1 则保持）；`doc` → 不超过 T3；`incident` 只是佐证，不改层；
+- `refute` → `refuted`，检索权重 0。之后若再有 `replay` / `experiment` / `doc`，以新的验证事件为准（`refuted` 取消）。
+
+**类 → 有效期**（类由代码判定，不进记录字段；改天数 = 改本节再改 `CRED_DEFAULTS`）：
+
+| 类 | 判定 | 有效期 |
+|---|---|---|
+| 协议 | 链上任一 id 命中 `isProtocolId` | 不衰减 |
+| 快照 | **根** id 以 `-YYYYMMDD` 结尾 | 自当前版 `last_reviewed` 起 90 天 |
+| 前沿 | `store == frontier` | 不另起时钟：`next_review <= today` 即过期（与 `audit` 的 frontier-due 同口径） |
+| 常青 | 以上都不是 | 自最近一次验证（`incident` 不算）或 `last_reviewed` 中较晚者起 180 天 |
+
+过期只把 **展示层** 降一档并标「待复核」（T5 无处可降，保持 T5 并标「待复核」；没有层级的只标「待复核」）。排序仍用存储层系数。`today` 可注入，拨回即恢复。无锚点日期则不算过期。
+
+**refuted 怎么看。** 默认 `lookup` / `brief` / `cross` 不返回。要看：`show <id>`（附 `credibility.steps`，逐版说明为什么是现在这层），或 `--include-refuted`（只此一个意思）。六库**没有** `--all`（那是 `session lookup` 的动作段归并开关）；传了就拒绝。MCP 对应字段是 `includeRefuted`，没有 `all`。
+
+**睡眠待办（只提醒，不改库）。** `sleep` 扫描当前集：`refuted` → inbox 一条 `code:refuted`；存储层 T5 且 hooks 日志里 `usage` 引用该链合计 ≥ 3 → `kind:verify-candidate`。日志缺失 = 引用数未知，不出 verify-candidate。阈值 3 是本节定的「高频」（设计稿只说高频、没给数）。
 
 ## 修订链（append-only 之上的更正）
 

@@ -5,7 +5,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { ROOT, STORES, audit, currentRecords, isProtocolId, parseJsonl, recallSignals, redact, storePath, tokenize, writeFileAtomic } from './lib.mjs';
+import { ROOT, STORES, audit, credibilityTodos, currentRecords, isProtocolId, parseJsonl, recallSignals, redact, storePath, tokenize, writeFileAtomic } from './lib.mjs';
 
 export const SLEEP_DEFAULTS = {
   log: join(ROOT, 'logs', 'hooks.jsonl'),
@@ -171,9 +171,14 @@ export function sleepRun(opts = {}) {
       auditResult = { ok: null, error: String(error?.message ?? error).slice(0, 200) };
     }
 
-    const todo = buildTodos(counters, notes, auditResult, recall);
     const stamp = now.toISOString();
     const date = stamp.slice(0, 10);
+    const todo = buildTodos(counters, notes, auditResult, recall);
+    // §3：refuted 进复审、高频 T5 进 verify-candidate。只追加待办，不改六库。扫描失败不拖垮睡眠。
+    try {
+      const extra = credibilityTodos({ files: opts.files, log: logPath, today: date, verifyUsageMin: opts.verifyUsageMin });
+      for (const item of extra) todo.push(item);
+    } catch { /* 只读扫描失败就当没有 */ }
     const report = { date, ranAt: stamp, trigger, processedFrom: lineFrom, processedTo: lineTo, processedBytes: end, truncated, counters, notes, audit: auditResult, todo };
 
     if (opts.dry) {

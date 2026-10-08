@@ -36,11 +36,13 @@ switch (cmd) {
     break;
   }
   case 'lookup': {
+    if (flags.all) { console.error('六库 lookup 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
     const rSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: null };
     const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
     if (!rSel.ok || !rUnt.ok) { console.error(rSel.error || rUnt.error); code = 1; break; }
-    const { hits, stats } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated });
-    const lines = hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score})${h.undated ? ' [未定年]' : ''} ${h.snippet}`) : ['（无结果）'];
+    const { hits, stats } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined });
+    const tierOf = (h) => (h.displayTier ? ' ' + h.displayTier : '') + (h.stale ? ' 待复核' : '') + (h.refuted ? ' refuted' : '');
+    const lines = hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score})${tierOf(h)}${h.undated ? ' [未定年]' : ''} ${h.snippet}`) : ['（无结果）'];
     if (flags.since || flags.until) {
       const ex = stats.undatedSamples.length ? '（例：' + stats.undatedSamples.map(s => s.id).join('、') + '）' : '';
       lines.push(`· 另有 ${stats.undated} 条日期未知${ex}· ${stats.excluded} 条因日期范围排除。日期未知＝无法参与「该时段发生了什么」的判断，≠该时段没有它。`);
@@ -50,16 +52,17 @@ switch (cmd) {
     break;
   }
   case 'brief': {
+    if (flags.all) { console.error('六库 brief 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
     if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
     if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
-    const b = brief(rest.join(' '), { perStore: Number(flags.per) || 3, since: flags.since, until: flags.until });
+    const b = brief(rest.join(' '), { perStore: Number(flags.per) || 3, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined });
     const lines = [`主题简报「${b.query}」：` + (b.groups.length ? `命中 ${b.groups.length} 库` : '无命中')];
     for (const g of b.groups) {
       lines.push(`[${g.store} ×${g.total}${g.hits.length < g.total ? ` → top${g.hits.length}` : ''}]`);
       for (const h of g.hits) {
         const t = (h.time ? `[${h.time}] ` : '') + (typeof h.valence === 'number' && h.valence < 0 ? '⚠ ' : '');
         if (g.store === 'frontier') lines.push(`  - ${t}${h.title} [${h.status}] ${h.topic}${h.supports.length ? '  supports=' + h.supports.join(' ') : ''}`);
-        else if (g.store === 'canon') lines.push(`  - ${t}${h.id}: ${h.claim}（${h.source} · ${h.ref}）`);
+        else if (g.store === 'canon') lines.push(`  - ${t}${h.displayTier ? h.displayTier + ' ' : ''}${h.stale ? '待复核 ' : ''}${h.id}: ${h.claim}（${h.source} · ${h.ref}）`);
         else if (g.store === 'mirror') lines.push(`  - ${t}${h.id}: ${h.situation} → ${h.outcome}`);
         else if (g.store === 'orphan') lines.push(`  - ${t}[${h.severity}] ${h.id}: ${h.summary}`);
         else if (g.store === 'pricing') lines.push(`  - ${t}${h.id}: ${h.behavior}（valence ${h.valence}）`);
@@ -100,9 +103,10 @@ switch (cmd) {
     break;
   }
   case 'cross': {
+    if (flags.all) { console.error('六库 cross 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
     if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
     if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
-    const c = cross(rest[0] || '', { perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until });
+    const c = cross(rest[0] || '', { perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined });
     const lines = [];
     const dateNote = () => {
       if (!(flags.since || flags.until)) return;
@@ -161,7 +165,9 @@ switch (cmd) {
     const r = show(rest[0] || '');
     if (!r.record) { print(r, '（未找到：' + (r.note || '') + '）'); code = 1; break; }
     const head = r.found ? `[${r.store}] ${r.id}` : `（${r.note}）`;
-    print(r, head + '\n' + JSON.stringify(r.record, null, 2));
+    const c = r.credibility;
+    const credLines = c ? ['可信度：' + (c.label || '（无层级）') + (c.cls ? ' · ' + c.cls : ''), ...c.steps.map((st) => `  ${st.id}  ${st.why} → ${st.tier || '—'}${st.refuted ? ' refuted' : ''}`)] : [];
+    print(r, [head, ...credLines, JSON.stringify(r.record, null, 2)].join('\n'));
     break;
   }
   case 'sleep': {
@@ -453,7 +459,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
+    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D] [--include-refuted] [--today D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
     code = cmd ? 1 : 0;
 }
 process.exit(code);

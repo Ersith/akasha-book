@@ -7,7 +7,7 @@
 
 ```bash
 node init-example.mjs      # 初始化示例库（六库中性示例 + frontier 文献基石；--reset 可重来）
-node test.mjs              # 自检（112 项，示例库口径；全绿 = 可交付）
+node test.mjs              # 自检（117 项，示例库口径；全绿 = 可交付）
 node akasha.mjs check      # 校验全部数据（exit 非 0 = 有错）
 node akasha.mjs stats      # 计数与来源分布
 node akasha.mjs brief 修订  # 主题简报（跨六库取料，带来源态与时间坐标）
@@ -21,7 +21,7 @@ node akasha.mjs session lookup <词>                # 结论优先检索（--lev
 node akasha.mjs session promote <segId> --to <库>   # 段升格（默认预览；--apply 才写；--to 必填）
 node akasha.mjs session tree --build --session <id>  # 弧线树（入口→停靠→ptr 下钻）
 node akasha.mjs session loopwatch                  # 循环观测（dry 干跑）汇总
-node mcp.mjs               # MCP stdio server（17 工具；喂 JSON-RPC 行）
+node mcp.mjs               # MCP stdio server（18 工具；喂 JSON-RPC 行）
 ```
 
 ## 六库（append-only JSONL）

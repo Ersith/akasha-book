@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 export const ROOT = dirname(fileURLToPath(import.meta.url));
 export const DATA = join(ROOT, 'data');
 export const STORES = ['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier'];
-const SOURCE_TYPES = ['复现', '官方', '他人', '共识'];
+const SOURCE_TYPES = ['复现', '实验', '官方', '他人', '共识'];
 const SEVERITIES = ['高', '中', '低'];
 /** 镜像库条目角色（wave1）：solution＝做成过的解法（做任务时主查）；boundary＝失败 / 越界 / 适用边界（改流程、复盘时查）。 */
 export const MIRROR_ROLES = Object.freeze(['solution', 'boundary']);
@@ -129,6 +129,17 @@ export function validateRecord(store, r) {
     if (isStr(r.url) && !/^https?:\/\//.test(r.url)) e.push('url 须以 http(s):// 开头');
     if (r.year !== undefined && r.year !== null && !Number.isInteger(r.year)) e.push('year 须为整数或留空');
     if (r.supports !== undefined && (!Array.isArray(r.supports) || r.supports.some(s => typeof s !== 'string'))) e.push('supports 须为字符串数组');
+  }
+  // wave2 §3：验证事件只记在修订版上（根版的层级由 source.type 推导，不另存）。ref 必填。
+  if (r.verification !== undefined) {
+    const v = r.verification;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) e.push('verification 须为对象');
+    else {
+      if (!VERIFY_KINDS.includes(v.kind)) e.push('verification.kind 须为 ' + VERIFY_KINDS.join('/'));
+      if (!isStr(v.at)) e.push('verification.at 须为非空字符串（YYYY-MM-DD 或 ISO）');
+      if (!isStr(v.ref)) e.push('verification.ref 必填（指向可核对的来源：会话 ptr / frontier id / URL）');
+      if (!isStr(r.supersedes)) e.push('verification 只允许出现在修订版（须带 supersedes）');
+    }
   }
   // wave2 §1：段升格来源（可选）。replay 只允许人工确认，且仅 canon + source.type=复现 必填。
   if (r.promoted_from !== undefined) {
@@ -368,18 +379,28 @@ export function cross(query, opts = {}) {
   const tokens = tokenize(q);
   const groups = [];
   for (const name of STORES) {
-    const { records } = loadStore(name);
+    const records = recordsOf(name, opts);
+    const creds = credibilityMap(name, records, opts);
     const hits = [];
     for (const r of currentRecords(records)) {
+      const cred = creds.get(r.id);
+      if (cred && cred.refuted && !opts.includeRefuted) continue;
       if (!inRange(r, opts.since, opts.until)) continue;
       const hay = (LOOKUP_FIELDS[name] || [])
         .map(f => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || '')))
         .join(' | ');
       const hayL = hay.toLowerCase();
       const sc = scoreTokens(hayL, tokens);
-      if (sc.score > 0) hits.push({ id: r.id, score: sc.score, zeroWeight: name === 'orphan', line: PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay });
+      if (sc.score > 0) {
+        const weight = cred ? cred.weight : 1;
+        hits.push({
+          id: r.id, score: sc.score, zeroWeight: name === 'orphan', line: PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay,
+          rank: +((name === 'orphan' ? sc.score : sc.score * weight)).toFixed(4),
+          tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
+        });
+      }
     }
-    hits.sort((a, b) => b.score - a.score);
+    hits.sort((a, b) => b.rank - a.rank || b.score - a.score);
     const items = opts.perStore ? hits.slice(0, opts.perStore) : hits;
     if (items.length) groups.push({ store: name, total: hits.length, items });
   }
@@ -391,6 +412,164 @@ export function cross(query, opts = {}) {
   return { query: q, groups, total, hint };
 }
 
+// —— 可信度（wave2 §3）——
+// 不新增存储字段。层级由根版 source.type 起步，沿修订链应用 verification；过期只降展示层。
+// 系数只进排序权重与命中行标签，不改 strong / weak（strong 仍是整词命中 ≥ 1；孤案仍 zeroWeight）。
+export const TIER_OF_SOURCE = Object.freeze({ '复现': 'T1', '实验': 'T2', '官方': 'T3', '他人': 'T4', '共识': 'T5' });
+export const TIER_WEIGHT = Object.freeze({ T1: 1, T2: 0.9, T3: 0.8, T4: 0.65, T5: 0.5 });
+export const VERIFY_KINDS = Object.freeze(['replay', 'experiment', 'doc', 'incident', 'refute']);
+export const CRED_DEFAULTS = Object.freeze({ snapshotDays: 90, evergreenDays: 180, verifyUsageMin: 3 });
+const TIER_ORDER = Object.freeze({ T1: 1, T2: 2, T3: 3, T4: 4, T5: 5 });
+const ORDER_TIER = Object.freeze(['', 'T1', 'T2', 'T3', 'T4', 'T5']);
+const SNAPSHOT_ID_RE = /-(\d{8})$/;
+
+const credDay = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : '');
+const credAge = (a, b) => Math.floor((Date.parse(b) - Date.parse(a)) / 86400000);
+const betterTier = (a, b) => (!a ? b : (TIER_ORDER[a] <= TIER_ORDER[b] ? a : b));
+const dropTier = (t) => (t ? ORDER_TIER[Math.min(5, TIER_ORDER[t] + 1)] : null);
+
+function chainEndingAt(records, rec) {
+  const byId = new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
+  const chain = [];
+  let c = rec;
+  const seen = new Set();
+  while (c && isStr(c.id) && !seen.has(c.id)) {
+    seen.add(c.id);
+    chain.unshift(c);
+    c = isStr(c.supersedes) ? byId.get(c.supersedes) : null;
+  }
+  return chain;
+}
+
+/**
+ * 一条链（根在前）的可信度。纯函数。
+ * opts.today（YYYY-MM-DD，缺省 UTC 今天）、snapshotDays、evergreenDays。
+ * 返回 { tier（存储层，排序用）, displayTier（展示层，过期降一档）, weight, refuted, stale, cls, anchor, steps }。
+ * 升格没有加成：promoted_from 不参与，层级就是 source.type + verification。
+ */
+export function credibilityOf(store, chain, opts = {}) {
+  const rows = Array.isArray(chain) ? chain.filter((r) => r && typeof r === 'object') : [];
+  const today = credDay(opts.today) || new Date().toISOString().slice(0, 10);
+  const steps = [];
+  let tier = null;
+  let refuted = false;
+  rows.forEach((rec, i) => {
+    const why = [];
+    const type = rec.source && rec.source.type;
+    const prevType = i > 0 && rows[i - 1].source ? rows[i - 1].source.type : undefined;
+    if (TIER_OF_SOURCE[type] && (i === 0 || type !== prevType)) {
+      tier = TIER_OF_SOURCE[type];
+      why.push('source.type=' + type);
+    }
+    const v = rec.verification;
+    const isRevision = isStr(rec.supersedes);
+    if (v && typeof v === 'object' && isRevision && VERIFY_KINDS.includes(v.kind)) {
+      if (v.kind === 'replay') { tier = 'T1'; refuted = false; }
+      else if (v.kind === 'experiment') { tier = betterTier(tier, 'T2'); refuted = false; }
+      else if (v.kind === 'doc') { tier = betterTier(tier, 'T3'); refuted = false; }
+      else if (v.kind === 'refute') refuted = true;
+      why.push('verification.' + v.kind);
+    }
+    steps.push({ id: rec.id ?? null, tier, refuted, why: why.join(' → ') || '沿用上一版' });
+  });
+  const root = rows[0] || {};
+  const tip = rows[rows.length - 1] || {};
+  const rootId = isStr(root.id) ? root.id : '';
+  let cls = 'evergreen';
+  if (rows.some((r) => isProtocolId(r.id))) cls = 'protocol';
+  else if (store === 'frontier') cls = 'frontier';
+  else if (SNAPSHOT_ID_RE.test(rootId)) cls = 'snapshot';
+  let stale = false;
+  let anchor = null;
+  let limit = null;
+  if (cls === 'snapshot') {
+    anchor = credDay(tip.last_reviewed);
+    limit = Number.isInteger(opts.snapshotDays) ? opts.snapshotDays : CRED_DEFAULTS.snapshotDays;
+    stale = !!anchor && credAge(anchor, today) > limit;
+  } else if (cls === 'frontier') {
+    anchor = credDay(tip.next_review);
+    stale = !!anchor && anchor <= today;
+  } else if (cls === 'evergreen') {
+    const marks = rows
+      .filter((r) => r.verification && r.verification.kind !== 'incident')
+      .map((r) => credDay(r.verification.at))
+      .filter(Boolean)
+      .sort();
+    const lastV = marks.length ? marks[marks.length - 1] : '';
+    const reviewed = credDay(tip.last_reviewed);
+    anchor = lastV > reviewed ? lastV : (reviewed || null);
+    limit = Number.isInteger(opts.evergreenDays) ? opts.evergreenDays : CRED_DEFAULTS.evergreenDays;
+    stale = !!anchor && credAge(anchor, today) > limit;
+  }
+  const displayTier = stale ? dropTier(tier) : tier;
+  const weight = refuted ? 0 : (tier ? TIER_WEIGHT[tier] : 1);
+  return {
+    tier, displayTier, weight, refuted, stale, cls, anchor, limitDays: limit, today, steps,
+    label: [displayTier, refuted ? 'refuted' : '', stale ? '待复核' : ''].filter(Boolean).join(' ')
+  };
+}
+
+function recordsOf(name, opts = {}) {
+  const file = (opts.files && opts.files[name]) || storePath(name);
+  return loadStore(name, file).records;
+}
+
+/** 当前集 id → credibilityOf（链走到该条）。opts.today / files 透传。 */
+export function credibilityMap(store, records, opts = {}) {
+  const map = new Map();
+  for (const r of currentRecords(records)) {
+    if (!isStr(r.id)) continue;
+    map.set(r.id, credibilityOf(store, chainEndingAt(records, r), opts));
+  }
+  return map;
+}
+
+/**
+ * 睡眠待办用的可信度扫描（只读，不写库）。
+ * - 当前集里被 refute 的 → kind:review code:refuted（提醒复审，不自动改）
+ * - 存储层为 T5 且 hooks 日志 usage 引用链上 id 合计 ≥ verifyUsageMin（缺省 3）→ kind:verify-candidate
+ * 日志缺失 = 引用数未知 → 不出 verify-candidate。
+ */
+export function credibilityTodos(opts = {}) {
+  const today = credDay(opts.today) || new Date().toISOString().slice(0, 10);
+  const min = Number.isInteger(opts.verifyUsageMin) ? opts.verifyUsageMin : CRED_DEFAULTS.verifyUsageMin;
+  let usage = null;
+  if (opts.usage instanceof Map) usage = opts.usage;
+  else if (opts.log) {
+    let text = '';
+    try { text = readFileSync(opts.log, 'utf8'); } catch { text = ''; }
+    if (text) {
+      usage = new Map();
+      for (const raw of text.split(/\r?\n/)) {
+        if (!raw.trim()) continue;
+        let rec; try { rec = JSON.parse(raw); } catch { continue; }
+        if (rec && rec.kind === 'usage' && Array.isArray(rec.ids)) {
+          for (const id of rec.ids) usage.set(String(id), (usage.get(String(id)) ?? 0) + 1);
+        }
+      }
+    }
+  }
+  const items = [];
+  for (const name of STORES) {
+    const records = recordsOf(name, opts);
+    for (const r of currentRecords(records)) {
+      if (!isStr(r.id)) continue;
+      const chain = chainEndingAt(records, r);
+      const cred = credibilityOf(name, chain, { ...opts, today });
+      if (cred.refuted) {
+        items.push({ kind: 'review', code: 'refuted', store: name, id: r.id, count: 1, note: `${r.id} 被 verification.refute 标记：检索默认隐藏（--include-refuted 或 show 可见），权重 0；不自动改库` });
+        continue;
+      }
+      if (usage && cred.tier === 'T5') {
+        const n = chain.reduce((s, row) => s + (usage.get(row.id) ?? 0), 0);
+        if (n >= min) items.push({ kind: 'verify-candidate', code: 'verify-candidate', store: name, id: r.id, count: n, note: `${r.id} 为 T5（共识）且被 usage 引用 ${n} 次（≥${min}）：只是提醒去验证，不自动改` });
+      }
+    }
+  }
+  items.sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return items;
+}
+
 export function lookupDetailed(query, opts = {}) {
   const q = String(query || '').trim().toLowerCase();
   const stats = { dated: 0, undated: 0, undatedSamples: [], excluded: 0, timeSource: { event_time: 0, logged_at: 0 } };
@@ -398,8 +577,11 @@ export function lookupDetailed(query, opts = {}) {
   const tokens = tokenize(q);
   const hits = [];
   for (const name of STORES) {
-    const { records } = loadStore(name);
+    const records = recordsOf(name, opts);
+    const creds = credibilityMap(name, records, opts);
     for (const r of currentRecords(records)) {
+      const cred = creds.get(r.id);
+      if (cred && cred.refuted && !opts.includeRefuted) continue;
       const hay = (LOOKUP_FIELDS[name] || [])
         .map(f => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || '')))
         .join(' | ');
@@ -417,12 +599,19 @@ export function lookupDetailed(query, opts = {}) {
       }
       if (b.timeSource) stats.timeSource[b.timeSource] += 1;
       if (b.bucket === 'in') stats.dated += 1;
-      const hit = { store: name, id: r.id, score: sc.score, strong: name !== 'orphan' && sc.whole >= 1, zeroWeight: name === 'orphan', snippet: redact(hay.slice(0, 120)) };
+      // strong 只看整词命中；层级系数只进 rank，不进 score。
+      const strong = name !== 'orphan' && sc.whole >= 1;
+      const weight = cred ? cred.weight : 1;
+      const hit = {
+        store: name, id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan', snippet: redact(hay.slice(0, 120)),
+        rank: +((name === 'orphan' ? sc.score : sc.score * weight)).toFixed(4),
+        tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
+      };
       if (b.bucket === 'undated') hit.undated = true;
       hits.push(hit);
     }
   }
-  return { hits: hits.sort((a, b) => b.score - a.score).slice(0, 20), stats };
+  return { hits: hits.sort((a, b) => b.rank - a.rank || b.score - a.score).slice(0, 20), stats };
 }
 
 export function lookup(query, opts = {}) {
@@ -450,9 +639,12 @@ export function brief(query, opts = {}) {
   const perStore = Number.isInteger(opts.perStore) && opts.perStore > 0 ? opts.perStore : 3;
   const groups = [];
   for (const name of STORES) {
-    const { records } = loadStore(name);
+    const records = recordsOf(name, opts);
+    const creds = credibilityMap(name, records, opts);
     const scored = [];
     for (const r of currentRecords(records)) {
+      const cred = creds.get(r.id);
+      if (cred && cred.refuted && !opts.includeRefuted) continue;
       if (!inRange(r, opts.since, opts.until)) continue;
       const hay = (LOOKUP_FIELDS[name] || [])
         .map(f => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || '')))
@@ -460,19 +652,28 @@ export function brief(query, opts = {}) {
         .toLowerCase();
       const hayL = hay.toLowerCase();
       const sc = scoreTokens(hayL, tokens);
-      if (sc.score > 0) scored.push({ r, score: sc.score, strong: name !== 'orphan' && sc.whole >= 1, zeroWeight: name === 'orphan' });
+      if (sc.score > 0) scored.push({ r, cred, score: sc.score, strong: name !== 'orphan' && sc.whole >= 1, zeroWeight: name === 'orphan' });
     }
-    const weight = (x) => (x.zeroWeight ? 0 : x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + emotionBoost(x.r));
+    // 层级系数乘在排序权重上（过期不改这个系数——过期只降展示层）。孤案与 refuted 权重归零，strong 不看系数。
+    const weight = (x) => {
+      if (x.zeroWeight || (x.cred && x.cred.refuted)) return 0;
+      const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + emotionBoost(x.r);
+      return base * (x.cred ? x.cred.weight : 1);
+    };
     scored.sort((a, b) => weight(b) - weight(a) || Number(b.strong) - Number(a.strong));
     if (scored.length) {
-      groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => ({ ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight })) });
+      groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => ({
+        ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight,
+        tier: x.cred ? x.cred.tier : null, displayTier: x.cred ? x.cred.displayTier : null,
+        stale: !!(x.cred && x.cred.stale), refuted: !!(x.cred && x.cred.refuted)
+      })) });
     }
   }
   const strongHits = groups.reduce((n, g) => n + g.hits.filter((h) => h.strong).length, 0);
   let note;
   if (!groups.length) note = '六库无命中：换词再试；仍无 → 这是「确定不知道」，按协议标注来源态，不要编。';
   else if (!strongHits) note = '无强命中（整词命中为零；孤案为零权重，不算证据）：这是「确定不知道」，弱命中只是疑似相关，不要编。';
-  else note = '强命中可标「记得·库内」；弱命中（strong=false）与孤案（zeroWeight）不算证据。基石优先级 已实践 > 已复现 > 高引用 > 待验证。';
+  else note = '强命中可标「记得·库内」（命中行带层级标签，如 T3；待复核只是展示）；弱命中（strong=false）、孤案（zeroWeight）与被 refute 的记录不算证据。层级系数只影响排序，不改变 strong。基石优先级 已实践 > 已复现 > 高引用 > 待验证。';
   return { query: q, tokens, groups, strongHits, note };
 }
 
@@ -513,8 +714,9 @@ export function show(id, opts = {}) {
   const stores = opts.store ? [opts.store] : STORES;
   for (const name of stores) {
     const records = loadStore(name, opts.file || storePath(name)).records;
+    const credOf = (rec) => credibilityOf(name, chainEndingAt(records, rec), opts);
     const rec = currentRecords(records).find(r => r.id === target);
-    if (rec) return { found: true, store: name, id: rec.id, record: rec };
+    if (rec) return { found: true, store: name, id: rec.id, record: rec, credibility: credOf(rec) };
     const old = records.find(r => r.id === target);
     if (old) {
       let tip = old;
@@ -525,10 +727,10 @@ export function show(id, opts = {}) {
         return {
           found: false, store: name, id: target, retired: true,
           note: `该 id 已退役（${tomb.retired_at || '时间未记'}）${tomb.retired_reason ? '：' + tomb.retired_reason : ''}——已不属于当前集（lookup / brief / cross / summary / audit / 列表均不再命中）；历史仍在库里可追溯。`,
-          record: old,
+          record: old, credibility: credOf(old),
         };
       }
-      return { found: false, store: name, id: target, note: '该 id 为旧版本（record 字段＝所查版本全文，不会自动跳转）；当前版本：' + tip.id, record: old };
+      return { found: false, store: name, id: target, note: '该 id 为旧版本（record 字段＝所查版本全文，不会自动跳转）；当前版本：' + tip.id, record: old, credibility: credOf(old) };
     }
   }
   return { found: false, note: '六库均无此 id：' + target };
