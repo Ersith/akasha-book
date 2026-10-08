@@ -130,12 +130,16 @@ switch (cmd) {
     const sub = rest[0];
     if (sub === 'match') {
       const text = rest.slice(1).join(' ');
-      const hits = mirrorMatch(text, { limit: Number(flags.limit) || 3 });
-      const lines = [`镜像匹配「${text}」：` + (hits.length ? `命中 ${hits.length} 条` : '（无命中）')];
-      for (const h of hits) lines.push(`  [${h.score}] ${h.id}: ${h.situation} → ${h.outcome}（${h.emotion}）`);
+      let hits;
+      try { hits = mirrorMatch(text, { limit: Number(flags.limit) || 3, mode: flags.mode, role: flags.role }); }
+      catch (e) { print(null, String(e.message) + '\n用法：node akasha.mjs mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary]'); code = 1; break; }
+      const scope = flags.role ? `只看${flags.role === 'solution' ? '解法' : '边界'}` : flags.mode === 'task' ? '做任务：解法 + 未分层' : flags.mode === 'improve' ? '改流程：边界 + 未分层' : '';
+      const lines = [`镜像匹配「${text}」${scope ? '（' + scope + '）' : ''}：` + (hits.length ? `命中 ${hits.length} 条` : '（无命中）')];
+      const tag = { solution: '[解法] ', boundary: '[边界] ' };
+      for (const h of hits) lines.push(`  [${h.score}] ${tag[h.role] ?? ''}${h.id}: ${h.situation} → ${h.outcome}（${h.emotion}）`);
       print(hits, lines.join('\n'));
     } else {
-      print(null, '用法：node akasha.mjs mirror match <情境文本> [--limit N]');
+      print(null, '用法：node akasha.mjs mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary]');
       code = 1;
     }
     break;
@@ -412,7 +416,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N]|sleep [--dry]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
+    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
     code = cmd ? 1 : 0;
 }
 process.exit(code);

@@ -874,6 +874,49 @@ t('CLI：mirror match 可运行（exit 0，含镜像匹配）', () => {
   assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || ''));
   assert.ok((r.stdout || '').includes('镜像匹配'), (r.stdout || '').slice(0, 200));
 });
+// ---- wave1（2026-10）：镜像库解法 / 边界分层（role）——中性夹具 + 临时库，不读真实记忆数据
+const mirrorFixture = (role, slug) => ({
+  id: 'mirror-fixture-' + slug, story: '中性夹具·' + slug, situation: '夹具情境：搬运积木塔',
+  behavior: '夹具行为', outcome: '夹具结果', social_reaction: '夹具反应', emotion: '平静',
+  ...(role ? { role } : {})
+});
+t('镜像 role：校验（solution/boundary 可选；其它值拒绝）', () => {
+  assert.ok(lib, 'lib 缺失');
+  assert.deepEqual(lib.validateRecord('mirror', mirrorFixture('solution', 'a')), []);
+  assert.deepEqual(lib.validateRecord('mirror', mirrorFixture('boundary', 'b')), []);
+  assert.deepEqual(lib.validateRecord('mirror', mirrorFixture(null, 'c')), [], '缺省 role 仍合法（旧数据不受影响）');
+  assert.ok(lib.validateRecord('mirror', mirrorFixture('解法', 'd')).some((e) => e.includes('role')), '非枚举值拒绝');
+  assert.deepEqual([...lib.MIRROR_ROLES], ['solution', 'boundary']);
+});
+t('镜像 role：mirrorMatch 分层过滤（临时库；all 不变 / task / improve / role 严过滤 / 非法值报错）', () => {
+  assert.ok(lib, 'lib 缺失');
+  const tmp = join(SCRATCH, 'mirror-role-' + Date.now() + '.jsonl');
+  for (const [role, slug] of [['solution', 'sol'], ['boundary', 'bnd'], [null, 'any']]) lib.appendRecord('mirror', mirrorFixture(role, slug), { file: tmp });
+  // 改口走修订链：把 any 修订为 boundary 后，当前版本按新 role 过滤
+  const ids = (hits) => hits.map((h) => h.id).sort();
+  const q = (o) => lib.mirrorMatch('积木塔 搬运', { file: tmp, limit: 10, ...o });
+  assert.deepEqual(ids(q({})), ['mirror-fixture-any', 'mirror-fixture-bnd', 'mirror-fixture-sol'], '缺省 = 旧行为（不过滤）');
+  assert.deepEqual(ids(q({ mode: 'task' })), ['mirror-fixture-any', 'mirror-fixture-sol'], 'task：解法 + 未分层');
+  assert.deepEqual(ids(q({ mode: 'improve' })), ['mirror-fixture-any', 'mirror-fixture-bnd'], 'improve：边界 + 未分层');
+  assert.deepEqual(ids(q({ role: 'boundary' })), ['mirror-fixture-bnd'], 'role 严过滤');
+  const roleOf = Object.fromEntries(q({}).map((h) => [h.id, h.role]));
+  assert.deepEqual(roleOf, { 'mirror-fixture-sol': 'solution', 'mirror-fixture-bnd': 'boundary', 'mirror-fixture-any': null });
+  assert.throws(() => q({ mode: 'bogus' }), /mode/);
+  assert.throws(() => q({ role: 'bogus' }), /role/);
+  lib.revise('mirror', 'mirror-fixture-any', { role: 'boundary' }, { storeFile: tmp });
+  assert.deepEqual(ids(q({ mode: 'task' })), ['mirror-fixture-sol'], '修订链改 role 后 task 只剩解法');
+  rmSync(tmp, { force: true });
+});
+t('镜像 role：CLI --mode / 非法值 exit 1；MCP 工具 schema 带 mode/role 枚举', () => {
+  const ok = cli(['mirror', 'match', '虚构', '危险', '--mode', 'task']);
+  assert.equal(ok.status, 0, (ok.stdout || '') + (ok.stderr || ''));
+  assert.ok((ok.stdout || '').includes('做任务'), ok.stdout);
+  const bad = cli(['mirror', 'match', '虚构', '--mode', 'bogus']);
+  assert.equal(bad.status, 1, (bad.stdout || '') + (bad.stderr || ''));
+  const src = readFileSync(join(ROOT, 'mcp.mjs'), 'utf8');
+  assert.ok(/akasha_mirror_match[^\n]*mode: \{ type: 'string', enum: \['all', 'task', 'improve'\] \}/.test(src), 'MCP schema 应含 mode 枚举');
+});
+
 t('CLI：metrics 可运行（exit 0，含结果计数器）', () => {
   const r = cli(['metrics']);
   assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || ''));

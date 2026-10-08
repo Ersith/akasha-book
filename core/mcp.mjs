@@ -19,7 +19,7 @@ const TOOLS = [
   { name: 'akasha_summary', description: '全库摘要：六库计数 + 各库最近条目 + frontier 状态分布 + 审计概要 + 最近写入（不带问题看一眼全库）', inputSchema: { type: 'object', properties: { per: { type: 'number' } }, additionalProperties: false } },
   { name: 'akasha_orphan_add', description: '追加一条孤案（零权重留档，带钩子的问号）；event_time 可选=事件时间（YYYY-MM-DD）', inputSchema: { type: 'object', properties: { summary: { type: 'string' }, observed: { type: 'string' }, severity: { type: 'string', enum: ['高', '中', '低'] }, event_time: { type: 'string' } }, required: ['summary'] } },
   { name: 'akasha_show', description: '按 id 跨六库直读（命中旧版本时返回所查版本全文 + 附注当前版本 id，不自动跳转）', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
-  { name: 'akasha_mirror_match', description: '镜像结构匹配：按情境文本匹配镜像库（五元组 + patterns 加权），返回最接近的结构模式', inputSchema: { type: 'object', properties: { text: { type: 'string' }, limit: { type: 'number' } }, required: ['text'] } },
+  { name: 'akasha_mirror_match', description: '镜像结构匹配：按情境文本匹配镜像库（五元组 + patterns 加权），返回最接近的结构模式（每条带 role：solution 解法 / boundary 边界 / null 未分层）。做任务用 mode=task（解法优先，排除边界）；改流程 / 复盘用 mode=improve（边界与失败案例）；缺省 all 不过滤', inputSchema: { type: 'object', properties: { text: { type: 'string' }, limit: { type: 'number' }, mode: { type: 'string', enum: ['all', 'task', 'improve'] }, role: { type: 'string', enum: ['solution', 'boundary'] } }, required: ['text'] } },
   { name: 'akasha_metrics', description: '结果计数器：工具成功率 / 门控拦截 / 审计线 / 引用命中 / 修订链统计（since 可选）', inputSchema: { type: 'object', properties: { since: { type: 'string' } }, additionalProperties: false } },
   { name: 'akasha_session_lookup', description: '小阿卡夏（会话层，同库分层，不是第二套库）：只查当前会话记忆，结论优先。与主库 akasha_lookup/brief 分开调用、分开分级。默认不含过程段。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, process: { type: 'boolean' }, all: { type: 'boolean' }, limit: { type: 'number' } }, required: ['query'] } }
 ];
@@ -67,7 +67,7 @@ function handle(msg) {
       else if (name === 'akasha_cross') value = cross(String(a.query ?? ''), { perStore: a.perStore, since: a.since, until: a.until });
       else if (name === 'akasha_summary') value = summary({ per: a.per });
       else if (name === 'akasha_show') value = show(String(a.id ?? ''));
-      else if (name === 'akasha_mirror_match') value = mirrorMatch(String(a.text ?? ''), { limit: a.limit });
+      else if (name === 'akasha_mirror_match') value = mirrorMatch(String(a.text ?? ''), { limit: a.limit, mode: a.mode, role: a.role });
       else if (name === 'akasha_metrics') value = metrics({ since: a.since });
       else if (name === 'akasha_session_lookup') value = lookupSegments(String(a.query ?? ''), { session: a.session, kind: a.kind, since: a.since, until: a.until, includeProcess: a.process === true, all: a.all === true, limit: a.limit });
       else if (name === 'akasha_orphan_add') {

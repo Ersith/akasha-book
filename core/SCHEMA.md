@@ -28,6 +28,7 @@
 | outcome | 结果 |
 | social_reaction | 社会反应 |
 | emotion | 对应情绪词（可含过渡，如「骄傲转悔恨」） |
+| role（可选，wave1） | `solution`（解法：做成过的做法——做任务时主查）/ `boundary`（边界：失败、越界、适用边界——改流程 / 复盘时查）；缺省＝未分层（旧数据不受影响）。同库分层，不另开库；改 role 走修订链 |
 
 ## orphan（孤案）
 
@@ -159,7 +160,8 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 ## 镜像结构匹配（mirror match，2026-10-07 起）
 
-`node akasha.mjs mirror match <情境文本> [--limit N]`（MCP：`akasha_mirror_match`）——把现场情境按**结构**匹配到镜像库：五元组字段计分（situation 权重 ×2）+ 可选 `patterns` 标签加权（子串命中 ×2）；返回 top N（含五元组全文，供照镜与引用）。
+`node akasha.mjs mirror match <情境文本> [--limit N]`（MCP：`akasha_mirror_match`）——把现场情境按**结构**匹配到镜像库：五元组字段计分（situation 权重 ×2）+ 可选 `patterns` 标签加权（子串命中 ×2）；返回 top N（含五元组全文与 `role`，供照镜与引用）。
+- **分层查询（wave1）**：`--mode task`（MCP `mode:"task"`）＝解法 + 未分层（做任务）；`--mode improve`＝边界 + 未分层（改流程 / 复盘）；缺省 `all` 不过滤（与旧行为一致）；`--role solution|boundary` 严过滤（只要该层）。非法值报错（exit 1），不静默放宽。
 
 ## 情绪字段（valence / arousal，2026-10-07 起）
 

@@ -10,6 +10,10 @@ export const DATA = join(ROOT, 'data');
 export const STORES = ['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier'];
 const SOURCE_TYPES = ['复现', '官方', '他人', '共识'];
 const SEVERITIES = ['高', '中', '低'];
+/** 镜像库条目角色（wave1）：solution＝做成过的解法（做任务时主查）；boundary＝失败 / 越界 / 适用边界（改流程、复盘时查）。 */
+export const MIRROR_ROLES = Object.freeze(['solution', 'boundary']);
+/** mirrorMatch 的 mode：task＝解法 + 未分层；improve＝边界 + 未分层；all（缺省）＝不过滤（旧行为）。 */
+export const MIRROR_MODES = Object.freeze(['all', 'task', 'improve']);
 
 export function storePath(name) {
   return join(DATA, name + '.jsonl');
@@ -100,6 +104,8 @@ export function validateRecord(store, r) {
   if (store === 'mirror') {
     for (const f of ['situation', 'behavior', 'outcome', 'social_reaction', 'emotion', 'story'])
       if (!isStr(r[f])) e.push('缺少 ' + f);
+    // wave1：解法库 / 边界库同库分层（可选字段；缺省 = 未分层，行为与旧版一致）。
+    if (r.role !== undefined && !MIRROR_ROLES.includes(r.role)) e.push('role 须为 ' + MIRROR_ROLES.join('/') + '（解法 / 边界；可省略）');
   }
   if (store === 'orphan') {
     for (const f of ['summary', 'observed', 'hypothesis', 'would_confirm', 'would_refute'])
@@ -450,8 +456,21 @@ export function mirrorMatch(text, opts = {}) {
   const tokens = tokenize(text);
   if (!tokens.length) return [];
   const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 3;
+  // wave1：解法 / 边界分层。mode 宽过滤（未分层条目总在）；role 严过滤（只要该层）。非法值直接报错，不静默放宽。
+  const mode = opts.mode === undefined || opts.mode === null || opts.mode === '' ? 'all' : String(opts.mode);
+  if (!MIRROR_MODES.includes(mode)) throw new Error('mode 须为 ' + MIRROR_MODES.join('/'));
+  const role = opts.role === undefined || opts.role === null || opts.role === '' ? null : String(opts.role);
+  if (role !== null && !MIRROR_ROLES.includes(role)) throw new Error('role 须为 ' + MIRROR_ROLES.join('/'));
+  const keepRole = (r) => {
+    const rr = MIRROR_ROLES.includes(r.role) ? r.role : null;
+    if (role) return rr === role;
+    if (mode === 'task') return rr !== 'boundary';
+    if (mode === 'improve') return rr !== 'solution';
+    return true;
+  };
   const hits = [];
-  for (const r of currentRecords(loadStore('mirror').records)) {
+  for (const r of currentRecords(loadStore('mirror', opts.file || storePath('mirror')).records)) {
+    if (!keepRole(r)) continue;
     const fields = [['situation', 2], ['behavior', 1], ['outcome', 1], ['social_reaction', 1], ['emotion', 1]];
     let score = 0;
     for (const [f, w] of fields) {
@@ -466,7 +485,7 @@ export function mirrorMatch(text, opts = {}) {
     }
     if (score > 0) {
       hits.push({
-        id: r.id, score: +score.toFixed(2),
+        id: r.id, score: +score.toFixed(2), role: MIRROR_ROLES.includes(r.role) ? r.role : null,
         situation: r.situation ?? '', behavior: r.behavior ?? '', outcome: r.outcome ?? '',
         social_reaction: r.social_reaction ?? '', emotion: r.emotion ?? ''
       });
