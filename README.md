@@ -41,8 +41,9 @@ node mcp.mjs               # MCP stdio server（17 工具）
 
 ## DSH 插件安装（可选）
 
-1. 直接取 **Release 附件**里的五个 `*.tgz`（gate / hooks / sleep / session / mcp），用 DSH 插件管理器安装；或从源码自行打包：`cd plugins/akasha-gate && npm pack`（其余四件同法；零依赖，产物即 tgz）；
-2. 配置：默认值均指向 `~/.akasha`（家目录，运行时计算）；会话层的 `sessionsRoot` 指向你的宿主会话档案目录——细节见各插件 `README.md` 与 `cordis.patch.yml`。
+1. **从 npm 安装（推荐）**：`npm i @akasha-book/gate`（其余四件：`@akasha-book/hooks` / `@akasha-book/sleep` / `@akasha-book/session` / `@akasha-book/mcp`），或在 DSH 插件管理器里直接用包名安装；
+2. 或取 **Release 附件**里的五个 `*.tgz`，用 DSH 插件管理器安装；或从源码自行打包：`cd plugins/akasha-gate && npm pack`（其余四件同法；零依赖，产物即 tgz）；
+3. 配置：默认值均指向 `~/.akasha`（家目录，运行时计算）；会话层的 `sessionsRoot` 指向你的宿主会话档案目录——细节见各插件 `README.md` 与 `cordis.patch.yml`。
 
 ## 状态与边界（诚实）
 

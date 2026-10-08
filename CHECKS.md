@@ -78,3 +78,11 @@
 - **F3 数据依赖断言**：本包测试在示例库（undated=0）上挂——属"夹具失真"同族 → 改 **JSON 一致性断言**（`hits.undated 数 === stats.undated`），两套件通用。
 - 同步：README 计数 77→**82**（根+core）、SCHEMA 过滤口径补「默认提示/并入/报告」措辞。
 - Sweeps：插件安装三段式核验（source==installed **sha256 一致**）；z19–z24 复跑全部幂等跳过；双套件 **82/82 × 2**；OSS 推送 `b197ca2`。
+
+## R11 · npm 发布轨开通（2026-10-08）
+
+- **结果**：`@akasha-book/{gate@1.2.0, hooks@1.2.0, sleep@1.5.1, session@0.2.4, mcp@1.0.0}` **五件全部上线**（registry `dist-tags.latest` 实证；消费者侧 `npm pack` 五件拉取实证）。
+- **前置**：npm 组织 **`akasha-book`** 建立（owner `ersith`，Developers 默认读写）；五个包名此前均 E404（可用）。
+- **过程记录（坑）**：首轮发布经 **staged publishing**（公开面短暂出现 `0.0.0-stage` 占位；重发报 `409 Cannot publish over previously staged version`；`npm stage list` 返回空——该接口对受限档位不透视）→ **放行后转正**（放行动作在用户侧完成，渠道未逐条取证；结果已双重实证）。
+- **token 教训**：granular token 权限档须选 **"Read and write (publish and stage)"**；"stage only" 会把 `npm publish` 路由进暂存队列。发布用 token 带 **Bypass 2FA** 可免 OTP。建议用户侧回收首枚 stage-only token。
+- **更新流程（备忘）**：`npm publish <tgz> --access public`（scoped 首发布需要 `--access public`）。
