@@ -2,7 +2,7 @@
 // 运行：node selftest.mjs（退出码 0 = 全过）；全部路径用系统临时目录，无绝对机器路径。
 import assert from 'node:assert/strict';
 import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { apply } from './index.js';
@@ -48,6 +48,21 @@ assert.equal(typeof g('pwsh', { command: `Set-Content -Path ${F('canon.jsonl').r
 assert.equal(typeof g('pwsh', { command: `Remove-Item '${F('x.jsonl')}'` }), 'string', 'Remove-Item 必须被拒');
 assert.equal(typeof g('pwsh', { command: `cmd /c del ${F('x.jsonl')}` }), 'string', 'del 必须被拒');
 assert.equal(typeof g('pwsh', { command: `Copy-Item a.jsonl ${F('b.jsonl')}` }), 'string', 'Copy-Item 写入数据必须被拒');
+
+// —— 2026-10 wave1：默认路径回归（合并批曾把默认值写成字面量 '~/.akasha/...'，门控默认失效）——
+{
+  const HOME_DATA = join(homedir(), '.akasha', 'data');
+  const d = harness({ log: LOG }); // 不传 dataDir / akashaDir：走默认值
+  const gd = (name, args) => d.guard({ name, arguments: args });
+  assert.equal(typeof gd('write', { file_path: join(HOME_DATA, 'canon.jsonl') }), 'string', '默认配置：直写 ~/.akasha/data 必须被拒');
+  assert.equal(typeof gd('edit', { file_path: '~/.akasha/data/canon.jsonl' }), 'string', '默认配置：`~` 写法的目标路径也必须被拒');
+  assert.equal(typeof gd('bash', { command: 'echo x >> ~/.akasha/data/canon.jsonl' }), 'string', '默认配置：bash `>> ~/.akasha/data` 必须被拒');
+  assert.equal(typeof gd('bash', { command: 'rm -f "$HOME/.akasha/data/x.jsonl" ; echo done > /dev/null; tee $HOME/.akasha/data/y' }), 'string', '默认配置：$HOME 写法必须被拒');
+  assert.equal(gd('bash', { command: 'cat ~/.akasha/data/canon.jsonl' }), undefined, '默认配置：只读放行');
+  assert.equal(gd('write', { file_path: join(homedir(), '.akasha', 'notes.md') }), undefined, '默认配置：数据区外放行');
+  const tildeDir = harness({ log: LOG, dataDir: '~/.akasha/data' });
+  assert.equal(typeof tildeDir.guard({ name: 'write', arguments: { file_path: join(HOME_DATA, 'x.jsonl') } }), 'string', 'config.dataDir 以 ~ 开头必须展开');
+}
 
 // —— 不误伤（放行） ——
 assert.equal(g('pwsh', { command: `Get-Content '${F('canon.jsonl')}' -Encoding UTF8` }), undefined, '读数据放行');

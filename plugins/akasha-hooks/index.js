@@ -6,14 +6,18 @@
 // 记录到 append-only JSONL；设计见 research\ai-memory-architecture-20261006.md（§7 后台层雏形）。
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-const DEFAULT_LOG = '~/.akasha/logs\\hooks.jsonl';
-const DEFAULT_AKASHA = '~/.akasha';
+// 默认值：家目录下的 .akasha（可用 config.akashaDir / log 覆盖）。
+// ⚠ 2026-10 wave1：不得写成字面量 '~/...'——Node 不展开 `~`（会在 cwd 下建出名为 `~` 的目录）。
+const DEFAULT_AKASHA = join(homedir(), '.akasha');
+const DEFAULT_LOG = join(DEFAULT_AKASHA, 'logs', 'hooks.jsonl');
+const expandHome = (p) => (p === '~' ? homedir() : (p.startsWith('~/') || p.startsWith('~\\')) ? join(homedir(), p.slice(2)) : p);
 
 export function apply(ctx, config = {}) {
-  const logPath = typeof config.log === 'string' && config.log.trim() !== '' ? config.log : DEFAULT_LOG;
-  const akashaDir = typeof config.akashaDir === 'string' && config.akashaDir.trim() !== '' ? config.akashaDir : DEFAULT_AKASHA;
+  const logPath = typeof config.log === 'string' && config.log.trim() !== '' ? expandHome(config.log) : DEFAULT_LOG;
+  const akashaDir = typeof config.akashaDir === 'string' && config.akashaDir.trim() !== '' ? expandHome(config.akashaDir) : DEFAULT_AKASHA;
   const idleDebounceMs = Number.isInteger(config.idleDebounceMs) && config.idleDebounceMs > 0 ? config.idleDebounceMs : 600000;
   const logToolResults = config.logToolResults !== false;
   const auditOutput = config.auditOutput !== false;

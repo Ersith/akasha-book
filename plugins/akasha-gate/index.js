@@ -7,13 +7,25 @@
 // 自身异常一律放行/静默：门控自崩不能拖垮宿主。
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 
 export const inject = ['tools', 'systemPrompt'];
 
-const DEFAULT_LOG = '~/.akasha/logs\\hooks.jsonl';
-const DEFAULT_DATA_DIR = '~/.akasha/data';
-const DEFAULT_AKASHA_DIR = '~/.akasha';
+// 默认值：家目录下的 .akasha（可用 config.akashaDir / dataDir / log 覆盖）。
+// ⚠ 2026-10 wave1：合并批曾把默认值写成字面量 '~/.akasha/...'——Node 不展开 `~`，
+//   isDataPath 永远比不中真实库路径（门控默认失效），日志落进 cwd 下名为 `~` 的目录。
+//   默认值必须用 homedir()；配置值以 `~` 开头的也在这里展开。
+const DEFAULT_AKASHA_DIR = join(homedir(), '.akasha');
+const DEFAULT_DATA_DIR = join(DEFAULT_AKASHA_DIR, 'data');
+const DEFAULT_LOG = join(DEFAULT_AKASHA_DIR, 'logs', 'hooks.jsonl');
+/** `~` / `~/x` / `~\\x` → 家目录；其余原样。 */
+export function expandHome(p) {
+  if (typeof p !== 'string') return p;
+  if (p === '~') return homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) return join(homedir(), p.slice(2));
+  return p;
+}
 const WRITE_TOOLS = new Set(['edit', 'write', 'apply_patch']);
 const SHELL_TOOLS = new Set(['pwsh', 'bash']);
 // 2026-10-07 复查：重定向判定排除 JS 箭头（`=>`）与 `2>&1`——`(?<![=\-])` 挡 `=>`/`->`，`(?![&=])` 挡 `>&`；
@@ -47,11 +59,11 @@ export function fenceUsage(text) {
 }
 
 export function apply(ctx, config = {}) {
-  const logPath = typeof config.log === 'string' && config.log.trim() !== '' ? config.log : DEFAULT_LOG;
+  const logPath = typeof config.log === 'string' && config.log.trim() !== '' ? expandHome(config.log) : DEFAULT_LOG;
   // 路径用 Node 自己的 resolve（2026-10 复查）。此前把 '/' 一律换成 '\\' 再 join，
   // 在 POSIX 上不再是绝对路径，require 核心库失败，用法条永远停在兜底。
-  const dataDir = typeof config.dataDir === 'string' && config.dataDir.trim() !== '' ? config.dataDir : DEFAULT_DATA_DIR;
-  const akashaDir = typeof config.akashaDir === 'string' && config.akashaDir.trim() !== '' ? config.akashaDir : DEFAULT_AKASHA_DIR;
+  const dataDir = typeof config.dataDir === 'string' && config.dataDir.trim() !== '' ? expandHome(config.dataDir) : DEFAULT_DATA_DIR;
+  const akashaDir = typeof config.akashaDir === 'string' && config.akashaDir.trim() !== '' ? expandHome(config.akashaDir) : DEFAULT_AKASHA_DIR;
   const sectionOrder = Number.isFinite(config.sectionOrder) ? config.sectionOrder : 700;
 
   let require_ = null;
@@ -102,13 +114,17 @@ export function apply(ctx, config = {}) {
   };
   const dataRoot = () => normPath(dataDir);
   const isDataPath = (p) => {
-    const s = normPath(p);
+    const s = normPath(expandHome(String(p ?? '')));
     const d = dataRoot();
     return s === d || s.startsWith(d + sep);
   };
   // 命令文本：把正反斜杠都折成当前平台再比前缀（命令不等于路径）。
+  // 家目录简写（`~/`、`$HOME`、`${HOME}`、`$env:USERPROFILE`、`%USERPROFILE%`）先展开再比——
+  // 否则 `echo x >> ~/.akasha/data/canon.jsonl` 这类最常见写法比不中。
+  const HOME_TOKENS = /(^|[\s'"=(:;|&])(?:~(?=[\\/])|\$HOME\b|\$\{HOME\}|\$env:USERPROFILE\b|%USERPROFILE%)/gi;
   const mentionsDataDir = (text) => {
-    const flat = String(text ?? '').replace(/[\\/]+/g, sep);
+    const expanded = String(text ?? '').replace(HOME_TOKENS, (_m, pre) => pre + homedir());
+    const flat = expanded.replace(/[\\/]+/g, sep);
     const d = dataRoot();
     const probe = process.platform === 'win32' ? flat.toLowerCase() : flat;
     return probe.includes(d + sep) || probe.includes(d);
@@ -123,13 +139,13 @@ export function apply(ctx, config = {}) {
         const target = String(args.file_path ?? args.path ?? '');
         if (target && isDataPath(target)) {
           write({ kind: 'gate-denied', tool: name, target });
-          return `阿卡夏门控：拒绝 ${name} 直接写 ${target}——数据必须经校验写入（akasha CLI / mcp__akasha__*），直改 JSONL 会污染 append-only 库。确需绕过请先停用 @akasha-book/akasha-gate。`;
+          return `阿卡夏门控：拒绝 ${name} 直接写 ${target}——数据必须经校验写入（akasha CLI / mcp__akasha__*），直改 JSONL 会污染 append-only 库。确需绕过请先停用 @akasha-book/gate。`;
         }
       } else if (SHELL_TOOLS.has(name)) {
         const command = String(args.command ?? args.script ?? '');
         if (command && mentionsDataDir(command) && WRITE_IDIOM.test(command)) {
           write({ kind: 'gate-denied', tool: name, target: 'akasha\\data（命令）' });
-          return `阿卡夏门控：拒绝 ${name} 命令里对 akasha\\data 的写操作——请改走 akasha CLI / mcp__akasha__*。确需绕过请先停用 @akasha-book/akasha-gate。`;
+          return `阿卡夏门控：拒绝 ${name} 命令里对 akasha\\data 的写操作——请改走 akasha CLI / mcp__akasha__*。确需绕过请先停用 @akasha-book/gate。`;
         }
       }
     } catch { /* 守卫异常 → 放行 */ }

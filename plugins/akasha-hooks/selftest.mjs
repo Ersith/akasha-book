@@ -2,7 +2,8 @@
 // 桩 ctx 收集监听；临时 akashaDir（拷贝核心 lib.mjs + 假 data/canon.jsonl）验证 usage / output-audit 线。
 // 运行：node selftest.mjs（退出码 0 = 全过）
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,5 +73,19 @@ let threw = null;
 try { apply(ctxC, { log: logC, akashaDir: dirC }); } catch (e) { threw = e; }
 assert.equal(threw, null, '无核心时 apply 不得抛：' + (threw && threw.message));
 assert.ok(readFileSync(logC, 'utf8').includes('"kind":"activated"'), '降级时激活线仍在');
+
+// —— 6. 2026-10 wave1：默认路径回归——默认日志必须落在 $HOME/.akasha/logs，不得在 cwd 下建出字面量 `~` 目录 ——
+{
+  const fakeHome = mkdtempSync(join(scratchRoot, 'akasha-hooks-home-'));
+  const cwdD = mkdtempSync(join(scratchRoot, 'akasha-hooks-cwd-'));
+  cleanupDirs.push(fakeHome, cwdD);
+  const indexUrl = new URL('./index.js', import.meta.url).href;
+  const script = `const m = await import(${JSON.stringify(indexUrl)}); m.apply({ on() { return () => {}; } }, {});`;
+  execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: cwdD, env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome }, stdio: 'pipe'
+  });
+  assert.ok(existsSync(join(fakeHome, '.akasha', 'logs', 'hooks.jsonl')), '默认日志落在 homedir()/.akasha/logs/hooks.jsonl');
+  assert.ok(!existsSync(join(cwdD, '~')), 'cwd 下不得出现字面量 `~` 目录');
+}
 
 console.log('selftest: all assertions passed');
