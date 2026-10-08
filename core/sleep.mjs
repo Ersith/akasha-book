@@ -44,11 +44,14 @@ export function distillHooks(lines) {
   counters.recalledBefore = rs.recalledBefore;
   counters.recallMisses = rs.misses;
   counters.lateRecall = rs.lateRecall;
-  return { counters, notes };
+  return { counters, notes, recall: rs };
 }
 
-/** 生成待办（纯函数）：audit 警告 → review；工具失败 / 门控拦截 / agent 错误 → orphan-candidate。 */
-export function buildTodos(counters, notes, audit) {
+/**
+ * 生成待办（纯函数）：audit 警告 → review；工具失败 / 门控拦截 / agent 错误 → orphan-candidate；
+ * 召回漏（失败前未查库的回合，wave1.1）→ review `recall-miss`（复盘项，不自动转孤案——「本该查到什么」是语义判断）。
+ */
+export function buildTodos(counters, notes, audit, recall) {
   const todo = [];
   const findings = Array.isArray(audit?.findings) ? audit.findings : [];
   for (const finding of findings) {
@@ -67,6 +70,18 @@ export function buildTodos(counters, notes, audit) {
   }
   if ((counters?.agentErrors ?? 0) > 0) {
     todo.push({ kind: 'orphan-candidate', code: 'agent-error', count: counters.agentErrors, note: 'agent 级错误（失败回查候选）' });
+  }
+  const misses = Number(counters?.recallMisses ?? 0);
+  if (misses > 0) {
+    const turns = Number(counters?.failureTurns ?? misses);
+    const late = Number(counters?.lateRecall ?? 0);
+    const samples = (Array.isArray(recall?.samples) ? recall.samples : []).slice(0, 3)
+      .map((x) => `${x?.what ?? '?'}${x?.session ? ' @' + x.session : ''}${x?.ts ? ' ' + String(x.ts).slice(0, 16) : ''}`);
+    todo.push({
+      kind: 'review', code: 'recall-miss', count: misses, failureTurns: turns, lateRecall: late,
+      note: `失败前未查库 ${misses}/${turns} 回合${late ? `（其中事后才查 ${late}）` : ''}——召回复盘：库里本来有没有能救它的条目？有 → 补召回入口（触发词 / 镜像解法）；没有 → 记孤案或定价`,
+      samples
+    });
   }
   return todo;
 }
@@ -142,7 +157,7 @@ export function sleepRun(opts = {}) {
       end = nl >= fromByte ? nl + 1 : fromByte;
     }
     const slice = buf.subarray(fromByte, end).toString('utf8').split(/\r?\n/).filter(Boolean);
-    const { counters, notes } = distillHooks(slice);
+    const { counters, notes, recall } = distillHooks(slice);
     // 对外仍以「条」计（CLI / 旧测试）；字节水位只进 state.processedBytes。
     const lineFrom = truncated ? 0 : (Number.isInteger(state.processedLines) ? state.processedLines : 0);
     const lineTo = lineFrom + slice.length;
@@ -155,7 +170,7 @@ export function sleepRun(opts = {}) {
       auditResult = { ok: null, error: String(error?.message ?? error).slice(0, 200) };
     }
 
-    const todo = buildTodos(counters, notes, auditResult);
+    const todo = buildTodos(counters, notes, auditResult, recall);
     const stamp = now.toISOString();
     const date = stamp.slice(0, 10);
     const report = { date, ranAt: stamp, trigger, processedFrom: lineFrom, processedTo: lineTo, processedBytes: end, truncated, counters, notes, audit: auditResult, todo };

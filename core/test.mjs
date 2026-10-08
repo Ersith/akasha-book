@@ -472,7 +472,10 @@ if (lib) {
       const run = sleepMod.sleepRun({ trigger: 'manual', log: logPath, stateFile: statePath, inboxFile: inboxPath, reportDir });
       assert.equal(run.ok, true);
       assert.equal(run.processedTo, 2);
-      assert.ok(run.todo >= 2, '工具失败 + 门控拦截 → 至少两条待办：' + run.todo);
+      // wave1.1：失败前未查库 → 另加一条 recall-miss 复盘待办（audit 项随示例库日期浮动，故用下界 + 逐项核对）
+      assert.ok(run.todo >= 3, '工具失败 + 门控拦截 + 召回漏 → 至少三条待办：' + run.todo);
+      const codes = JSON.parse(readFileSync(inboxPath, 'utf8').trim().split(/\r?\n/).pop()).items.map((x) => x.code);
+      for (const c of ['tool-error', 'gate-denied', 'recall-miss']) assert.ok(codes.includes(c), c + ' 应进 inbox：' + JSON.stringify(codes));
       assert.ok(existsSync(join(reportDir, run.reportFile)), '报告生成：' + run.reportFile);
       const state = JSON.parse(readFileSync(statePath, 'utf8'));
       assert.equal(state.processedLines, 2);
@@ -1229,12 +1232,18 @@ t('B2 metrics().recall：桩 log + since 过滤；CLI metrics 打出召回信号
   assert.ok((r.stdout || '').includes('召回信号'), (r.stdout || '').slice(0, 400));
 });
 if (sleepMod) {
-  t('B2 sleep：distillHooks 带召回计数；renderContextLine 只在有漏召时点名', () => {
+  t('B2 sleep：distillHooks 带召回计数；漏召进待办（recall-miss）；renderContextLine 只在有漏召时点名', () => {
     const lines = [recTool('bash', false), { kind: 'turn-end' }, recTool('mcp__akasha__akasha_lookup'), recTool('bash', false)].map((o) => JSON.stringify(o));
     const { counters } = sleepMod.distillHooks(lines);
     assert.equal(counters.failureTurns, 2);
     assert.equal(counters.recallMisses, 1);
     assert.equal(counters.recalledBefore, 1);
+    // wave1.1：召回漏进待办（review / recall-miss），带样本
+    const { recall } = sleepMod.distillHooks(lines);
+    const todos = sleepMod.buildTodos(counters, [], { ok: true, findings: [] }, recall);
+    const rm = todos.find((x) => x.code === 'recall-miss');
+    assert.ok(rm && rm.kind === 'review' && rm.count === 1 && rm.failureTurns === 2, JSON.stringify(todos));
+    assert.deepEqual(rm.samples, ['bash'], JSON.stringify(rm));
     const line = sleepMod.renderContextLine({ lastRunAt: 'x', lastAudit: 'ok', lastCounters: counters, lastTodo: 0 });
     assert.ok(line.includes('失败前未查库 1/2 回合'), line);
     assert.ok(!sleepMod.renderContextLine({ lastRunAt: 'x', lastAudit: 'ok', lastCounters: { recallMisses: 0 }, lastTodo: 0 }).includes('未查库'));

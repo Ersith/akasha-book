@@ -5,7 +5,7 @@
 阿卡夏之书睡眠器 v1.5.1 —— **调度与注入**（蒸馏逻辑归核心库 `../../core/sleep.mjs`；手动触发 `node akasha.mjs sleep [--dry]` 与之共用同一水位线）。
 
 - **触发**：`agent/status → idle`，去抖 `minIntervalHours`（默认 6）；另一路定时兜底 `ctx.interval`（默认 1h——timer 属混入服务，需 `inject:['timer']`）。跳过也留痕（`sleep-skip`）；首次激活即跑一次（`activate`）。
-- **蒸馏**：`hooks.jsonl` 增量（水位线 `processedLines`）→ 统计 + 失败备注 + 待办（审计警告 → review；工具失败 / 拦截 / agent 错误 → 孤案候选）；报告 `sleep-<date>.json`（**同日重复跑加时间戳后缀，不覆盖**）；有待办时追加 `logs/inbox.jsonl`。
+- **蒸馏**：`hooks.jsonl` 增量（水位线 `processedLines`）→ 统计 + 失败备注 + 待办（审计警告 → review；工具失败 / 拦截 / agent 错误 → 孤案候选；**失败前未查库的回合 → review `recall-miss`（召回复盘，带会话样本；不自动转孤案），wave1.1**）；报告 `sleep-<date>.json`（**同日重复跑加时间戳后缀，不覆盖**）；有待办时追加 `logs/inbox.jsonl`。
 - **条子一（每回合）**：`akasha:sleep`（order 130）——最近一次睡眠摘要（含待办数）。
 - **条子二（新会话·唤醒条）**：`agent/created` → 经 `agent.inject()` 递「起床包」摘要（不唤醒、不打断；仅当 无睡眠记录 / 有待办 / 审计警告 才发）。
 - **条子三（每回合·库脉搏 + 回查）**：`akasha:pulse`（order 132）——六库计数 + 最近写入（**写→可见通道**）；窗口内（默认 30 分钟）有失败时追一行**回查提示**（注入级，不拦截）。

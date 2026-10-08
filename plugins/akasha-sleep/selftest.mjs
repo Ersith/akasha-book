@@ -47,6 +47,16 @@ assert.equal(todos[0].code, 'frontier-due');
 assert.equal(todos[1].code, 'tool-error');
 assert.equal(todos[2].code, 'gate-denied');
 assert.deepEqual(buildTodos({ toolErrors: 0, denials: 0, agentErrors: 0 }, [], { ok: true, findings: [] }), []);
+// wave1.1：召回漏进待办（review / recall-miss；排在最后，不改变前面各项的位置）
+const withRecall = buildTodos({ toolErrors: 1, denials: 0, agentErrors: 0, failureTurns: 2, recallMisses: 1, lateRecall: 1 }, ['x'],
+  { ok: true, findings: [] }, { samples: [{ what: 'bash', session: 'sess-aaaa', ts: '2026-01-01T00:00:00Z' }] });
+assert.equal(withRecall.length, 2, JSON.stringify(withRecall));
+assert.equal(withRecall[1].kind, 'review');
+assert.equal(withRecall[1].code, 'recall-miss');
+assert.equal(withRecall[1].count, 1);
+assert.ok(withRecall[1].note.includes('1/2 回合') && withRecall[1].note.includes('事后才查 1'), withRecall[1].note);
+assert.deepEqual(withRecall[1].samples, ['bash @sess-aaaa 2026-01-01T00:00']);
+assert.equal(buildTodos({ recallMisses: 0, failureTurns: 3 }, [], { ok: true, findings: [] }).length, 0, '没有漏召 → 不出待办');
 
 // —— 3. renderContextLine / renderPulseLine / shouldSleep 纯函数 ——
 assert.ok(renderContextLine({}).includes('尚未运行'));
@@ -122,22 +132,26 @@ assert.equal(threw, null, 'interval 缺失时 apply 不得抛：' + (threw && th
 const reportPath = join(dir, 'logs', `sleep-${new Date().toISOString().slice(0, 10)}.json`);
 assert.ok(existsSync(reportPath), '激活首跑生成报告');
 const report = JSON.parse(readFileSync(reportPath, 'utf8'));
-assert.equal(report.todo.length, 2, JSON.stringify(report.todo));
+// 夹具：edit 失败前没有查库 → 除 tool-error / gate-denied 外，再出一条 recall-miss 复盘待办（wave1.1）
+assert.equal(report.todo.length, 3, JSON.stringify(report.todo));
+assert.deepEqual(report.todo.map((x) => x.code), ['tool-error', 'gate-denied', 'recall-miss']);
+assert.equal(report.counters.recallMisses, 1);
 assert.equal(report.counters.toolErrors, 1);
 
 assert.ok(existsSync(inboxPath), '有待办时写 inbox');
 const inboxLine = JSON.parse(readFileSync(inboxPath, 'utf8').trim().split(/\r?\n/).pop());
 assert.equal(inboxLine.kind, 'todo');
-assert.equal(inboxLine.items.length, 2);
+assert.equal(inboxLine.items.length, 3);
+assert.ok(inboxLine.items.some((x) => x.kind === 'review' && x.code === 'recall-miss'), '召回漏写进 inbox');
 
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
 assert.equal(state.processedLines, 3, '水位线=已处理行数');
 assert.equal(state.lastTrigger, 'activate');
 assert.equal(state.lastAudit, 'ok', '桩空库上 audit 通过（审计降级路径见第 8 节无核心用例）');
-assert.equal(state.lastTodo, 2);
+assert.equal(state.lastTodo, 3);
 
 const text = sleepCtx.text();
-assert.ok(text.includes('审计 OK') && text.includes('待办 2 条'), text);
+assert.ok(text.includes('审计 OK') && text.includes('待办 3 条') && text.includes('失败前未查库 1/1 回合'), text);
 
 // 定时回调触发 → 去抖挡住并留痕
 intervalArgs[0]();
@@ -146,7 +160,7 @@ assert.ok(logText.includes('"kind":"sleep-skip"') && logText.includes('"trigger"
 assert.ok(logText.includes('"kind":"sleep-done"'), 'sleep-done 落观测线');
 assert.ok(logText.includes('"kind":"sleep-armed"'), 'sleep-armed 落观测线');
 assert.ok(logText.includes('"kind":"wake-note-llm-skip"'), '唤醒条跳过留痕（appModulesDir 未配置）');
-assert.ok(logText.includes('"todo":2'), 'sleep-done 带待办数');
+assert.ok(logText.includes('"todo":3'), 'sleep-done 带待办数（含 recall-miss）');
 
 // 注意：不在此处删 dir——§6 的 ctxLive 要读到本目录的桩 state（桩 state 缺失会让它 boot 触发
 // activate、把空报告写进真库 logs——2026-10-07 复查捕获）；统一由终末清理 + exit 兜底。

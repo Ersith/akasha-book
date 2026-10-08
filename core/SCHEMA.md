@@ -187,7 +187,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 - 召回＝只读查库面成功调用：MCP `mcp__akasha__` + {`akasha_lookup` / `brief` / `cross` / `kit` / `show` / `summary` / `mirror_match` / `session_lookup` / `frontier_due`}，或 hooks 在 shell 工具线上标注的 `akashaCli`（akasha CLI 查库子命令名，只记子命令、不记命令原文）；
 - 失败＝非记忆工具 `ok:false` 或 `agent-error`（记忆工具自身失败、`gate-denied` 不计）；每窗口只看**第一次**失败；
 - 计数：`failureTurns`（有失败的回合）/ `recalledBefore`（失败前查过库）/ `misses`（失败前没查库）/ `lateRecall`（miss 中事后才查）/ `missRate` / `samples`（≤5，`{ts, what, session}`）。
-- 同一口径进睡眠报告 `counters`（`failureTurns` / `recalledBefore` / `recallMisses` / `lateRecall`），门口条子在 `recallMisses>0` 时追「失败前未查库 m/n 回合」。只计数、不判语义：漏召是否「本该查到」由复盘（模型 / 人）判断。
+- 同一口径进睡眠报告 `counters`（`failureTurns` / `recalledBefore` / `recallMisses` / `lateRecall`），门口条子在 `recallMisses>0` 时追「失败前未查库 m/n 回合」；**并进待办（wave1.1）**：`buildTodos` 追加 `{ kind:"review", code:"recall-miss", count, failureTurns, lateRecall, note, samples }`（排在最后，样本带会话 id），随批次写入 `logs/inbox.jsonl`；属复盘项，`promote` 不会把它自动转成孤案。只计数、不判语义：漏召是否「本该查到」由复盘（模型 / 人）判断。
 
 ## 会话层（session，2026-10-07 起）
 
