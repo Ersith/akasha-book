@@ -1,7 +1,6 @@
 {
   "name": "@akasha-book/gate",
   "version": "1.2.0",
-  "private": true,
   "license": "MIT",
   "type": "module",
   "description": "阿卡夏之书门控 v0：数据目录写入守卫（只许经校验写入）+ 系统提示注入来源态约定（akasha:protocol）",

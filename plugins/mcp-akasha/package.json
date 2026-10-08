@@ -1,7 +1,6 @@
 {
   "name": "@akasha-book/mcp",
   "version": "1.0.0",
-  "private": true,
   "license": "MIT",
   "type": "module",
   "description": "阿卡夏之书 MCP 桥：把外置大脑（akasha）的工具以 mcp__akasha__* 暴露给模型（stdio：node mcp.mjs）",
