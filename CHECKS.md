@@ -142,3 +142,10 @@
 - **口径**：验收＝回放 misses − 原记录 misses ≤ 0（正确口径＝同一份日志原样再数；分层 / 合并 / 丢弃不进 B2 输入）。另附**对照（`adopted:false`）**：删掉「只引用将移出 id」的召回行 → misses 会上升——把幸存者偏差摆到明处，明确不作验收。
 - **验证（我方独立）**：`git am` 干净（克隆 `f25cfd0`；dist `27fafe7`）；`all.diff` 树哈希一致（`929bb73`）；核心 **120/120**（117+3）、session 20/20、插件全过、零重复；活树三方合并 5 文件零冲突 → **120/120**；真库冒烟：`replay-9ee97f9de81ab7c8`（日志 8688 行 / 计划 ops 0 / misses 38→38 Δ0；对照 Δ0）+ **logs 零新增（默认不落盘）**；`--out` 显式落盘 1532 B ✓。
 - **备注**：`--apply` / `revokes` 仍待观察期；观察期后第一件 = **排序补齐**（严重度 / 复杂度乘子进现有可信度系数，只动排序不动存储）。
+
+## R19 · npm 重发三件（2026-10-08 深夜）
+
+- **发布**：`@akasha-book/gate@1.2.1`、`hooks@1.2.1`、`session@0.2.5`（从 OSS 插件目录 `npm pack` → `npm publish --access public`；均 `+ published`；`dist-tags.latest` 已分别指向新版本）。
+- **完整性三重对账**：注册表 `dist.integrity`（sha512）与本地发送物**三件全等**；阳性对照：`gate` / `session` 的注册表 tarball 可下载且**与本地逐字节相同**；`hooks` 的 tarball 端点暂时 404（元数据与 dist 签名已就位）——已设后台重试；若持续不通将发 `1.2.2` 补发。
+- **隐私双扫（回应「有没有暴露隐私 / API」）**：本地发送物 12 文件 + 注册表拉回物 8 文件（gate/session）× 17 类强模式（本机路径 / 用户名 / 各 token 前缀 / 回环端口 / 工具链盘符 / 活树目录名…）——**全部零命中**；包内仅 4 类文件（index.js / package.json / README / cordis.patch.yml）；README 人眼抽验无个人信息；npm 凭据仅存本机 npmrc，从未进入包内容或输出。
+- **遗留**：`hooks` 版本列表残存历史 `0.0.0-stage` 占位（R11 staged 时代产物；无隐私问题；可选 `npm deprecate` 清理）；token 轮换仍待用户侧执行。
