@@ -509,11 +509,14 @@ export function auditText(text) {
   };
 }
 
-/** 结果计数器 v0（2026-10-07）：hook 线 + 修订链统计 → 可机检指标。 */
-// —— 召回失败信号（B2 · 2026-10 wave1）——
+// —— 召回失败信号（B2 · 2026-10 wave1；会话分区 wave1.1）——
 // 双路召回（机械钩子 + 主动查库）漏掉的，只能事后从日志里认出来：某回合出了失败，而失败之前没有任何查库动作。
 // 纯机械口径（代码做计数、语义判断留给模型/人）：
-//   窗口 = 相邻两条 turn-end 之间（hooks.jsonl 的 tool 线不带会话 id → 全局窗口；多会话并发时窗口会混，属近似）；
+//   分区 = 会话 id（宿主真值：tool 线 `session` ← tools/result 的 exec.agent.id；turn-end ← session/event 的 session.id；
+//          agent-error ← payload.agent.id——三者同为 DSH 的 SessionId，Agent 以其会话 id 为身份）。前缀 `session-` 归一。
+//   窗口 = 同一会话内相邻两条 turn-end 之间；并发会话互不混窗。
+//   旧日志兼容：不带 session 的行进「未归属」窗口 `*`（＝旧的全局口径）；任一 turn-end 同时关闭 `*` 窗口；
+//          `*` 窗口里的召回对同期任何会话的失败都算数（无法证伪，按宽口径，不夸大漏召）。
 //   召回 = 只读查库面成功调用（MCP mcp__akasha__<RECALL_TOOLS>，或 hooks 标注的 akasha CLI 查库子命令 akashaCli）；
 //   失败 = 非记忆工具 ok:false 或 agent-error（记忆工具自身失败不算任务失败，也不算召回；gate-denied 不计）；
 //   每窗口只看第一次失败：之前查过库 → recalledBefore；没查过 → miss（之后才查 → 另记 lateRecall）。
@@ -529,34 +532,56 @@ export function isRecallRecord(rec) {
   return typeof rec.akashaCli === 'string' && RECALL_CLI.includes(rec.akashaCli);
 }
 
-/** 召回失败计数（纯函数；输入为已解析的 hooks 记录，按日志顺序）。 */
+/** hooks 记录的会话分区键（纯函数）：裸会话 id；缺失 → '*'（未归属，旧日志）。 */
+export function sessionKeyOf(rec) {
+  const raw = typeof rec?.session === 'string' ? rec.session.trim() : '';
+  return raw ? raw.replace(/^session-/, '') : '*';
+}
+
+/** 召回失败计数（纯函数；输入为已解析的 hooks 记录，按日志顺序；按会话分区）。 */
 export function recallSignals(records) {
-  const out = { failureTurns: 0, recalledBefore: 0, misses: 0, lateRecall: 0, missRate: 0, samples: [] };
-  let w = { recalled: false, failed: null, late: false };
-  const close = () => {
-    if (w.failed) {
-      out.failureTurns += 1;
-      if (w.recalled) out.recalledBefore += 1;
-      else {
-        out.misses += 1;
-        if (w.late) out.lateRecall += 1;
-        if (out.samples.length < 5) out.samples.push(w.failed);
-      }
+  const out = { failureTurns: 0, recalledBefore: 0, misses: 0, lateRecall: 0, missRate: 0, samples: [], sessions: 0, unattributed: 0 };
+  const wins = new Map();  // key -> { recalled, failed, late, starRecall }
+  const seen = new Set();
+  const win = (k) => { let w = wins.get(k); if (!w) { w = { recalled: false, failed: null, late: false }; wins.set(k, w); } return w; };
+  const close = (k) => {
+    const w = wins.get(k);
+    wins.delete(k);
+    if (!w || !w.failed) return;
+    out.failureTurns += 1;
+    if (w.recalled) out.recalledBefore += 1;
+    else {
+      out.misses += 1;
+      if (w.late) out.lateRecall += 1;
+      if (out.samples.length < 5) out.samples.push(w.failed);
     }
-    w = { recalled: false, failed: null, late: false };
   };
   for (const rec of records ?? []) {
     if (!rec || typeof rec !== 'object') continue;
-    if (rec.kind === 'turn-end') { close(); continue; }
-    if (isRecallRecord(rec)) { if (w.failed) w.late = true; else w.recalled = true; continue; }
+    const k = sessionKeyOf(rec);
+    if (rec.kind === 'turn-end') { close(k); if (k !== '*') close('*'); continue; }
+    if (rec.kind !== 'tool' && rec.kind !== 'agent-error') continue;
+    if (k === '*') out.unattributed += 1; else seen.add(k);
+    if (isRecallRecord(rec)) {
+      const w = win(k);
+      if (w.failed) w.late = true; else w.recalled = true;
+      if (k === '*') for (const [kk, ww] of wins) if (kk !== '*' && !ww.failed) ww.recalled = true; // 未归属召回：宽口径
+      continue;
+    }
     const isFail = (rec.kind === 'tool' && rec.ok === false && !String(rec.tool ?? '').startsWith(MEMORY_PREFIX)) || rec.kind === 'agent-error';
-    if (isFail && !w.failed) w.failed = { ts: rec.ts ?? null, what: rec.kind === 'agent-error' ? 'agent-error' : String(rec.tool ?? '?') };
+    if (!isFail) continue;
+    const w = win(k);
+    if (w.failed) continue;
+    if (!w.recalled && k !== '*' && wins.get('*')?.recalled) w.recalled = true; // 同期未归属召回同样算数
+    w.failed = { ts: rec.ts ?? null, what: rec.kind === 'agent-error' ? 'agent-error' : String(rec.tool ?? '?'), session: k === '*' ? null : k };
   }
-  close();
+  for (const k of [...wins.keys()]) close(k);
+  out.sessions = seen.size;
   out.missRate = out.failureTurns ? +(out.misses / out.failureTurns).toFixed(3) : 0;
   return out;
 }
 
+/** 结果计数器 v0（2026-10-07）：hook 线 + 修订链统计 → 可机检指标。 */
 export function metrics(opts = {}) {
   const logPath = opts.log || join(ROOT, 'logs', 'hooks.jsonl');
   const since = opts.since ? String(opts.since).slice(0, 10) : null;

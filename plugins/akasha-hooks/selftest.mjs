@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { apply } from './index.js';
 
 const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');
@@ -90,6 +90,51 @@ assert.ok(readFileSync(logC, 'utf8').includes('"kind":"activated"'), '降级时�
   const toolLine = readFileSync(logB, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((l) => l.kind === 'tool');
   assert.equal(toolLine.akashaCli, 'brief', JSON.stringify(toolLine));
   assert.ok(!JSON.stringify(toolLine).includes('secret-ish'), '不记命令原文');
+}
+
+// —— 5c. wave1.1：tool 线带会话 id（exec.agent.id）；无 agent 时不写 ——
+{
+  const hS = {};
+  const logS = join(dir, 'hooks-sid.jsonl');
+  apply({ on(name, fn) { (hS[name] = hS[name] || []).push(fn); return () => {}; } }, { log: logS, akashaDir: dir });
+  for (const fn of hS['tools/result']) fn({ name: 'read', callId: 'c1', agent: { id: 'sess-alpha' }, arguments: {} }, { isError: false });
+  for (const fn of hS['tools/result']) fn({ name: 'read', callId: 'c2', arguments: {} }, { isError: true, error: { message: 'x' } });
+  const tl = readFileSync(logS, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.kind === 'tool');
+  assert.equal(tl[0].session, 'sess-alpha', 'tool 线应带 exec.agent.id：' + JSON.stringify(tl[0]));
+  assert.ok(!('session' in tl[1]), '无 agent 时不写 session（不编造）：' + JSON.stringify(tl[1]));
+}
+
+// —— 5d. wave1.1：两个会话交错 → hooks 落盘 → 核心 recallSignals 按会话分区，互不混窗（端到端，中性夹具）——
+{
+  const hI = {};
+  const logI = join(dir, 'hooks-interleave.jsonl');
+  apply({ on(name, fn) { (hI[name] = hI[name] || []).push(fn); return () => {}; } }, { log: logI, akashaDir: dir });
+  const A = { id: 'sess-aaaa' }; const B = { id: 'sess-bbbb' };
+  const tool = (agent, name, isError = false) => { for (const fn of hI['tools/result']) fn({ name, callId: name + Math.random(), agent, arguments: {} }, isError ? { isError: true, error: { message: 'boom' } } : { isError: false }); };
+  const turnEnd = (session, turn) => { for (const fn of hI['session/event']) fn(session, { type: 'turn/end', data: { turn } }); };
+  const agentErr = (agent) => { for (const fn of hI['agent/error']) fn({ agent, turn: 1, step: 1, error: new Error('x') }); };
+  tool(A, 'mcp__akasha__akasha_lookup');  // A 先查库
+  tool(B, 'bash', true);                  // B 没查库就失败
+  tool(A, 'bash', true);                  // A 查过库后失败
+  turnEnd(B, 1);                          // B 回合先结束（不得关掉 A 的窗口）
+  tool(B, 'mcp__akasha__akasha_brief');   // B 下一回合查库……
+  agentErr(A);                            // ……A 同回合再出错（不得被 B 的查库「救」）
+  turnEnd(A, 1);
+  turnEnd(B, 2);
+  const recs = readFileSync(logI, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.ok(recs.filter((r) => r.kind === 'tool').every((r) => r.session === 'sess-aaaa' || r.session === 'sess-bbbb'), '每条 tool 线都带会话 id');
+  const { recallSignals } = await import(pathToFileURL(join(dir, 'lib.mjs')).href);
+  const r = recallSignals(recs);
+  assert.equal(r.sessions, 2, JSON.stringify(r));
+  assert.equal(r.unattributed, 0);
+  assert.equal(r.failureTurns, 2, '两个失败回合（A1 / B1）：' + JSON.stringify(r));
+  assert.equal(r.recalledBefore, 1, 'A1：自己先查过库（A 的 agent-error 与 bash 同回合，只算一次）：' + JSON.stringify(r));
+  assert.equal(r.misses, 1, 'B1 是漏召（A 的查库救不了 B）：' + JSON.stringify(r));
+  assert.deepEqual(r.samples.map((x) => x.session), ['sess-bbbb']);
+  // 对照：抹掉 session（＝旧日志的全局口径）→ 窗口混了，B1 的漏召被 A 的查库「掩盖」
+  const mixed = recallSignals(recs.map(({ session, ...rest }) => rest));
+  assert.equal(mixed.misses, 0, '全局口径下 B1 被 A 的查库掩盖、A 的出错被 B 的查库「救」——混窗确实发生：' + JSON.stringify(mixed));
+  assert.equal(mixed.recalledBefore, 2, JSON.stringify(mixed));
 }
 
 // —— 6. 2026-10 wave1：默认路径回归——默认日志必须落在 $HOME/.akasha/logs，不得在 cwd 下建出字面量 `~` 目录 ——

@@ -1181,9 +1181,32 @@ t('B2 recallSignals：失败前查库 = recalledBefore；未查 = miss；事后�
   assert.equal(r.lateRecall, 1, JSON.stringify(r));
   assert.equal(r.missRate, 0.6);
   assert.deepEqual(r.samples.map((x) => x.what), ['edit', 'agent-error', 'pwsh']);
-  assert.deepEqual(lib.recallSignals([]), { failureTurns: 0, recalledBefore: 0, misses: 0, lateRecall: 0, missRate: 0, samples: [] });
+  assert.deepEqual(lib.recallSignals([]), { failureTurns: 0, recalledBefore: 0, misses: 0, lateRecall: 0, missRate: 0, samples: [], sessions: 0, unattributed: 0 });
   assert.equal(lib.isRecallRecord(recTool('mcp__akasha__akasha_revise')), false, '写入面不是召回');
   assert.equal(lib.isRecallRecord(recTool('bash', true, { akashaCli: 'add' })), false, 'CLI 写入子命令不是召回');
+});
+t('B2 会话分区：两会话交错不混窗（A 的查库救不了 B；B 的回合结束不关 A 的窗口）；session- 前缀归一', () => {
+  assert.ok(lib, 'lib 缺失');
+  const A = (o) => ({ ...o, session: 'sess-aaaa' }); const B = (o) => ({ ...o, session: 'session-sess-bbbb' });
+  const recs = [
+    A(recTool('mcp__akasha__akasha_lookup')), B(recTool('bash', false)), A(recTool('bash', false)),
+    B({ kind: 'turn-end' }),
+    B(recTool('mcp__akasha__akasha_brief')), A({ kind: 'agent-error' }),
+    A({ kind: 'turn-end' }),
+    B(recTool('edit', false)), { ...B({ kind: 'turn-end' }), session: 'sess-bbbb' }
+  ];
+  const r = lib.recallSignals(recs);
+  assert.equal(r.sessions, 2, JSON.stringify(r));
+  assert.equal(r.failureTurns, 3, JSON.stringify(r));
+  assert.equal(r.recalledBefore, 2, 'A1 自查 + B2 同回合先查：' + JSON.stringify(r));
+  assert.equal(r.misses, 1, JSON.stringify(r));
+  assert.deepEqual(r.samples.map((x) => [x.session, x.what]), [['sess-bbbb', 'bash']], '漏召样本归属到 B1');
+  // 旧日志（不带 session）＝全局口径：结果与分区前的实现一致
+  const legacy = lib.recallSignals(recs.map(({ session, ...rest }) => rest));
+  assert.equal(legacy.unattributed, 6); assert.equal(legacy.sessions, 0);
+  assert.equal(legacy.misses, 1); assert.equal(legacy.samples[0].what, 'edit', '全局口径把漏召错记到 B2——正是要修的混窗');
+  assert.equal(lib.sessionKeyOf({ session: 'session-x' }), 'x');
+  assert.equal(lib.sessionKeyOf({}), '*');
 });
 t('B2 metrics().recall：桩 log + since 过滤；CLI metrics 打出召回信号行', () => {
   assert.ok(lib, 'lib 缺失');

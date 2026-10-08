@@ -86,8 +86,12 @@ export function apply(ctx, config = {}) {
         try { message = core().redact(message); } catch { /* 核心库缺失时仍截断 */ }
       }
       const akashaCli = akashaCliOf(exec?.name, exec?.arguments);
+      // wave1.1：会话 id ＝ exec.agent.id（DSH ToolExecution.agent 由 agent loop 设置；Agent.id 的类型就是 SessionId，
+      // 与 session/event 的 session.id、agent/error 的 payload.agent.id 同一值）。非 agent loop 发起的调用没有 agent → 不写该字段。
+      const sid = typeof exec?.agent?.id === 'string' && exec.agent.id ? exec.agent.id : null;
       write({
         kind: 'tool',
+        ...(sid ? { session: sid } : {}),
         tool: exec?.name ?? null,
         ok: !isError,
         message,

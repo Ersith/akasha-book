@@ -9,7 +9,7 @@
 - 记录文件：`logs/hooks.jsonl`（默认 `~/.akasha/logs/hooks.jsonl`；JSONL，一行一事件）。
 - 监听（全部为 contained 的 emit 事件，失败不打断宿主）：
   - `session/event` → `turn/end`：回合结束（`kind:"turn-end"`）；
-  - `tools/result` → 每次工具结果（`kind:"tool"`，含 `ok` 与失败 `message`；shell 工具若是 akasha CLI 查库子命令，追加 `akashaCli:"lookup"` 等子命令名——只记名、不记命令原文，供核心 `metrics` 的召回信号计数，wave1 · B2）；
+  - `tools/result` → 每次工具结果（`kind:"tool"`，含 `ok` 与失败 `message`；shell 工具若是 akasha CLI 查库子命令，追加 `akashaCli:"lookup"` 等子命令名——只记名、不记命令原文，供核心 `metrics` 的召回信号计数，wave1 · B2；**wave1.1 起带 `session`＝`exec.agent.id`**（宿主 `Agent.id` 即 `SessionId`，与 turn-end / agent-error 的 `session` 同值；无 agent 的调用不写），召回计数据此按会话分区）；
   - `agent/error` → step / turn 出错（`kind:"agent-error"`）；
   - `agent/status` → running→idle（`kind:"idle"`，去抖 + 计数器快照）；
   - `agent/assistant-stream` → **输出审计**：按 attemptId 连续累积 assistant 文本流（宿主 revision 逐帧递增——不可按 revision 重置），committed 结束时跑核心库 `auditText`——
