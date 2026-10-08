@@ -73,7 +73,7 @@ id；term / trigger / behavior / resolution / source 全部必填（string）。
 基石分层要求「教程/工具类资料不进 frontier」，而 append-only 只支持追加 ⇒ 需要显式的**移出**原语（CLI；脚本可调 `retireRecord`）：
 
 - `node akasha.mjs retire <store> <id> [--reason '...']` —— **软退役（默认）**：在链尾之后追加一条**墓碑**记录（`id: <链尾 id>-retired`，字段 `retires: <链尾 id>` + `retired_at` + `retired_reason`；其余字段克隆链尾，以便照常通过该校验）。被退役记录**连同其全部修订版本与墓碑本身**都不进「当前集」（`currentRecords`）——因此 `lookup` / `brief` / `cross` / `summary` / `audit` / `stats` / `frontier list` / `orphan list` 全部不再看见它；历史仍在文件里可追溯。
-- `node akasha.mjs retire <store> <id> --hard` —— **删除**：把该 id 的整条修订链与墓碑**行**从存储文件移除；移前先把被删行备份到 `data/_trash/<日期>-<store>.jsonl`（保留 append-only 精神：先留副本，再删）。
+- `node akasha.mjs retire <store> <id> --hard` —— **删除**：把该 id 的整条修订链与墓碑**行**从存储文件移除；移前先把被删行备份到 `data/_trash/<日期>-<store>.jsonl`（保留 append-only 精神：先留副本，再删）。**wave1 起**：读→判→写整段持存储文件锁（与 `appendRecord` 同一把锁），备份 fsync 后再**原子替换**原文件；回收站跟着存储文件走（`<存储文件所在目录>/_trash`；真库即 `data/_trash`，临时库不再污染示例库目录）。
 - 幂等：已退役者重复调用返回 `already: true`。
 - 校验：`retires` 必须指向存在的 id（悬空指针由 `check` 报错）；`check` 的每库报告新增 `retired` 计数。
 - 不变式：退役/删除只作用于该 id 的链，不影响其它记录。

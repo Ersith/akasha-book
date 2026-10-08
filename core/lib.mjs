@@ -878,9 +878,14 @@ export function checkRetires(store, records) {
 // 返回值：{ store, id, retired, tombstone?, hard, removed?, trash? }
 export function retireRecord(store, id, opts = {}) {
   if (!STORES.includes(store)) throw new Error('未知存储：' + store);
+  const file = opts.file || storePath(store);
+  // wave1：读→判→写整段持锁（此前硬删在锁外整文件重写——与并发 appendRecord 竞争时会吞掉新行）。
+  return withFileLock(file, () => retireRecordUnlocked(store, id, opts, file));
+}
+
+function retireRecordUnlocked(store, id, opts, file) {
   const hard = opts.hard === true;
   const reason = typeof opts.reason === 'string' && opts.reason.trim() ? opts.reason.trim() : '';
-  const file = opts.file || storePath(store);
   const records = loadStore(store, file).records;
   const byId = new Map(records.map((r) => [r.id, r]));
   if (!byId.has(id)) throw new Error('找不到记录：' + id);
@@ -908,18 +913,25 @@ export function retireRecord(store, id, opts = {}) {
     for (const r of records) if (r.retires && dropIds.has(r.retires)) dropIds.add(r.id);   // 连墓碑一起
     const removed = records.filter((r) => dropIds.has(r.id));
     const keep = records.filter((r) => !dropIds.has(r.id));
-    const trashDir = join(DATA, '_trash');
+    // 回收站跟着存储文件走（真库 = DATA/_trash，与此前一致）；此前固定写 DATA/_trash，
+    // 用临时 opts.file 的自检会把夹具行写进示例库目录。
+    const trashDir = join(dirname(file), '_trash');
     mkdirSync(trashDir, { recursive: true });
     const trash = join(trashDir, new Date().toISOString().slice(0, 10) + '-' + store + '.jsonl');
-    if (removed.length) appendFileSync(trash, removed.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
-    writeFileSync(file, keep.map((r) => JSON.stringify(r)).join('\n') + (keep.length ? '\n' : ''), 'utf8');
+    // 顺序：先落回收站（fsync）再原子替换——任一步崩溃都不丢数据（最坏是回收站多一份）。
+    if (removed.length) {
+      const fd = openSync(trash, 'a');
+      try { writeSync(fd, removed.map((r) => JSON.stringify(r)).join('\n') + '\n'); fsyncSync(fd); }
+      finally { closeSync(fd); }
+    }
+    writeFileAtomic(file, keep.map((r) => JSON.stringify(r)).join('\n') + (keep.length ? '\n' : ''));
     return { store, id: tip.id, retired: tip.id, hard: true, removed: removed.length, trash };
   }
 
   const tomb = { ...tip, id: tip.id + '-retired', retires: tip.id, retired_at: new Date().toISOString() };
   if (reason) tomb.retired_reason = reason;
   delete tomb.logged_at;   // 与 revise 一致：墓碑自成一版，盖自己的写入时间戳
-  appendRecord(store, tomb, { file });
+  appendRecordUnlocked(store, tomb, file, {});   // 已在 retireRecord 的锁内（锁不可重入）
   return { store, id: tip.id, retired: tip.id, tombstone: tomb.id, hard: false, reason };
 }
 

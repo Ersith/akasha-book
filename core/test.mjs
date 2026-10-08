@@ -1151,6 +1151,9 @@ t('退役（硬删）：整条修订链移除并留备份（临时库）', () =>
   assert.equal(lib.loadStore('canon', tmp).records.length, 0, '硬删后文件应无残留');
   assert.ok(existsSync(r.trash), '应生成备份文件');
   assert.ok(readFileSync(r.trash, 'utf8').includes('canon-hard-test'), '备份应含被删行');
+  // wave1：回收站跟着存储文件走——临时库的硬删不得把夹具行写进示例库 data/_trash
+  assert.equal(dirname(r.trash), join(SCRATCH, '_trash'), '备份应落在被删文件旁的 _trash：' + r.trash);
+  assert.ok(!existsSync(lib.storePath('canon') + '.lock'), '退役后锁已释放');
 });
 t('退役：currentRecords 不把墓碑当当前记录（回归哨兵）', () => {
   assert.ok(lib, 'lib 缺失');
