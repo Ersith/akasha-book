@@ -5,7 +5,7 @@ import { checkAll, lookupDetailed, normalizeDateArg, price, stats, appendRecord,
 import { lookupSegments } from './session.mjs';
 
 const TOOLS = [
-  { name: 'akasha_check', description: '校验阿卡夏之书（akasha）全部数据文件（可机检门控的雏形）', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'akasha_check', description: '校验阿卡夏之书（akasha）全部数据文件（含段升格标记三向核对；不读会话原档）', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'akasha_lookup', description: '在六库中机械检索；since / until 可选（YYYY-MM-DD，按事件时间/记录时间过滤）。**有日期过滤时建议 report:true**——返回 { hits, stats }（含「日期未知 N 条」与样本、范围外计数、timeSource）；undated:true 把日期未知并入 hits（标 undated）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, report: { type: 'boolean' }, undated: { type: 'boolean' } }, required: ['query'] } },
   { name: 'akasha_price', description: '按 严重度 × 不可逆性 × 代价 计算情绪定价标签（valence / arousal）；applyStore/applyId 可选=计算后回写该条目（修订链）', inputSchema: { type: 'object', properties: { severity: { type: 'number' }, irreversibility: { type: 'number' }, cost: { type: 'number' }, good: { type: 'boolean' }, applyStore: { type: 'string' }, applyId: { type: 'string' } }, required: ['severity', 'irreversibility', 'cost'] } },
   { name: 'akasha_stats', description: '结果计数器：各存储计数与来源分布', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },

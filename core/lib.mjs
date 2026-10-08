@@ -130,13 +130,33 @@ export function validateRecord(store, r) {
     if (r.year !== undefined && r.year !== null && !Number.isInteger(r.year)) e.push('year 须为整数或留空');
     if (r.supports !== undefined && (!Array.isArray(r.supports) || r.supports.some(s => typeof s !== 'string'))) e.push('supports 须为字符串数组');
   }
+  // wave2 §1：段升格来源（可选）。replay 只允许人工确认，且仅 canon + source.type=复现 必填。
+  if (r.promoted_from !== undefined) {
+    const p = r.promoted_from;
+    if (!p || typeof p !== 'object' || Array.isArray(p)) e.push('promoted_from 须为对象');
+    else {
+      if (p.store !== 'session') e.push('promoted_from.store 须为 session');
+      if (!isStr(p.id) || !p.id.startsWith('seg-')) e.push('promoted_from.id 须为段 id（seg- 开头）');
+      if (!isStr(p.session)) e.push('promoted_from.session 须为非空字符串');
+      if (!Number.isInteger(p.seq)) e.push('promoted_from.seq 须为整数');
+      if (!isStr(p.at)) e.push('promoted_from.at 须为非空字符串（ISO）');
+      if (p.replay !== undefined && p.replay !== 'manual') e.push('promoted_from.replay 只允许 "manual"');
+      if (p.replay === 'manual' && !isStr(p.replay_at)) e.push('promoted_from.replay_at 须为非空字符串');
+      if (p.replay === undefined && p.replay_at !== undefined) e.push('没有 replay 不得写 replay_at');
+      const replaySource = store === 'canon' && r.source && r.source.type === '复现';
+      if (replaySource && p.replay !== 'manual') e.push('source.type=复现 必须带 promoted_from.replay="manual"（段里没有成败，不能代核）');
+      if (p.replay !== undefined && !replaySource) e.push('promoted_from.replay 仅用于 canon 且 source.type=复现');
+    }
+  }
   return e;
 }
 
-export function checkAll() {
+export function checkAll(opts = {}) {
   const report = { ok: true, errors: [], stores: {} };
+  const loaded = {};
   for (const name of STORES) {
-    const { records, errors } = loadStore(name);
+    const { records, errors } = loadStore(name, (opts.files && opts.files[name]) || storePath(name));
+    loaded[name] = records;
     const ids = new Set(); const dups = [];
     let ok = 0;
     records.forEach((r, i) => {
@@ -151,8 +171,71 @@ export function checkAll() {
     for (const e of checkRetires(name, records)) report.errors.push(e);
     report.stores[name] = { total: records.length, ok, current: currentRecords(records).length, retired: retiredIds(records).size, loadErrors: errors.length };
   }
+  // wave2 §1：升格跨库核对。没有 promoted_from 且会话文件不存在 → 不读。
+  // 文件在则整次只读一次（段 id 集合 + promotion 标记）；坏行报错；绝不打开 zstd 原档。
+  const sessionFile = opts.sessionFile !== undefined ? opts.sessionFile : join(DATA, 'session.jsonl');
+  for (const err of checkPromotions(loaded, sessionFile)) report.errors.push(err);
   report.ok = report.errors.length === 0;
   return report;
+}
+
+/** 升格三向 + 会话文件缺失/坏行。纯核对，不读 ptr、不打开归档。 */
+export function checkPromotions(loaded, sessionFile) {
+  const out = [];
+  const promoted = [];
+  for (const name of STORES) {
+    for (const r of loaded[name] ?? []) {
+      if (!r || !r.promoted_from || r.retires) continue;
+      promoted.push({ store: name, rec: r });
+    }
+  }
+  const present = existsSync(sessionFile);
+  if (!promoted.length && !present) return out;
+  if (promoted.length && !present) {
+    out.push({ store: 'session', code: 'promotion-session-missing', errors: ['有升格记录但 session.jsonl 不存在：' + sessionFile] });
+    return out;
+  }
+  const parsed = parseJsonl(readFileSync(sessionFile, 'utf8'));
+  for (const err of parsed.errors) out.push({ store: 'session', code: 'bad-jsonl', ...err, errors: [err.error] });
+  const segIds = new Set();
+  const marks = [];
+  for (const r of parsed.records) {
+    if (!r || typeof r !== 'object') continue;
+    if (r.kind === 'promotion') marks.push(r);
+    else if (isStr(r.id)) segIds.add(r.id);
+  }
+  const markKey = new Set();
+  for (const m of marks) {
+    const to = m.promoted_to;
+    if (!to || !STORES.includes(to.store) || !isStr(to.id) || !isStr(m.seg)) {
+      out.push({ store: 'session', id: m.id, code: 'promotion-dangling', errors: ['promotion 标记不完整：' + (m.id ?? '?')] });
+      continue;
+    }
+    const ids = new Set((loaded[to.store] ?? []).map((r) => r && r.id).filter(Boolean));
+    if (!ids.has(to.id)) out.push({ store: 'session', id: m.id, code: 'promotion-dangling', errors: [`标记指向不存在的记录 ${to.store}/${to.id}`] });
+    markKey.add(to.store + '\0' + to.id + '\0' + m.seg);
+  }
+  const covered = (store, rec) => {
+    const byId = new Map((loaded[store] ?? []).filter((r) => r && r.id).map((r) => [r.id, r]));
+    let cur = rec;
+    const seen = new Set();
+    while (cur && cur.id && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      if (markKey.has(store + '\0' + cur.id + '\0' + rec.promoted_from.id)) return true;
+      cur = cur.supersedes ? byId.get(cur.supersedes) : null;
+    }
+    return false;
+  };
+  for (const { store, rec } of promoted) {
+    const from = rec.promoted_from;
+    if (!from || !isStr(from.id) || !segIds.has(from.id)) {
+      out.push({ store, id: rec.id, code: 'promotion-source-missing', errors: ['promoted_from 指向不存在的段：' + (from && from.id)] });
+    }
+    if (!covered(store, rec)) {
+      out.push({ store, id: rec.id, code: 'promotion-unmarked', errors: ['有 promoted_from 但没有 promotion 标记：' + rec.id] });
+    }
+  }
+  return out;
 }
 
 const LOOKUP_FIELDS = {

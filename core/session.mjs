@@ -4,7 +4,7 @@ import { readFileSync, appendFileSync, writeFileSync, readdirSync, mkdirSync } f
 import { dirname, join } from 'node:path';
 import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
-import { ROOT, loadStore, tokenize, scoreTokens, redact, writeFileAtomic } from './lib.mjs';
+import { ROOT, STORES, loadStore, storePath, tokenize, scoreTokens, redact, writeFileAtomic, appendRecord, retiredIds, withFileLock, validateRecord } from './lib.mjs';
 
 export const SESSION_DEFAULTS = {
   storeFile: join(ROOT, 'data', 'session.jsonl'),
@@ -296,7 +296,7 @@ export function collapseActionVersions(records) {
 
 /** 会话层检索：默认 意图/动作/结论/节点（结论 +1.0 优先）；process 仅 includeProcess 或显式 kind；level='nodes'|'segs' 过滤；节点只取当前代。
  *  all=true：动作不做版本归并（用于看历史版本）。 */
-export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, limit = 10, level, all = false } = {}) {
+export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, limit = 10, level, all = false, storeRecords = null } = {}) {
   const q = String(query ?? '').trim();
   if (!q) return [];
   const tokens = tokenize(q);
@@ -344,12 +344,36 @@ export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, 
     }
     hits.push(hit);
   }
-  return hits.sort((a, b) => b.weight - a.weight || a.seq - b.seq).slice(0, limit);
+  const ranked = hits.sort((a, b) => b.weight - a.weight || a.seq - b.seq).slice(0, limit);
+  // wave2 §1：promotion 标记折叠到段命中上（不参与计分、不改 strong）。
+  const bySeg = new Map();
+  for (const r of records) {
+    if (r.kind !== 'promotion' || typeof r.seg !== 'string' || !r.seg || !r.promoted_to) continue;
+    const list = bySeg.get(r.seg) ?? [];
+    list.push({ store: r.promoted_to.store, id: r.promoted_to.id });
+    bySeg.set(r.seg, list);
+  }
+  if (bySeg.size) {
+    const retiredCache = new Map();
+    const isRetired = (store, id) => {
+      if (!STORES.includes(store)) return false;
+      if (!retiredCache.has(store)) {
+        const recs = (storeRecords && storeRecords[store]) || loadStore(store).records;
+        retiredCache.set(store, retiredIds(recs));
+      }
+      return retiredCache.get(store).has(id);
+    };
+    for (const h of ranked) {
+      const list = bySeg.get(h.id);
+      if (list && list.length) h.promoted_to = list.map((x) => ({ store: x.store, id: x.id, retired: isRetired(x.store, x.id) }));
+    }
+  }
+  return ranked;
 }
 
 /** 注入块渲染（小体积；≤budget 字符，命令提示始终保底）。 */
 export function renderSessionContext({ storeFile = SESSION_DEFAULTS.storeFile, session, budget = 600 } = {}) {
-  const records = loadStore('session', storeFile).records.filter((r) => !session || r.session === session);
+  const records = loadStore('session', storeFile).records.filter((r) => r.kind !== 'promotion' && (!session || r.session === session));
   const counts = { conclusion: 0, action: 0, intent: 0, process: 0 };
   for (const r of records) if (counts[r.kind] !== undefined) counts[r.kind] += 1;
   const sid8 = String(session ?? '').slice(0, 8) || 'all';
@@ -363,6 +387,61 @@ export function renderSessionContext({ storeFile = SESSION_DEFAULTS.storeFile, s
     text = (head + mid).slice(0, room) + '…' + tail;
   }
   return text;
+}
+
+const PROMOTE_KINDS = new Set(['conclusion', 'action']);
+
+/** 段升格（wave2 §1）。默认 dry；--apply 才写。先六库 appendRecord，再追加 promotion 标记。不读 tools、不打开原档。 */
+export function promoteSegment(segId, opts = {}) {
+  const store = opts.to;
+  if (!STORES.includes(store)) {
+    return { ok: false, code: 'usage', error: '必须指定 --to <canon|mirror|orphan|pricing|lexicon|frontier>（拿不准就 --to orphan）' };
+  }
+  const sessionFile = opts.sessionFile || SESSION_DEFAULTS.storeFile;
+  const targetFile = opts.targetFile || storePath(store);
+  const segs = loadStore('session', sessionFile).records;
+  const seg = segs.find((r) => r && r.id === segId && r.kind !== 'promotion');
+  if (!seg) return { ok: false, code: 'not-found', error: '找不到段：' + segId };
+  if (!PROMOTE_KINDS.has(seg.kind)) return { ok: false, code: 'kind', error: `段类型 ${seg.kind} 不能升格（只允许 conclusion / action）` };
+
+  if (opts.repair) {
+    const hits = loadStore(store, targetFile).records.filter((r) => r && r.promoted_from && r.promoted_from.id === seg.id && !r.retires);
+    if (!hits.length) return { ok: false, code: 'not-found', error: '六库里没有这条升格记录，不能补标记' };
+    const have = new Set(segs.filter((r) => r.kind === 'promotion').map((r) => r.id));
+    const missing = hits.filter((r) => !have.has(`promo-${seg.id}-${store}-${r.id}`));
+    if (!missing.length) return { ok: false, code: 'present', error: '标记已在，无需补' };
+    const marks = missing.map((r) => ({
+      id: `promo-${seg.id}-${store}-${r.id}`, store: 'session', kind: 'promotion', seg: seg.id,
+      promoted_to: { store, id: r.id }, at: new Date().toISOString()
+    }));
+    if (!opts.apply) return { ok: true, dry: true, repair: true, marks };
+    withFileLock(sessionFile, () => appendSegments(sessionFile, marks));
+    return { ok: true, dry: false, repair: true, marks };
+  }
+
+  const data = opts.data && typeof opts.data === 'object' && !Array.isArray(opts.data) ? { ...opts.data } : {};
+  if (data.promoted_from !== undefined) return { ok: false, code: 'usage', error: 'promoted_from 由升格写入，不能经 --data 传入' };
+  if (typeof data.id !== 'string' || !data.id.trim()) return { ok: false, code: 'usage', error: '--data 必须含 id' };
+  const at = new Date().toISOString();
+  const from = { store: 'session', id: seg.id, session: String(seg.session ?? ''), seq: Number.isInteger(seg.seq) ? seg.seq : 0, at };
+  const sourceType = data.source && data.source.type;
+  if (opts.confirmReplay) {
+    if (!(store === 'canon' && sourceType === '复现')) return { ok: false, code: 'replay', error: '--confirm-replay 只用于 canon 且 source.type=复现' };
+    from.replay = 'manual';
+    from.replay_at = at;
+  } else if (store === 'canon' && sourceType === '复现') {
+    return { ok: false, code: 'replay', error: '段里没有成败，不能代核。source.type=复现 必须显式 --confirm-replay（人工核对原档）' };
+  }
+  const record = { ...data, promoted_from: from };
+  const errs = validateRecord(store, record);
+  if (errs.length) return { ok: false, code: 'validate', error: errs.join('；') };
+  const mark = { id: `promo-${seg.id}-${store}-${record.id}`, store: 'session', kind: 'promotion', seg: seg.id, promoted_to: { store, id: record.id }, at };
+  if (segs.some((r) => r.id === mark.id)) return { ok: false, code: 'duplicate', error: '同一段已升格到该记录' };
+  if (loadStore(store, targetFile).records.some((r) => r.id === record.id)) return { ok: false, code: 'duplicate', error: '目标库已有 id：' + record.id };
+  if (!opts.apply) return { ok: true, dry: true, record, mark };
+  appendRecord(store, record, { file: targetFile });
+  withFileLock(sessionFile, () => appendSegments(sessionFile, [mark]));
+  return { ok: true, dry: false, record, mark };
 }
 
 // ---------- 抽象层 v0.2：弧线节点（机械树；设计稿 §4.4） ----------

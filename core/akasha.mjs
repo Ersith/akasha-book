@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue } from './lib.mjs';
 import { sleepRun } from './sleep.mjs';
-import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, SESSION_DEFAULTS } from './session.mjs';
+import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -294,6 +294,8 @@ switch (cmd) {
       '会话层（session layer）用法：',
       '  node akasha.mjs session index <sessionId|文件路径> [--session ID] [--root D] [--store F] [--meta F] [--full]',
       '  node akasha.mjs session lookup <词> [--session ID] [--kind a,b] [--level nodes|segs] [--since D] [--until D] [--process] [--all] [--limit N] [--store F] [--json]',
+      '  node akasha.mjs session promote <segId> --to <store> [--data \'<json>\'] [--confirm-replay] [--apply] [--repair] [--store F] [--target F]',
+      '    默认只预览；--apply 才写。--to 必填（拿不准就 --to orphan）。复现必须 --confirm-replay（段里没有成败，不能代核）。',
       '  node akasha.mjs session context [--session ID] [--budget N] [--store F]',
       '  node akasha.mjs session stats [--store F] [--json]',
       '  node akasha.mjs session tree [--build] --session ID [--store F]   # 弧线树：--build 重建当前代',
@@ -356,6 +358,25 @@ switch (cmd) {
       print(hits, lines.join('\n'));
       break;
     }
+    if (sub === 'promote') {
+      const segId = rest[1];
+      const usage = "用法：session promote <segId> --to <store> [--data '<json>'] [--confirm-replay] [--apply] [--repair]\n--to 必填（拿不准就 --to orphan）。默认不写；--apply 才写。source.type=复现 必须 --confirm-replay。";
+      if (!segId || !flags.to) { print(null, usage); code = 1; break; }
+      let data = {};
+      if (flags.data) {
+        try { data = JSON.parse(String(flags.data)); }
+        catch { print(null, '--data 不是合法 JSON\n' + usage); code = 1; break; }
+      }
+      const r = promoteSegment(segId, {
+        to: String(flags.to), data, confirmReplay: flags['confirm-replay'] === true,
+        apply: flags.apply === true, repair: flags.repair === true,
+        sessionFile: storeFile, targetFile: flags.target ? String(flags.target) : undefined
+      });
+      if (!r.ok) { print(r, r.error); code = 1; break; }
+      const preview = r.repair ? JSON.stringify(r.marks, null, 2) : JSON.stringify({ record: r.record, mark: r.mark }, null, 2);
+      print(r, r.dry ? '预览（未写入；加 --apply 才写）：\n' + preview : (r.repair ? '已补标记：' + r.marks.map((m) => m.id).join('，') : '已升格：' + r.record.id + ' ← ' + segId));
+      break;
+    }
     if (sub === 'context') {
       const text = renderSessionContext({ storeFile, session: flags.session ? String(flags.session) : undefined, budget: Number(flags.budget) || 600 });
       print(null, text);
@@ -364,9 +385,10 @@ switch (cmd) {
     if (sub === 'stats') {
       const records = loadStore('session', storeFile).records;
       const byKind = {}; const sessions = new Set();
-      for (const r of records) { byKind[r.kind] = (byKind[r.kind] ?? 0) + 1; if (r.session) sessions.add(r.session); }
-      const obj = { segments: records.length, sessions: sessions.size, byKind };
-      print(obj, [`会话层：${records.length} 段 / ${sessions.size} 个会话`, '· 类别：' + Object.entries(byKind).map(([k, v]) => `${k} ${v}`).join(' / ')].join('\n'));
+      for (const r of records) { byKind[r.kind] = (byKind[r.kind] ?? 0) + 1; if (r.kind !== 'promotion' && r.session) sessions.add(r.session); }
+      const segN = records.filter((r) => r.kind !== 'promotion').length;
+      const obj = { segments: segN, sessions: sessions.size, byKind };
+      print(obj, [`会话层：${segN} 段 / ${sessions.size} 个会话`, '· 类别：' + Object.entries(byKind).map(([k, v]) => `${k} ${v}`).join(' / ')].join('\n'));
       break;
     }
     if (sub === 'loopwatch') {
@@ -416,7 +438,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
+    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
     code = cmd ? 1 : 0;
 }
 process.exit(code);
