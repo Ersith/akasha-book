@@ -1,4 +1,4 @@
-// 阿卡夏之书会话层插件 v0.2（@akasha-book/akasha-session）—— 自动增量索引 + 压缩事件行 + 节奏条 + 循环观测 P0（dry）。
+// 阿卡夏之书会话层插件 v0.2（@akasha-book/session）—— 自动增量索引 + 压缩事件行 + 节奏条 + 循环观测 P0（dry）。
 //   · 核心逻辑归 ~/.akasha/session.mjs（插件只做调度与注入；降级只留痕，不炸宿主）
 //   · 观测线（hooks.jsonl）：session-armed / session-index / session-index-skip / session-index-error / session-compact
 //     + 循环观测（P0 干跑，2026-10-07）：loop-watch / loop-watch-probe —— **只观测、绝不干预**（不 steer / 不 cancel / 不注入）

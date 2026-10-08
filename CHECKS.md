@@ -92,6 +92,14 @@
 - **来源**：Claude 对仓库的本地评审修复批（分支 `fix/review-2026-10`，未推送/未开 PR）——信任边界、写入事务、水位、计分对齐、文档漂移，共 19 文件 / +361−99。
 - **过程**：补丁在 HEAD `75d3864` 干净可应用；因 OSS 基线落后活树（缺 `retire` 等），改用**三方合并**（base=OSS / ours=活树 / theirs=补丁）——**8 处冲突全部人工仲裁**；另抓修 3 个「合并缝」缺陷：`appendRecordUnlocked` 的 opts 透传断链、"严格查重"与"显式复活"冲突（allowResurrect 整体豁免）、自检故障注入法随真修复（自动建父目录）失效改用目录占位。
 - **落装**：活树核心 + 四插件源码；五件 package.json 补 `engines`（gate/hooks/sleep `>=18`；session/mcp `>=22.15.0`）；`redact()` 增补 `npm_`/`hf_`/`glpat_` 三类前缀；`retire`（软/硬退役 + 防复活）随批次入 OSS。
-- **验证**：活树核心 **97/97**；dist（示例库口径）核心 **104/104**（= 原 89 + 移植的退役族 15 项）；四插件自检全绿（session 18/18）；MCP 桥 17 工具；同步器升级 `oss-sync-20261008d`（内容级复制＋转换；不再覆盖 OSS 专属测试）**隐私终扫零命中**。
+- **验证**：活树核心 **97/97**；dist（示例库口径）核心 **104/104**（= 原 89 + 移植的退役族 15 项）；四插件自检全绿（Node ≥22.15；Node 20 下 zstd 用例 SKIP；session 18/18）；MCP 桥 17 工具；同步器升级 `oss-sync-20261008d`（内容级复制＋转换；不再覆盖 OSS 专属测试）**隐私终扫零命中**。
 - **约定更新**：OSS 侧 `core/test.mjs` 系「示例库口径」独立维护（与 live 真实库口径分离，新用例按需人工移植）；论文与运营数字不动。
 - **待办**：插件运行时激活（repack→install→重启）随下一批；token 卫生（`npm_` 前缀入 redact 已做，用户侧轮换旧 token）。
+
+## R13 · 外援 wave1 合并（2026-10-08）
+
+- **来源**：Claude 分支 `wave1/recall-mirror`（9 提交，未推送；基线 `cddc9d6`）——B1 压缩失败不得假宣称「已收入」、B2 召回漏计数（按会话分区）、镜像 `role`（解法/边界）、门控/钩子默认路径去 `~` 字面量、`retire --hard` 事务化（全程持锁＋先备份＋原子替换）、Node 20 下 zstd 用例 SKIP 回补。
+- **验证（我方独立）**：`git am` 九补丁干净（→ 本地 `085e8d4` 血缘），`all.diff` 单独应用后**树哈希一致**；Node 24 核心 **111/111**、session **20/20**、gate/hooks/sleep 全过；跑测后 `core/data/` 零残渣。
+- **活树移植**：三方合并 14 文件（冲突 10 处全裁；另修 2 处合并缝：hooks B2 块被吞、session 自检 `CORE` 常量缺失）；活树核心 **111/111**、四插件全绿；活树侧自检按本机口径适配（默认路径=绝对路径；唤醒条断言不采 OSS 口径）。
+- **同步器加固（防回归，Claude 提示的正主）**：`oss-sync-20261008d` 增 ① **默认值 homedir 化**（gate/hooks——活树绝对路径 → OSS `join(homedir(), '.akasha', …)`；杜绝 `~` 字面量回归）② **包名映射** `@local/akasha-X → @akasha-book/X`、`@local/mcp-akasha → @akasha-book/mcp`（顺带修正 SCHEMA/lib/sleep/session 里 5 处旧误名）。resync 幂等：重跑后工作区零残差。
+- **数字更正**：R12 的「四插件自检全绿」在 Node 20 下不成立（zstd 用例 SKIP），已在其正文标注；wave1 后基准为 **Node 24：核心 111 / session 20**。

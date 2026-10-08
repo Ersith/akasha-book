@@ -171,7 +171,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 ## 输出审计与使用计数（v0，2026-10-07 起）
 
-- 钩子插件（`@akasha-book/akasha-hooks` v1.2）监听 `agent/assistant-stream`，对 committed 的 assistant 文本跑 `auditText`（纯函数）：
+- 钩子插件（`@akasha-book/hooks` v1.2）监听 `agent/assistant-stream`，对 committed 的 assistant 文本跑 `auditText`（纯函数）：
   - 引用**不存在**的库 id → `output-audit` 观测线（编造引用嫌疑）；
   - 引用**真实**库 id → `usage` 观测线（**条目级使用计数 v0**）。
 - **v1.2 修复（2026-10-07 复查）**：官方 revision **逐帧递增**——累积必须按 `attemptId` 连续（修复前按 revision 重置 ⇒ 每 chunk 清空、`output-audit`/`usage` **恒 0 条**）；id 跨帧切分可还原。
@@ -201,4 +201,4 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 - **调用分级**：被动行 → 定向轻查（session lookup / 主库 lookup·brief）→ 停靠与导航（session tree / node）→ 深取回档（--process / ptr 回原档 / 主库 cross·show）。
 - 计分：与主库同一 `scoreTokens`（整词 ×1 + min(Σ回退, 0.9)；结论 +1.0 只进排序权重）。`strong` 表示至少一次整词命中。
 - 覆盖边界：旧格式（8–9 月 chunk 型）仅部分可抽取；读取侧 `frameFails` 记录损坏 / 半写帧；会话层条目**免复审**（天然带时间，非知识断言）。
-- 插件（`@akasha-book/akasha-session` v0.2.3，2026-10-07 起）：`turn/end` 去抖（30s/会话）自动增量索引 + 压缩事件行（`compaction/end` 真值；成功才记；**wave1 起压缩先强制补索引（绕过去抖/背压），`session-compact` 线带 `indexed`/`reason`——仅 `indexed:true` 时节奏条说「已收入」，否则提示「可能未进会话层」与回退路径；同会话后续索引成功即改口**）+ 每回合节奏条（`systemPrompt.context`，order 134）；**v0.2 起含循环观测 P0（dry 干跑——只观测不干预）**：流环（**现役格式＝`agent/assistant-stream` 帧**：reasoning/text-delta 累积，480 字符节流 + 8K 尾窗；`assistant/chunk` 系 V0 遗物仅兼容保留；chunk 帧的 turn/step 由 start 帧缓存补全）+ turn 环（turn-stopping/`turn/end` 兜底，取数＝事件流缓存全文）+ 帧/类型探针 → `loop-watch` / `loop-watch-probe` 观测线（写 `logs\hooks.jsonl`；汇总 `session loopwatch`）。观测线 `session-armed` / `session-index` / `session-index-skip` / `session-index-error` / `session-compact`。
+- 插件（`@akasha-book/session` v0.2.3，2026-10-07 起）：`turn/end` 去抖（30s/会话）自动增量索引 + 压缩事件行（`compaction/end` 真值；成功才记；**wave1 起压缩先强制补索引（绕过去抖/背压），`session-compact` 线带 `indexed`/`reason`——仅 `indexed:true` 时节奏条说「已收入」，否则提示「可能未进会话层」与回退路径；同会话后续索引成功即改口**）+ 每回合节奏条（`systemPrompt.context`，order 134）；**v0.2 起含循环观测 P0（dry 干跑——只观测不干预）**：流环（**现役格式＝`agent/assistant-stream` 帧**：reasoning/text-delta 累积，480 字符节流 + 8K 尾窗；`assistant/chunk` 系 V0 遗物仅兼容保留；chunk 帧的 turn/step 由 start 帧缓存补全）+ turn 环（turn-stopping/`turn/end` 兜底，取数＝事件流缓存全文）+ 帧/类型探针 → `loop-watch` / `loop-watch-probe` 观测线（写 `logs\hooks.jsonl`；汇总 `session loopwatch`）。观测线 `session-armed` / `session-index` / `session-index-skip` / `session-index-error` / `session-compact`。

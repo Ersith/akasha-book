@@ -1,5 +1,5 @@
 // akasha/sleep.mjs —— 睡眠器蒸馏核心（2026-10-07 v2：逻辑归库、调度归插件）。
-// 迁移自 @akasha-book/akasha-sleep v1.3.1 的 lib/index.js（distillHooks / buildTodos / renderContextLine / renderPulseLine 逐字一致）；
+// 迁移自 @akasha-book/sleep v1.3.1 的 lib/index.js（distillHooks / buildTodos / renderContextLine / renderPulseLine 逐字一致）；
 // 新增：sleepRun（含 --dry / 同日报告不覆盖 / report/state/inbox 写失败观测线）+ shouldSleep（去抖判断）。
 // 手动触发：node akasha.mjs sleep [--dry] —— 与插件自动触发共用同一水位线 sleep-state.json（不重复蒸馏、不丢增量）。
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';

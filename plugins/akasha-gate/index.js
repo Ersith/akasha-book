@@ -19,7 +19,7 @@ export const inject = ['tools', 'systemPrompt'];
 const DEFAULT_AKASHA_DIR = join(homedir(), '.akasha');
 const DEFAULT_DATA_DIR = join(DEFAULT_AKASHA_DIR, 'data');
 const DEFAULT_LOG = join(DEFAULT_AKASHA_DIR, 'logs', 'hooks.jsonl');
-/** `~` / `~/x` / `~\\x` → 家目录；其余原样。 */
+/** `~` / `~/x` / `~\x` → 家目录；其余原样。 */
 export function expandHome(p) {
   if (typeof p !== 'string') return p;
   if (p === '~') return homedir();

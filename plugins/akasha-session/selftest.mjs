@@ -4,8 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');
 
+const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');
 const SCRATCH = join(tmpdir(), 'akasha-session-selftest');
 mkdirSync(SCRATCH, { recursive: true });
 // 清残：失败路径可能留下的临时目录（成功路径自清）

@@ -809,7 +809,7 @@ export function kit(opts = {}) {
   };
 
   const hints = [];
-  if (!sleep) hints.push('睡眠从未运行：等待首个空闲（或 timer 兜底）触发，或检查 @akasha-book/akasha-sleep 是否激活。');
+  if (!sleep) hints.push('睡眠从未运行：等待首个空闲（或 timer 兜底）触发，或检查 @akasha-book/sleep 是否激活。');
   if (inbox.totalItems > 0) hints.push(`待办 ${inbox.totalItems} 条（logs\\inbox.jsonl）：按「失败回查 / 孤案候选 / 召回复盘（recall-miss）」处理或转正式条目。`);
   for (const f of review.findings) if (f.level === 'warn') hints.push(`审计警告：${f.code} ×${f.count}（akasha_audit / akasha_frontier_due 可查明细）。`);
   hints.push('开工姿势：相关主题先 brief；事实性断言带来源态（学过 / 接触过 / 记得·库内 / 搜到）。');
