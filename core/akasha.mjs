@@ -3,7 +3,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue } from './lib.mjs';
-import { sleepPlan, sleepRun } from './sleep.mjs';
+import { replayHistory, sleepPlan, sleepRun } from './sleep.mjs';
 import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
 const argv = process.argv.slice(2);
@@ -171,6 +171,27 @@ switch (cmd) {
     break;
   }
   case 'sleep': {
+    if (flags.replay) {
+      // 历史回放：只读。同一份旧日志再数 recall.misses，并对照计划会移出的 id。不写库。
+      if (flags.apply || flags.rollback) { console.error('sleep --apply / --rollback 尚未实现：回放只报告 misses 会不会变，不改库。'); code = 1; break; }
+      const pick = (k) => (typeof flags[k] === 'string' ? flags[k] : undefined);
+      const out = flags.out === undefined ? false : pick('out');
+      if (flags.out !== undefined && out === undefined) { console.error('sleep --replay 的 --out 须为文件路径（省略则只打印，不落盘）。'); code = 1; break; }
+      const r = replayHistory({ today: pick('today'), theta: pick('theta'), maxOps: pick('max'), orphanDays: pick('orphan-days'), staleDays: pick('stale-days'), log: pick('log'), out });
+      if (!r.ok) { console.error('历史回放失败：' + r.error); code = 1; break; }
+      const g = r.report;
+      const lines = [
+        `历史回放 ${g.replayId}（只读；日志与六库未改）${g.log.missing ? '；日志不存在，按空日志计' : ''}`,
+        `  日志 ${g.log.lines} 行${g.log.bad ? `（坏行 ${g.log.bad}）` : ''} · 计划 ${g.plan.planId} · ops ${g.plan.ops} · 将移出 ${g.plan.removed.length} 个 id · 已 refute ${g.layering.refuted}`,
+        `  记录口径 misses ${g.recall.asRecorded.misses} / 失败回合 ${g.recall.asRecorded.failureTurns}；原样再算 misses ${g.recall.replayed.misses}（Δ ${g.recall.delta}）`,
+        `  结论：${g.verdict}。分层 / 合并 / 丢弃建议不是 B2 的输入。`,
+        `  对照（不采用）：若删掉只引用这些 id 的召回行，misses 会变成 ${g.survivorBias.rewritten.misses}（Δ ${g.survivorBias.delta}）${g.survivorBias.wouldRise ? '——这是幸存者偏差，不是漏召变多' : ''}`,
+        `  日志里点名将被移出或已 refute 的 id：${g.survivorBias.citationCount} 处`
+      ];
+      if (r.reportFile) lines.push('  报告 ' + r.reportFile);
+      print(g, lines.join('\n'));
+      break;
+    }
     if (flags.plan) {
       // wave2 §2 第一批：只出计划（只读六库，只写计划文件；不动水位线）。--apply / 回滚尚未实现。
       if (flags.apply || flags.rollback) { console.error('sleep --apply / --rollback 尚未实现：先评审 --plan 的输出（wave2 §2 下一批）。'); code = 1; break; }
@@ -459,7 +480,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D] [--include-refuted] [--today D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
+    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D] [--include-refuted] [--today D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|sleep --replay [--log F] [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
     code = cmd ? 1 : 0;
 }
 process.exit(code);

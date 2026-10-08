@@ -794,6 +794,20 @@ export function auditText(text) {
   };
 }
 
+/** 一条 hooks 记录里点名的库 id（usage.ids，以及 output/result/text 里的 id 形）。不读库。 */
+export function recordCitedIds(rec) {
+  if (!rec || typeof rec !== 'object') return [];
+  const ids = [];
+  const push = (id) => { if (typeof id === 'string' && id && !ids.includes(id)) ids.push(id); };
+  if (Array.isArray(rec.ids)) for (const id of rec.ids) push(id);
+  for (const key of ['output', 'result', 'text']) {
+    if (typeof rec[key] !== 'string') continue;
+    OUTPUT_ID_RE.lastIndex = 0;
+    for (const m of rec[key].match(OUTPUT_ID_RE) || []) push(m.toLowerCase());
+  }
+  return ids;
+}
+
 // —— 召回失败信号（B2 · 2026-10 wave1；会话分区 wave1.1）——
 // 双路召回（机械钩子 + 主动查库）漏掉的，只能事后从日志里认出来：某回合出了失败，而失败之前没有任何查库动作。
 // 纯机械口径（代码做计数、语义判断留给模型/人）：

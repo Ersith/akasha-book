@@ -5,7 +5,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { ROOT, STORES, audit, credibilityTodos, currentRecords, isProtocolId, parseJsonl, recallSignals, redact, storePath, tokenize, writeFileAtomic } from './lib.mjs';
+import { ROOT, STORES, audit, credibilityMap, credibilityTodos, currentRecords, isProtocolId, isRecallRecord, loadStore, parseJsonl, recallSignals, recordCitedIds, redact, storePath, tokenize, writeFileAtomic } from './lib.mjs';
 
 export const SLEEP_DEFAULTS = {
   log: join(ROOT, 'logs', 'hooks.jsonl'),
@@ -462,6 +462,122 @@ export function sleepPlan(opts = {}) {
       writeFileAtomic(planFile, JSON.stringify(plan, null, 2) + '\n');
     }
     return { ok: true, plan, planFile };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error).slice(0, 300) };
+  }
+}
+
+const recallBrief = (sig) => ({
+  misses: sig.misses, failureTurns: sig.failureTurns, recalledBefore: sig.recalledBefore,
+  lateRecall: sig.lateRecall, missRate: sig.missRate, sessions: sig.sessions
+});
+
+/**
+ * 历史回放（只读，wave2 B2 · §2.4.6 / §3.4.6）。
+ * 同一份 hooks 日志原样再跑 recallSignals，并对照当时会生成的 sleep --plan。
+ * 不写六库、不写计划文件、不动水位线。`--apply` / `revokes` 不在这里。
+ *
+ * 正确口径：分层系数、refute 隐藏、merge/discard 建议都不是 B2 的输入
+ * （召回 = 日志里有过成功的查库动作，不看查中了哪条）。所以同一份日志再算，misses 不得上升。
+ * 错误口径（记在 survivorBias 里，不采用）：把「点名的 id 全部落在将被 absorb/discard、或当前已 refute 的集合」
+ * 的召回行从日志里删掉再数。那个数上升，只说明「假装这些查库没发生」会制造漏召——
+ * 不能拿事后的 miss 率证明合并无害（幸存者偏差）。没点名 id 的查库行保留：无法证明它依赖被删条目。
+ *
+ * opts 同 sleepPlan（files / log / today / theta / maxOps / orphanDays / staleDays / now），
+ * 另加 out：缺省或 false = 不落盘；字符串 = 只写这份回放 JSON（拒绝写到存储文件上）。
+ */
+export function replayHistory(opts = {}) {
+  try {
+    const logFile = opts.log || SLEEP_DEFAULTS.log;
+    let buf = null;
+    if (!existsSync(logFile)) buf = Buffer.alloc(0);
+    else buf = readFileSync(logFile);
+    const records = [];
+    let bad = 0;
+    for (const raw of buf.toString('utf8').split(/\r?\n/)) {
+      if (!raw.trim()) continue;
+      try { records.push(JSON.parse(raw)); } catch { bad += 1; }
+    }
+    const logFp = { bytes: buf.length, sha256: buf.length ? sha256(buf) : null, missing: !existsSync(logFile), lines: records.length, bad };
+
+    const planned = sleepPlan({
+      files: opts.files, log: logFile, today: opts.today, theta: opts.theta, maxOps: opts.maxOps,
+      orphanDays: opts.orphanDays, staleDays: opts.staleDays, now: opts.now, out: false
+    });
+    if (!planned.ok) return planned;
+
+    const removed = [];
+    planned.plan.ops.forEach((op, i) => {
+      if (op.op === 'discard') removed.push({ id: op.id, store: op.store, via: 'discard', reason: op.reason, op: i });
+      else if (op.op === 'merge') for (const id of op.absorb) removed.push({ id, store: op.store, via: 'absorb', keep: op.keep, reason: op.reason, op: i });
+    });
+
+    const today = planned.plan.params.today;
+    const refuted = [];
+    for (const store of STORES) {
+      const file = (opts.files && opts.files[store]) || storePath(store);
+      const loaded = loadStore(store, file).records;
+      const map = credibilityMap(store, loaded, { today });
+      for (const [id, cred] of map) if (cred.refuted) refuted.push({ id, store });
+    }
+    refuted.sort((a, b) => (a.store < b.store ? -1 : a.store > b.store ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+    const gone = new Set([...removed.map((x) => x.id), ...refuted.map((x) => x.id)]);
+    const biased = [];
+    const dropped = [];
+    const citations = [];
+    for (const rec of records) {
+      const ids = recordCitedIds(rec);
+      const hit = ids.filter((id) => gone.has(id));
+      if (hit.length && (rec.kind === 'usage' || isRecallRecord(rec))) {
+        citations.push({ kind: rec.kind, ts: rec.ts ?? null, session: typeof rec.session === 'string' ? rec.session : null, ids: hit });
+      }
+      if (isRecallRecord(rec) && ids.length > 0 && ids.every((id) => gone.has(id))) {
+        dropped.push({ ts: rec.ts ?? null, session: typeof rec.session === 'string' ? rec.session : null, tool: rec.tool ?? rec.akashaCli ?? null, ids });
+        continue;
+      }
+      biased.push(rec);
+    }
+
+    const asRecorded = recallBrief(recallSignals(records));
+    const replayed = recallBrief(recallSignals(records));
+    const rewritten = recallBrief(recallSignals(biased));
+    const delta = replayed.misses - asRecorded.misses;
+    const biasDelta = rewritten.misses - asRecorded.misses;
+    const rose = delta > 0;
+    const fingerprint = {
+      v: 1, log: logFp.sha256, missing: logFp.missing, planId: planned.plan.planId,
+      asRecorded, replayed, rewritten,
+      removed: removed.map((x) => x.id), refuted: refuted.map((x) => x.id)
+    };
+    const replayId = 'replay-' + sha256(JSON.stringify(fingerprint)).slice(0, 16);
+    const report = {
+      replayId, version: 1, mode: 'replay-only',
+      createdAt: (opts.now instanceof Date ? opts.now : new Date()).toISOString(),
+      log: { path: logFile, ...logFp },
+      plan: { planId: planned.plan.planId, ops: planned.plan.ops.length, removed },
+      recall: { asRecorded, replayed, delta, rose },
+      layering: { refuted: refuted.length, ids: refuted.map((x) => x.id) },
+      survivorBias: {
+        method: 'drop-recall-lines-whose-cited-ids-are-all-removed',
+        adopted: false,
+        rewritten, delta: biasDelta, wouldRise: biasDelta > 0,
+        droppedRecalls: dropped.length, dropped: dropped.slice(0, 20),
+        citationCount: citations.length, citations: citations.slice(0, 20)
+      },
+      verdict: rose ? `misses 上升 ${delta}` : 'misses 不上升',
+      note: '只读回放：日志与六库都未改。正确口径是同一份日志原样再数（分层 / 合并 / 丢弃建议不进 B2）。survivorBias 是对照用的错误口径，不作为验收。'
+    };
+    let reportFile = null;
+    if (opts.out !== false && opts.out !== undefined && opts.out !== null) {
+      if (typeof opts.out !== 'string') return { ok: false, error: 'out 须为路径或省略' };
+      reportFile = opts.out;
+      const stores = new Set(STORES.map((name) => resolve((opts.files && opts.files[name]) || storePath(name))));
+      if (stores.has(resolve(reportFile))) return { ok: false, error: '拒绝把回放报告写到存储文件上：' + reportFile };
+      mkdirSync(dirname(reportFile), { recursive: true });
+      writeFileAtomic(reportFile, JSON.stringify(report, null, 2) + '\n');
+    }
+    return { ok: true, report, reportFile };
   } catch (error) {
     return { ok: false, error: String(error?.message ?? error).slice(0, 300) };
   }

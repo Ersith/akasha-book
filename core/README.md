@@ -7,7 +7,7 @@
 
 ```bash
 node init-example.mjs      # 初始化示例库（六库中性示例 + frontier 文献基石；--reset 可重来）
-node test.mjs              # 自检（117 项，示例库口径；全绿 = 可交付）
+node test.mjs              # 自检（120 项，示例库口径；全绿 = 可交付）
 node akasha.mjs check      # 校验全部数据（exit 非 0 = 有错）
 node akasha.mjs stats      # 计数与来源分布
 node akasha.mjs brief 修订  # 主题简报（跨六库取料，带来源态与时间坐标）
@@ -16,6 +16,7 @@ node akasha.mjs mirror match 虚构 危险            # 镜像结构匹配
 node akasha.mjs cross 示例                        # 对位比较（同题词六库并排）
 node akasha.mjs sleep --dry                       # 睡眠蒸馏预演（dry-run，无副作用）
 node akasha.mjs sleep --plan                      # 合并 / 丢弃计划（只读六库，只写 logs/sleep-plan-<日期>.json；apply 未实现）
+node akasha.mjs sleep --replay --log <hooks.jsonl>  # 历史回放（只读：同一份旧日志上 misses 是否上升；省略 --out 不落盘）
 node akasha.mjs session index <会话档案>           # 会话层：抽取段并索引（含被压缩折叠的历史）
 node akasha.mjs session lookup <词>                # 结论优先检索（--level nodes|segs；--process 深取回档）
 node akasha.mjs session promote <segId> --to <库>   # 段升格（默认预览；--apply 才写；--to 必填）

@@ -1805,6 +1805,127 @@ t('CLI：六库 --all 拒绝；--include-refuted 可用。MCP akasha_sleep_plan 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+
+// —— 历史回放（B2 · 只读；中性临时库 + 临时日志，不写 core/data）——
+t('回放：同一份日志再算 misses 不上升；删掉「只引用将被吸收 id」的查库行才会制造漏召（不采用）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-replay-'));
+  try {
+    const J = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    const src = { type: '官方', ref: 'fixture' };
+    const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+    writeFileSync(files.canon, J([
+      { id: 'canon-fx-keep', claim: 'the build cache must be cleared after toolchain upgrade', source: src, last_reviewed: '2026-09-01', logged_at: '2026-01-01T00:00:00Z' },
+      { id: 'canon-fx-absorb', claim: 'the build cache must be cleared after every toolchain upgrade', source: src, last_reviewed: '2026-09-01', logged_at: '2026-02-01T00:00:00Z' }
+    ]));
+    for (const n of lib.STORES) if (n !== 'canon') writeFileSync(files[n], '');
+    const log = join(dir, 'hooks.jsonl');
+    const line = (o) => JSON.stringify(o);
+    const recall = (session, ids) => ({ ts: '2026-04-01T00:00:00Z', kind: 'tool', tool: 'mcp__akasha__akasha_lookup', ok: true, session, ids });
+    const fail = (session) => ({ ts: '2026-04-01T00:01:00Z', kind: 'tool', tool: 'bash', ok: false, session });
+    const end = (session) => ({ ts: '2026-04-01T00:02:00Z', kind: 'turn-end', session });
+    writeFileSync(log, [
+      recall('sa', ['canon-fx-absorb']), fail('sa'), end('sa'),
+      recall('sb', ['canon-fx-keep']), fail('sb'), end('sb'),
+      { ts: '2026-04-01T00:03:00Z', kind: 'tool', tool: 'mcp__akasha__akasha_brief', ok: true, session: 'sc' }, fail('sc'), end('sc'),
+      { kind: 'usage', ids: ['canon-fx-absorb', 'canon-fx-keep'] }
+    ].map(line).join('\n') + '\n');
+    const before = Object.fromEntries(lib.STORES.map((n) => [n, readFileSync(files[n])]));
+    const r1 = sleepMod.replayHistory({ files, log, today: '2026-10-08', out: false, now: new Date('2026-10-08T00:00:00Z') });
+    assert.equal(r1.ok, true, r1.error);
+    assert.equal(r1.reportFile, null);
+    for (const n of lib.STORES) assert.deepEqual(readFileSync(files[n]), before[n], '六库字节不变');
+    const g = r1.report;
+    assert.equal(g.plan.ops, 1);
+    assert.deepEqual(g.plan.removed.map((x) => x.id), ['canon-fx-absorb']);
+    assert.equal(g.plan.removed[0].via, 'absorb');
+    assert.equal(g.recall.asRecorded.misses, 0);
+    assert.equal(g.recall.asRecorded.failureTurns, 3);
+    assert.equal(g.recall.replayed.misses, 0);
+    assert.equal(g.recall.delta, 0);
+    assert.equal(g.recall.rose, false);
+    assert.equal(g.verdict, 'misses 不上升');
+    assert.equal(g.survivorBias.adopted, false);
+    assert.equal(g.survivorBias.rewritten.misses, 1, '只抹掉引用 absorb 的那次查库，才多出 1 次漏召');
+    assert.equal(g.survivorBias.wouldRise, true);
+    assert.equal(g.survivorBias.droppedRecalls, 1);
+    assert.ok(g.survivorBias.citationCount >= 2);
+    const r2 = sleepMod.replayHistory({ files, log, today: '2026-10-08', out: false, now: new Date('2027-01-01T00:00:00Z') });
+    assert.equal(r2.report.replayId, g.replayId, 'createdAt 不进 replayId');
+    assert.notEqual(r2.report.createdAt, g.createdAt);
+    assert.match(g.replayId, /^replay-[0-9a-f]{16}$/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+t('回放：refute 隐藏不改变记录口径的 misses；无 id 的查库行不被误删', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-replay-'));
+  try {
+    const J = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    const src = { type: '共识', ref: 'fixture' };
+    const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+    writeFileSync(files.canon, J([
+      { id: 'canon-fx-root', claim: 'a quiet fixture fact about blue widgets', source: src, last_reviewed: '2026-09-01' },
+      { id: 'canon-fx-root-r1', supersedes: 'canon-fx-root', claim: 'a quiet fixture fact about blue widgets', source: src, last_reviewed: '2026-09-01', verification: { kind: 'refute', at: '2026-09-02', ref: 'https://example.test/refute' } },
+      { id: 'canon-fx-other', claim: 'unrelated orange widgets stay put', source: { type: '官方', ref: 'fixture' }, last_reviewed: '2026-09-01' }
+    ]));
+    for (const n of lib.STORES) if (n !== 'canon') writeFileSync(files[n], '');
+    const log = join(dir, 'hooks.jsonl');
+    writeFileSync(log, [
+      { ts: '2026-05-01T00:00:00Z', kind: 'tool', tool: 'mcp__akasha__akasha_show', ok: true, session: 's1', ids: ['canon-fx-root-r1'] },
+      { ts: '2026-05-01T00:01:00Z', kind: 'tool', tool: 'bash', ok: false, session: 's1' },
+      { ts: '2026-05-01T00:02:00Z', kind: 'turn-end', session: 's1' }
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    const r = sleepMod.replayHistory({ files, log, today: '2026-10-08', out: false });
+    assert.equal(r.ok, true, r.error);
+    assert.equal(r.report.plan.ops, 0, '这条库不该产生合并/丢弃');
+    assert.deepEqual(r.report.layering.ids, ['canon-fx-root-r1']);
+    assert.equal(r.report.recall.rose, false);
+    assert.equal(r.report.recall.replayed.misses, 0);
+    assert.equal(r.report.survivorBias.rewritten.misses, 1);
+    const bare = join(dir, 'bare.jsonl');
+    writeFileSync(bare, [
+      { kind: 'tool', tool: 'mcp__akasha__akasha_lookup', ok: true, session: 's2' },
+      { kind: 'tool', tool: 'bash', ok: false, session: 's2' },
+      { kind: 'turn-end', session: 's2' }
+    ].map((x) => JSON.stringify(x)).join('\n') + '\n');
+    const b = sleepMod.replayHistory({ files, log: bare, today: '2026-10-08', out: false });
+    assert.equal(b.report.recall.replayed.misses, 0);
+    assert.equal(b.report.survivorBias.delta, 0, '没有点名 id 的查库行必须保留');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+t('CLI：sleep --replay 只读（可 --out）、两次 replayId 相同；与 --apply 同用即拒', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-replay-cli-'));
+  try {
+    const log = join(dir, 'hooks.jsonl');
+    writeFileSync(log, [
+      JSON.stringify({ ts: '2026-01-01T00:00:00Z', kind: 'tool', tool: 'bash', ok: false, session: 's' }),
+      JSON.stringify({ ts: '2026-01-01T00:01:00Z', kind: 'turn-end', session: 's' }),
+      '\n'
+    ].join('\n'));
+    const digest = () => lib.STORES.map((n) => createHash('sha256').update(readFileSync(lib.storePath(n))).digest('hex')).join(',');
+    const stateFile = join(ROOT, 'logs', 'sleep-state.json');
+    const stateBefore = existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : null;
+    const d0 = digest();
+    const out = join(dir, 'replay.json');
+    const a = cli(['sleep', '--replay', '--log', log, '--today', '2026-10-08', '--out', out, '--json']);
+    const b = cli(['sleep', '--replay', '--log', log, '--today', '2026-10-08', '--json']);
+    assert.equal(a.status, 0, (a.stdout || '') + (a.stderr || ''));
+    assert.equal(b.status, 0, (b.stdout || '') + (b.stderr || ''));
+    const file = JSON.parse(readFileSync(out, 'utf8'));
+    const printed = JSON.parse(a.stdout);
+    assert.equal(file.replayId, printed.replayId);
+    assert.equal(file.replayId, JSON.parse(b.stdout).replayId);
+    assert.equal(file.recall.rose, false);
+    assert.equal(file.recall.asRecorded.misses, 1);
+    assert.equal(file.mode, 'replay-only');
+    assert.equal(digest(), d0, '示例库字节不变');
+    assert.equal(existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : null, stateBefore, '水位线不动');
+    const denied = cli(['sleep', '--replay', '--apply', '--log', log]);
+    assert.equal(denied.status, 1);
+    assert.match(denied.stderr, /尚未实现/);
+    const badOut = cli(['sleep', '--replay', '--log', log, '--out']);
+    assert.equal(badOut.status, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

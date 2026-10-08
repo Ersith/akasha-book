@@ -183,6 +183,15 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 `tools/call` 名字 `akasha_sleep_plan`。参数只有 `today` / `theta` / `maxOps` / `orphanDays` / `staleDays`（都可选）。返回与 CLI `sleep --plan` 同一个计划对象，但 **`out: false`：不写计划文件、不写六库、不动水位线**，也没有 `apply`。日志与库路径固定为进程默认值，不接受模型传入路径。
 
+## 历史回放（sleep --replay，B2 · §2.4.6 / §3.4.6）
+
+`node akasha.mjs sleep --replay [--log F] [--out F] [--today YYYY-MM-DD] [--theta 0.8] [--max 20] [--orphan-days 90] [--stale-days 365] [--json]`
+
+**只读。** 读一份 hooks 日志（缺省 `logs/hooks.jsonl`），用与 `sleep --plan` 相同的规则算出当时的 ops，再对**同一份日志原样**跑两遍 `recallSignals`。不写六库、不写计划文件、不动水位线。`--out` 省略则只打印；给了路径才写回放 JSON（指向存储文件即拒）。`--apply` / `--rollback` 仍未实现，与 `--replay` 同用直接拒绝。没有 MCP 入口。
+
+- **正确口径（验收）**：`recall.replayed.misses - recall.asRecorded.misses` 不得 > 0。B2 只认「失败前有没有成功的查库动作」，不认查中了哪条、层级系数是多少、计划打算 absorb / discard 谁。所以分层和合并建议**不能**让这份历史日志的 misses 上升。`replayId` 由日志指纹、planId、两遍计数和将移出的 id 哈希，`createdAt` 不参与。
+- **对照口径（不采用，防幸存者偏差）**：把「点名的 id 全部落在将被 absorb/discard、或当前已 refute 的集合」的召回行从日志里删掉再数。这个数上升，只说明「假装那些查库没发生」会多出漏召——**不能**拿 apply 之后的 miss 率证明合并无害。没点名 id 的查库行保留（无法证明它依赖被删条目）。`keep` 留下，只把 `absorb` 与 `discard` 的 id 算作移出。
+
 ## 可信度（wave2 §3，2026-10-08）
 
 存量不重写：没有 `credibility` 字段。层级由代码从 `source.type` 和修订链上的 `verification` 推导（`credibilityOf`）。升格（`promoted_from`）**没有加成**，层级就是写下的 `source.type`。
