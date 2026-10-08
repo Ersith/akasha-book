@@ -127,3 +127,11 @@
 - **验证（我方独立）**：`git am` 干净（克隆血缘 `35e4355`；dist `dbebdbb`）；`all.diff` 应用后**树哈希一致**（`2deed8e`）；核心 **112/112**（108+4）、session 20/20、插件全过、零重复用例；活树三方合并 4 文件（1 处 import 冲突已裁）落装后 **112/112**；**真库只读冒烟：0 ops + canon 字节未动**。
 - **评审口径（她自定 4 条，全数确认）**：orphan「无确认」＝链上无修订（近 orphanDays 内有修订即免）✓；`promoted_from` 链整条排除（比设计稿更严，接受）✓；一条记录至多一个 op ✓；keep＝最早 `logged_at` ✓。
 - **遗留（非阻断）**：设计 §2.2 的「MCP 只读暴露 plan」未做（CLI 已覆盖；留待 MCP 面批次）；`--apply` / `revokes` 回滚按设计放下一批。
+
+## R17 · 外援 wave2 §2.2 MCP 只读入口 + §3 可信度分档（2026-10-08 晚）
+
+- **MCP**：新增第 18 工具 `akasha_sleep_plan`——只读（六库 + hooks 日志），**不写计划文件（out:false）、不接受路径参数、无 apply**；返回与 CLI `sleep --plan` 相同对象。
+- **§3 可信度**：`source.type` 加「实验」；五档权重 T1 复现 1.0 / T2 实验 0.9 / T3 官方 0.8 / T4 他人 0.65 / T5 共识 0.5；链上 `verification`（replay / experiment / doc / incident / refute）改层；`refute` 权重归零且**默认不出现在检索**（`--include-refuted` / `show` 查看；六库拒 `--all`）；系数**只进排序**（lookup rank / brief 排序权重），strong 仍＝整词命中、孤案仍零权重；过期只降**展示档**并标「待复核」（协议不衰减 / 快照 90 天 / 前沿沿 `next_review` / 常青 180 天）；睡眠只追加待办（refuted 复审、共识档被引用 ≥3 次进「待验证」）。
+- **验证（我方独立）**：`git am` 干净（克隆 `9c39d12`；dist `ea0379e`）；`all.diff` 树哈希一致（`348d617`）；核心 **117/117**（112+5）、session 20/20、插件全过、零重复；活树三方合并 6 文件**零冲突** → **117/117**；CLI 冒烟：`--all` 拒绝（exit 1）、`--include-refuted` 正常且命中行带层级标签；**MCP stdio 冒烟：18 工具 + `akasha_sleep_plan` 返回 ok=true / plan-only / planFile=null（零落盘）**。
+- **与设计稿差异（她列出，SCHEMA 已记，我方接受）**：① 升格不再默认 T5（层级按住写来源算）②「高频」阈值＝3 次 ③ 过期只改展示、不改排序系数 ④ 后续 replay/experiment/doc 验证会取消已有 refuted 标记。
+- **遗留**：新 MCP 工具需**下一次宿主重启**才出现在运行中的 MCP 客户端（文件与 CLI 已即时生效）；§2 的 `--apply` / `revokes` 仍按观察期后置。
