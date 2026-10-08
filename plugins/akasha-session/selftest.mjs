@@ -11,10 +11,18 @@ mkdirSync(SCRATCH, { recursive: true });
 // 清残：失败路径可能留下的临时目录（成功路径自清）
 try { for (const d of readdirSync(SCRATCH)) if (d.startsWith('akasha-sesplug-')) rmSync(join(SCRATCH, d), { recursive: true, force: true }); } catch { /* 静默 */ }
 
-let passed = 0; const failures = [];
+let passed = 0; const failures = []; const skipped = [];
 function t(name, fn) {
   try { fn(); passed++; console.log('PASS', name); }
   catch (e) { failures.push([name, e]); console.log('FAIL', name, '—', e.message); }
+}
+// zstd 自 Node v23.8.0 / v22.15.0 起可用；旧 Node 上依赖 zstd 的用例记 SKIP（显式留痕，不伪装成通过）。
+// （2026-10 wave1：合并批丢了这层，Node 20 上 4 项 FAIL；与核心 test.mjs 的 tz 口径对齐。）
+const zlibNs = await import('node:zlib');
+const HAS_ZSTD = typeof zlibNs.zstdCompressSync === 'function';
+function tz(name, fn) {
+  if (HAS_ZSTD) return t(name, fn);
+  skipped.push(name); console.log('SKIP', name, `— Node ${process.version} 无 zstd`);
 }
 
 let mod = null;
@@ -62,9 +70,9 @@ if (mod) {
     assert.equal(mod.shouldIndex(1000, 2000, 30000), false);
     assert.equal(mod.shouldIndex(1000, 31001, 30000), true);
   });
-  const { zstdCompressSync } = await import('node:zlib');
+  const { zstdCompressSync } = zlibNs;
   const { appendFileSync, writeFileSync } = await import('node:fs');
-  t('索引：turn/end → 增量索引（fixture）；去抖 skip；幂等 0 增', () => {
+  tz('索引：turn/end → 增量索引（fixture）；去抖 skip；幂等 0 增', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
     const log = join(dir, 'hooks.jsonl');
     const sessionsRoot = join(dir, 'sessions');
@@ -138,12 +146,22 @@ if (mod) {
     const fire = (session, event) => (handlers['session/event'] ?? []).forEach((fn) => fn(session, event));
     // 2026-10-07 复查：压缩真信号＝session 事件 compaction/end（agent/created 的 source 只有 startup/resume，没有 compact）
     fire({ id: 'abc12345' }, { type: 'compaction/end', data: { turn: 9 } });
-    assert.ok(readLines(log).some((l) => l.kind === 'session-compact' && l.session === 'abc12345'), JSON.stringify(readLines(log)));
+    // 本夹具无会话档案 → 压缩后补索引必失败：观测线如实记 indexed:false，且先尝试索引再记压缩（顺序断言）
+    const after = readLines(log);
+    const ci = after.findIndex((l) => l.kind === 'session-compact' && l.session === 'abc12345');
+    const ei = after.findIndex((l) => l.kind === 'session-index-error' && l.session === 'abc12345' && l.trigger === 'compaction');
+    assert.ok(ci >= 0 && after[ci].indexedFirst === true, JSON.stringify(after));
+    assert.equal(after[ci].indexed, false, '档案缺失 → indexed:false：' + JSON.stringify(after[ci]));
+    assert.equal(after[ci].reason, 'not-found');
+    assert.ok(ei >= 0 && ei < ci, '先补索引、后记压缩：' + JSON.stringify(after));
     fire({ id: 'def67890' }, { type: 'compaction/end', data: { turn: 9, error: 'boom' } });
     assert.equal(readLines(log).filter((l) => l.kind === 'session-compact').length, 1, '失败压缩不记：' + JSON.stringify(readLines(log).filter((l) => l.kind === 'session-compact')));
     line = contexts[0].text();
     assert.ok(line.includes('压缩'), String(line));
     assert.ok(line.includes('session lookup'), String(line));
+    // B1：补索引失败 → 节奏条绝不能说「已收入」，要给回退路径
+    assert.ok(!line.includes('已收入'), 'B1：补索引失败不得宣称已收入：' + line);
+    assert.ok(line.includes('可能未进会话层') && line.includes('未找到会话档案') && line.includes('session index'), line);
     rmSync(dir, { recursive: true, force: true });
   });
   t('注入：无数据 / 坏 meta 两态都静默（null）', () => {
@@ -163,7 +181,7 @@ if (mod) {
     assert.ok(mod.inject.includes('timer'), JSON.stringify(mod.inject));
   });
   t('注入：压缩点名含「已收入 + 段/结论数 + 工具名」；renderSessionLine 边界', () => {
-    const line = mod.renderSessionLine({ meta: { sessions: { a: { segments: 3, conclusions: 2 } } }, compacts: [{ session: 'a', ts: Date.now() }] }, Date.now());
+    const line = mod.renderSessionLine({ meta: { sessions: { a: { segments: 3, conclusions: 2 } } }, compacts: [{ session: 'a', ts: Date.now(), indexed: true }] }, Date.now());
     assert.ok(line.includes('已收入'), line);
     assert.ok(line.includes('3 段') && line.includes('结论 2 条'), line);
     assert.ok(line.includes('akasha_session_lookup'), line);
@@ -171,7 +189,56 @@ if (mod) {
     const line2 = mod.renderSessionLine({ meta: { sessions: { a: { segments: 1 } } }, compacts: [{ ts: 'bad' }, null] }, Date.now());
     assert.ok(line2 && !line2.includes('压缩'), '坏 compacts 条目不进窗口：' + line2);
   });
-  t('索引：档案未变 → stat 快路跳过；effectiveThrottle 自适应', () => {
+  t('B1：renderSessionLine 只在 indexed===true 时说「已收入」（失败 / 未确认 / 旧格式都不说）', () => {
+    const meta = { sessions: { a: { segments: 3, conclusions: 2 } } };
+    const now = Date.now();
+    const fail = mod.renderSessionLine({ meta, compacts: [{ session: 'a', ts: now, indexed: false, reason: 'error' }] }, now);
+    assert.ok(!fail.includes('已收入') && fail.includes('索引出错') && fail.includes('可能未进会话层'), fail);
+    const legacy = mod.renderSessionLine({ meta, compacts: [{ session: 'a', ts: now }] }, now);
+    assert.ok(!legacy.includes('已收入') && legacy.includes('补索引未确认'), '无 indexed 字段＝未确认：' + legacy);
+    const mixed = mod.renderSessionLine({ meta, compacts: [{ session: 'a', ts: now - 1000, indexed: true }, { session: 'a', ts: now, indexed: false, reason: 'not-found' }] }, now);
+    assert.ok(!mixed.includes('已收入'), '以最近一次压缩为准：' + mixed);
+  });
+  tz('B1：压缩后补索引成功 → indexed:true + 已收入；失败后被下一次索引追平 → 改口已收入', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
+    const log = join(dir, 'hooks.jsonl');
+    const sessionsRoot = join(dir, 'sessions');
+    const mk = (seqs) => Buffer.from(seqs.map((seq) => JSON.stringify({ seq, time: 1791312000000 + seq * 1000, type: 'user/message', data: { content: [{ type: 'text', text: '中性夹具第' + seq + '条' }] } })).join('\n') + '\n');
+    const sDir = join(sessionsRoot, '--W--', 'session-cmp00001');
+    mkdirSync(sDir, { recursive: true });
+    writeFileSync(join(sDir, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([1, 2])));
+    const { ctx, handlers, contexts } = makeCtx();
+    // 去抖 30s：刚 turn/end 索引过，压缩仍须 force 补一次（不得被去抖吞掉而又宣称已收入）
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 30000 });
+    const fire = (sid, event) => (handlers['session/event'] ?? []).forEach((fn) => fn({ id: sid }, event));
+    fire('cmp00001', { type: 'turn/end', data: { turn: 1 } });
+    appendFileSync(join(sDir, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([3])));
+    fire('cmp00001', { type: 'compaction/end', data: { turn: 2 } });
+    let lines = readLines(log);
+    const comp = lines.find((l) => l.kind === 'session-compact');
+    assert.equal(comp.indexed, true, JSON.stringify(lines));
+    const idx = lines.filter((l) => l.kind === 'session-index');
+    assert.equal(idx.length, 2, '压缩路径绕过去抖真跑一次：' + JSON.stringify(lines));
+    assert.equal(idx[1].trigger, 'compaction');
+    assert.equal(idx[1].added, 1);
+    assert.ok(lines.indexOf(idx[1]) < lines.indexOf(comp), '先索引后记压缩');
+    let line = contexts[0].text();
+    assert.ok(line.includes('已收入'), line);
+    // 失败 → 追平：另一会话先压缩（档案尚未落盘）→ 未收入；档案出现后 turn/end 索引成功 → 改口
+    fire('cmp00002', { type: 'compaction/end', data: { turn: 1 } });
+    line = contexts[0].text();
+    assert.ok(!line.includes('已收入') && line.includes('可能未进会话层'), line);
+    const sDir2 = join(sessionsRoot, '--W--', 'session-cmp00002');
+    mkdirSync(sDir2, { recursive: true });
+    writeFileSync(join(sDir2, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([1])));
+    fire('cmp00002', { type: 'compaction/end', data: { turn: 2 } }); // force 绕过 not-found 背压
+    lines = readLines(log).filter((l) => l.kind === 'session-compact' && l.session === 'cmp00002');
+    assert.deepEqual(lines.map((l) => l.indexed), [false, true], JSON.stringify(lines));
+    line = contexts[0].text();
+    assert.ok(line.includes('已收入') && line.includes('3 次'), line);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  tz('索引：档案未变 → stat 快路跳过；effectiveThrottle 自适应', () => {
     assert.equal(mod.effectiveThrottle(1024, 30000), 30000);
     assert.equal(mod.effectiveThrottle(20 * 1024 * 1024, 30000), 120000);
     const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
@@ -193,7 +260,7 @@ if (mod) {
     assert.ok(skips.some((s) => s.reason === 'unchanged'), JSON.stringify(skips));
     rmSync(dir, { recursive: true, force: true });
   });
-  t('索引：失败后不停滞（不快路跳过；统一背压限定重报）', () => {
+  tz('索引：失败后不停滞（不快路跳过；统一背压限定重报）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
     const log = join(dir, 'hooks.jsonl');
     const sessionsRoot = join(dir, 'sessions');
@@ -214,7 +281,7 @@ if (mod) {
     assert.ok(!lines.some((l) => l.kind === 'session-index-skip' && l.reason === 'unchanged'), '失败不得被 unchanged 快路掩盖（stat 只记成功）：' + JSON.stringify(lines));
     rmSync(dir, { recursive: true, force: true });
   });
-  t('会话 id 前缀归一（session- 前缀可解析；记账用裸 id）', () => {
+  tz('会话 id 前缀归一（session- 前缀可解析；记账用裸 id）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
     const log = join(dir, 'hooks.jsonl');
     const sessionsRoot = join(dir, 'sessions');
@@ -309,7 +376,7 @@ if (mod) {
   });
 }
 
-console.log(`\n${passed} passed, ${failures.length} failed`);
+console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped` : ''}`);
 if (failures.length) {
   console.log('失败清单：');
   for (const [name, e] of failures) console.log(' -', name, ':', e.message);

@@ -37,7 +37,19 @@ export function effectiveThrottle(size, baseMs) {
   return size > 16 * 1024 * 1024 ? baseMs * 4 : baseMs;
 }
 
-/** 节奏条渲染（纯函数）：段数/会话数 + 回看提示；压缩窗口内追一行。无数据 → null（静默）。 */
+/** 压缩后补索引失败时的原因短语（给节奏条用；未知原因如实写「未确认」）。 */
+const COMPACT_FAIL_REASON = {
+  'not-found': '未找到会话档案',
+  backoff: '近期索引失败、处于背压窗口',
+  error: '索引出错',
+  'no-session': '事件缺会话 id'
+};
+
+/**
+ * 节奏条渲染（纯函数）：段数/会话数 + 回看提示；压缩窗口内追一行。无数据 → null（静默）。
+ * B1（2026-10 wave1）：只有「最近一次压缩的补索引确认成功」（compacts[i].indexed === true）才可说「已收入」；
+ * 失败 / 未确认（含旧格式条目无 indexed 字段）一律改说「可能未进会话层」并给回退路径——提示行不得替索引作伪证。
+ */
 export function renderSessionLine(state, now) {
   const sessions = state?.meta?.sessions ?? {};
   const ids = Object.keys(sessions);
@@ -51,7 +63,13 @@ export function renderSessionLine(state, now) {
     const last = compacts[compacts.length - 1];
     const s = state?.meta?.sessions?.[last?.session];
     const counts = s ? `（该会话已索引 ${Number(s.segments ?? 0)} 段 · 结论 ${Number(s.conclusions ?? 0)} 条）` : '';
-    lines.push(`⚠ 近期发生压缩（${compacts.length} 次）——本段历史已收入会话层${counts}；细节查 akasha_session_lookup`);
+    if (last?.indexed === true) {
+      lines.push(`⚠ 近期发生压缩（${compacts.length} 次）——本段历史已收入会话层${counts}；细节查 akasha_session_lookup`);
+    } else {
+      const why = COMPACT_FAIL_REASON[last?.reason] ?? '补索引未确认';
+      lines.push(`⚠ 近期发生压缩（${compacts.length} 次），但压缩后补索引未成功（${why}）——这段历史可能未进会话层；` +
+        `勿凭会话层断言「查无此事」，回看请查原始会话档案，或手动 node akasha.mjs session index <会话id>`);
+    }
   }
   return lines.join('\n');
 }
@@ -223,20 +241,30 @@ export function apply(ctx, config = {}) {
     }
   };
 
-  const indexNow = (sidIn, trigger, extra = {}) => {
+  // 某会话索引成功 → 该会话窗口内「补索引未确认」的压缩条目改记为已收入（档案是全量的，后补成功即真收入）。
+  const settleCompacts = (sid, trigger) => {
+    for (const c of compacts) if (c.session === sid && c.indexed !== true) { c.indexed = true; c.reason = 'recovered'; c.recoveredBy = trigger; }
+  };
+
+  /**
+   * 返回索引结论（B1）：{ ok:true, reason:'indexed'|'unchanged' } = 档案内容已在会话层；
+   * { ok:false, reason:'no-session'|'backoff'|'not-found'|'error' } = 没收进去；
+   * { ok:null, reason:'debounced' } = 去抖跳过（不作结论）。opts.force（压缩路径）绕过去抖与失败背压。
+   */
+  const indexNow = (sidIn, trigger, extra = {}, opts = {}) => {
     const sid = String(sidIn ?? '').replace(/^session-/, ''); // 前缀归一：宿主事件常见 'session-<id>'，目录 / 记账恒用裸 id
     try {
-      if (!sid) return; // 空 id：静默跳过（正常路径不出现；见 README 降级节）
+      if (!sid) return { ok: false, reason: 'no-session' }; // 空 id：静默跳过（正常路径不出现；见 README 降级节）
       const now = Date.now();
-      if (now - (lastFailAt.get(sid) ?? 0) < FAIL_BACKOFF_MS) return; // 失败背压：窗口内静默
+      if (!opts.force && now - (lastFailAt.get(sid) ?? 0) < FAIL_BACKOFF_MS) return { ok: false, reason: 'backoff' }; // 失败背压：窗口内静默
       const file = core().resolveSessionFile(cfg.sessionsRoot, sid);
-      if (!file) { lastFailAt.set(sid, now); log({ kind: 'session-index-error', session: sid, trigger, message: '未找到会话档案' }); return; }
+      if (!file) { lastFailAt.set(sid, now); log({ kind: 'session-index-error', session: sid, trigger, message: '未找到会话档案' }); return { ok: false, reason: 'not-found' }; }
       lastFailAt.delete(sid);
       let st = null;
       try { st = statSync(file); } catch { /* stat 失败 → 走全量 */ }
-      if (!shouldIndex(lastIndexedAt.get(sid) ?? 0, now, effectiveThrottle(st?.size ?? 0, cfg.minIndexIntervalMs))) {
+      if (!opts.force && !shouldIndex(lastIndexedAt.get(sid) ?? 0, now, effectiveThrottle(st?.size ?? 0, cfg.minIndexIntervalMs))) {
         log({ kind: 'session-index-skip', session: sid, trigger, sinceMs: now - (lastIndexedAt.get(sid) ?? 0) });
-        return;
+        return { ok: null, reason: 'debounced' };
       }
       // 设计：去抖标记先置位——索引失败后 30s 内不重试（错误背压）；统一失败窗口见 lastFailAt
       lastIndexedAt.set(sid, now);
@@ -245,7 +273,8 @@ export function apply(ctx, config = {}) {
         const prev = lastStat.get(sid);
         if (prev && prev.size === st.size && prev.mtimeMs === st.mtimeMs) {
           log({ kind: 'session-index-skip', session: sid, trigger, reason: 'unchanged' });
-          return;
+          settleCompacts(sid, trigger);
+          return { ok: true, reason: 'unchanged' };
         }
       }
       const t0 = Date.now();
@@ -254,11 +283,14 @@ export function apply(ctx, config = {}) {
       const dur = Date.now() - t0;
       log({ kind: 'session-index', session: sid, trigger, turn: extra.turn ?? null, added: r.added, skipped: r.skipped, parseFails: r.parseFails, frameFails: r.frameFails ?? 0, ms: dur, lagMs: loopLagMs });
       if (dur > 1500) log({ kind: 'session-index-slow', session: sid, trigger, ms: dur, lagMs: loopLagMs, added: r.added }); // >1.5s 告警线（2026-10-07 补4）
+      settleCompacts(sid, trigger);
+      return { ok: true, reason: 'indexed', added: r.added };
     } catch (error) {
       const msg = String(error?.message ?? error);
       const hint = /not yet fully loaded|does not provide an export named|Cannot find module/.test(msg) ? '（疑似宿主模块代缓存——重启桌面端后恢复）' : '';
       lastFailAt.set(sid, Date.now());
       log({ kind: 'session-index-error', session: sid, trigger, message: (msg + hint).slice(0, 300) });
+      return { ok: false, reason: 'error' };
     }
   };
 
@@ -268,11 +300,13 @@ export function apply(ctx, config = {}) {
       if (event?.type === 'turn/end') indexNow(String(session?.id ?? ''), 'turn-end', { turn: event?.data?.turn ?? null });
       else if (event?.type === 'compaction/end' && event?.data?.error === void 0) {
         const sid = String(session?.id ?? '').replace(/^session-/, '');
-        // 先索引再宣称「已收入」（2026-10 复查）。压缩会折叠原文；没抽到的回合不能事后补。
-        indexNow(sid, 'compaction');
-        compacts.push({ session: sid, ts: Date.now() });
+        // 先索引再宣称「已收入」（2026-10 复查）；B1（wave1）：宣称与否取决于索引结论——
+        // 压缩是稀有且关键的时刻，force 绕过去抖/背压强制补一次；失败如实记 indexed:false，节奏条不说「已收入」。
+        const res = indexNow(sid, 'compaction', {}, { force: true }) ?? { ok: false, reason: 'error' };
+        const indexed = res.ok === true;
+        compacts.push({ session: sid, ts: Date.now(), indexed, reason: res.reason });
         if (compacts.length > 20) compacts.splice(0, compacts.length - 20);
-        log({ kind: 'session-compact', session: sid, indexedFirst: true });
+        log({ kind: 'session-compact', session: sid, indexedFirst: true, indexed, reason: res.reason });
       }
     } catch { /* 静默 */ }
   });
