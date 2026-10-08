@@ -119,3 +119,11 @@
 - **核验**：安装副本 vs 源码 **sha256 全一致**；版本号落位；wave1 特性抽查（gate `expandHome` ×5 / hooks `akashaCliOf` ×2 / session「可能未进会话层」门控 ×2）。
 - **生效**：等待下一次桌面端重启（届时插件侧行为上线：门控 `~/`·`$HOME`/`%USERPROFILE%` 命令展开、hooks 会话分区与 CLI 召回标记、B1 诚实横幅）。
 - **备注**：npm registry 重发仍待择时（版本已锁，届时为纯发布步骤）；sleep / mcp 桥无代码变更，不换装。
+
+## R16 · 外援 wave2 §2 `sleep --plan`（只读计划器，2026-10-08 晚）
+
+- **来源**：Claude 补丁（基于 `1b6b84d`；单补丁）——`node akasha.mjs sleep --plan`：只读六库 + hooks 日志（引用计数），**不调写入通道、不动水位线**；只写 `logs/sleep-plan-<date>.json`（`--out` 可改，且**拒写存储文件**）；`--apply` / `--rollback` 显式拒绝（下一批）。
+- **规则**：merge＝同库主文本 token-Jaccard ≥ θ（默认 0.8；中文拆二字）或 frontier 同 URL；discard＝快照被取代（同题更晚日期）、canon-stale-unused（`last_reviewed` 超 365 天且 usage 从未引用；**无日志 = 不知道，不判**）、orphan-aging（created 超 90 天且链上无修订）；永不含：协议条、带 `promoted_from` 的链、已退役、frontier discard；K ≤ 20；每条至多进一个 op；keep＝链根 `logged_at` 最早（同则根 id 字典序）；`planId` 含 params+basis(字节+sha256)+inputs+ops、**不含 createdAt**（确定性）。
+- **验证（我方独立）**：`git am` 干净（克隆血缘 `35e4355`；dist `dbebdbb`）；`all.diff` 应用后**树哈希一致**（`2deed8e`）；核心 **112/112**（108+4）、session 20/20、插件全过、零重复用例；活树三方合并 4 文件（1 处 import 冲突已裁）落装后 **112/112**；**真库只读冒烟：0 ops + canon 字节未动**。
+- **评审口径（她自定 4 条，全数确认）**：orphan「无确认」＝链上无修订（近 orphanDays 内有修订即免）✓；`promoted_from` 链整条排除（比设计稿更严，接受）✓；一条记录至多一个 op ✓；keep＝最早 `logged_at` ✓。
+- **遗留（非阻断）**：设计 §2.2 的「MCP 只读暴露 plan」未做（CLI 已覆盖；留待 MCP 面批次）；`--apply` / `revokes` 回滚按设计放下一批。
