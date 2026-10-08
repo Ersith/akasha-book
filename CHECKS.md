@@ -101,6 +101,14 @@
 - **来源**：Claude 分支 `wave1/recall-mirror`（9 提交，未推送；基线 `cddc9d6`）——B1 压缩失败不得假宣称「已收入」、B2 召回漏计数（按会话分区）、镜像 `role`（解法/边界）、门控/钩子默认路径去 `~` 字面量、`retire --hard` 事务化（全程持锁＋先备份＋原子替换）、Node 20 下 zstd 用例 SKIP 回补。
 - **验证（我方独立）**：`git am` 九补丁干净（→ 本地 `085e8d4` 血缘），`all.diff` 单独应用后**树哈希一致**；Node 24 核心 **104/104**（复检去重后；初测 111 含 7 个重复并入用例）、session **20/20**、gate/hooks/sleep 全过；跑测后 `core/data/` 零残渣。
 - **活树移植**：三方合并 14 文件（冲突 10 处全裁；另修 2 处合并缝：hooks B2 块被吞、session 自检 `CORE` 常量缺失）；活树核心 **104/104**、四插件全绿；活树侧自检按本机口径适配（默认路径=绝对路径；唤醒条断言不采 OSS 口径）。
-- **同步器加固（防回归，Claude 提示的正主）**：`oss-sync-20261008d` 增 ① **默认值 homedir 化**（gate/hooks——活树绝对路径 → OSS `join(homedir(), '.akasha', …)`；杜绝 `~` 字面量回归）② **包名映射** `@local/akasha-X → @akasha-book/X`、`@local/mcp-akasha → @akasha-book/mcp`（顺带修正 SCHEMA/lib/sleep/session 里 5 处旧误名）。resync 幂等：重跑后工作区零残差。
+- **同步器加固（防回归，Claude 提示的正主）**：`oss-sync-20261008d` 增 ① **默认值 homedir 化**（gate/hooks——活树绝对路径 → OSS `join(homedir(), '.akasha', …)`；杜绝 `~` 字面量回归）② **包名映射**：scope `@local` → `@akasha-book`（`akasha-gate/hooks/sleep/session` 收窄为 `gate/hooks/sleep/session`；`mcp-akasha` → `mcp`）（顺带修正 SCHEMA/lib/sleep/session 里 5 处旧误名）。resync 幂等：重跑后工作区零残差。
 - **数字更正**：R12 的「四插件自检全绿」在 Node 20 下不成立（zstd 用例 SKIP），已在其正文标注；wave1 后基准为 **Node 24：核心 104 / session 20**。
 - **复检（老方式，2026-10-08 晚）**：干净克隆 + 双套件 + 扫残复跑，抓出 **7 个重复用例**（此前移植脚本截取区间过宽、「写入…gate」段被并入两次）——双端已删（111→104），复跑全绿；远程 `main` 对账一致。
+
+## R14 · 外援 wave2 §1 段升格（2026-10-08 晚）
+
+- **来源**：Claude 分支 `wave2/promote`（基于 wave1；单补丁，未推送）——`session promote <segId> --to <store>`：`--to` 必填（缺失即拒绝并提示 `--to orphan`）；默认演练、`--apply` 才写（先六库后标记）；仅 `conclusion`/`action` 可升格；canon+`复现` 必须 `--confirm-replay`（记人工确认）；`--repair` 只补缺失标记。`check` 三向核验（段在否 / 标记指向在否 / `promoted_from` 有否标记），**仅存在升格记录时才读 `session.jsonl`、不打开 zstd 原档**；lookup 命中带 `promoted_to`；MCP 无新增写入口。
+- **验证（我方独立）**：`git am` 干净（`6112951 → 941395e` 血缘）；`all.diff` 单独应用**树哈希一致**（`fc0e8b3`）；核心 **108/108**、session 20/20、gate/hooks/sleep 全过。
+- **数字对账**：Claude 报表 115 系打在「未去重 wave1（111）」基数上；本仓在复检去重（111→104）后取同补丁 = **104 + 4 新用例 = 108**；README / core README 已由 115 订正为 **108**。
+- **活树移植**：三方合并 6 文件**零冲突**；候选面检（语法 / 零标记 / 零重复 / 适配在位）后落装 → 活树 **108/108** + 四插件全绿；备份 `_rollback-wave2-merge-20261008`。
+- **实现与设计稿差异（接受）**：① 附加 `--store`/`--target`（供自检不碰示例库）② `check` 第三向沿 `supersedes` 链认定，防修订 / 软退后误报 ③ 段统计不再把 `promotion` 行计入。
