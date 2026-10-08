@@ -1,6 +1,7 @@
 {
   "name": "@akasha-book/hooks",
   "version": "1.2.0",
+  "engines": { "node": ">=18" },
   "license": "MIT",
   "type": "module",
   "description": "阿卡夏之书钩子 v1.1：回合结束 / 工具结果 / agent 错误 / 空闲 / assistant 输出审计 → append-only 记录（默认 ~/.akasha/logs/hooks.jsonl）",

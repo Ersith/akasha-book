@@ -2,7 +2,7 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
+import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue } from './lib.mjs';
 import { sleepRun } from './sleep.mjs';
 import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, SESSION_DEFAULTS } from './session.mjs';
 
@@ -95,7 +95,7 @@ switch (cmd) {
     const patch = flags['data-file']
       ? JSON.parse(readFileSync(flags['data-file'], 'utf8'))
       : JSON.parse(flags.data || '{}');
-    const r = revise(store, id, patch);
+    const r = revise(store, id, patch, { allowProtocol: flags['allow-protocol'] === true });
     print(r, `已修订：${id} → ${r.id}（supersedes ${r.supersedes}）`);
     break;
   }
@@ -209,17 +209,17 @@ switch (cmd) {
       const r = appendRecord('orphan', rec);
       print(r, '已追加：' + r.id);
     } else {
-      const list = loadStore('orphan').records;
+      const list = currentRecords(loadStore('orphan').records);
       print(list, list.map(o => `[${o.severity}] ${o.id} ${o.summary}`).join('\n') || '（空）');
     }
     break;
   }
   case 'frontier': {
     const sub = rest[0] || 'list';
-    const list = loadStore('frontier').records;
+    const list = currentRecords(loadStore('frontier').records);
     if (sub === 'due') {
       const today = new Date().toISOString().slice(0, 10);
-      const due = list.filter(r => r.next_review <= today);
+      const due = frontierDue(today);
       print(due, due.length ? due.map(r => `[${r.status}] ${r.id} 复审≤${r.next_review} ${r.title}`).join('\n') : '（今日无到期）');
     } else if (sub === 'recheck') {
       const id = rest[1];
@@ -269,6 +269,17 @@ switch (cmd) {
     print(r, '已追加：' + r.id);
     break;
   }
+  case 'retire': {
+    const store = rest[0]; const id = rest[1];
+    if (!store || !id) { print(null, "用法：retire <store> <id> [--reason '...'] [--hard]"); code = 1; break; }
+    const r = retireRecord(store, id, { reason: flags.reason ? String(flags.reason) : '', hard: flags.hard === true || flags.hard === 'true' });
+    print(r, r.already
+      ? `已退役过：${store} ${r.retired}`
+      : r.hard
+        ? `已删除：${store} ${r.retired}（移除 ${r.removed} 行，备份 ${r.trash}）`
+        : `已退役：${store} ${r.retired}（墓碑 ${r.tombstone}）`);
+    break;
+  }
   case 'session': {
     const sub = rest[0];
     const storeFile = flags.store ? String(flags.store) : undefined;
@@ -304,10 +315,8 @@ switch (cmd) {
         file = found;
       }
       if (!sid) {
-        // Only a canonical archive path yields a session id: a path segment `session-<hex…>`
-        // (host layout …\session-<id>\session.v4.jsonl.zstd). If the pattern does not match we
-        // refuse instead of falling back to the whole path — that fallback silently mints a
-        // bogus "path-keyed" session (reproduced 2026-10-07 with a frozen-copy idempotency test).
+        // 只认「规范档案路径」里的会话 id：路径段 session-<hex…>（宿主形态 …\session-<id>\session.v4.jsonl.zstd）。
+        // 正则失配时**不再回退为整条路径**——那会静默造出「以路径为键」的伪会话（2026-10-07 冻结副本测试实证）。
         const m = /[\\/]session-([0-9a-fA-F][0-9a-fA-F-]{7,})(?=[\\/]|$)/.exec(file);
         if (!m) {
           print(null, '未能在路径中识别会话 id（规范形态：…\\session-<id>\\session.v4.jsonl.zstd）。\n如确需以该文件建段，请显式指定会话：session index <文件> --session <id>');
@@ -401,7 +410,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N]|sleep [--dry]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|session <index|lookup|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
+    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N]|sleep [--dry]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
     code = cmd ? 1 : 0;
 }
 process.exit(code);

@@ -268,9 +268,11 @@ export function apply(ctx, config = {}) {
       if (event?.type === 'turn/end') indexNow(String(session?.id ?? ''), 'turn-end', { turn: event?.data?.turn ?? null });
       else if (event?.type === 'compaction/end' && event?.data?.error === void 0) {
         const sid = String(session?.id ?? '').replace(/^session-/, '');
+        // 先索引再宣称「已收入」（2026-10 复查）。压缩会折叠原文；没抽到的回合不能事后补。
+        indexNow(sid, 'compaction');
         compacts.push({ session: sid, ts: Date.now() });
         if (compacts.length > 20) compacts.splice(0, compacts.length - 20);
-        log({ kind: 'session-compact', session: sid });
+        log({ kind: 'session-compact', session: sid, indexedFirst: true });
       }
     } catch { /* 静默 */ }
   });

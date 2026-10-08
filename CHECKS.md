@@ -86,3 +86,12 @@
 - **过程记录（坑）**：首轮发布经 **staged publishing**（公开面短暂出现 `0.0.0-stage` 占位；重发报 `409 Cannot publish over previously staged version`；`npm stage list` 返回空——该接口对受限档位不透视）→ **放行后转正**（放行动作在用户侧完成，渠道未逐条取证；结果已双重实证）。
 - **token 教训**：granular token 权限档须选 **"Read and write (publish and stage)"**；"stage only" 会把 `npm publish` 路由进暂存队列。发布用 token 带 **Bypass 2FA** 可免 OTP。建议用户侧回收首枚 stage-only token。
 - **更新流程（备忘）**：`npm publish <tgz> --access public`（scoped 首发布需要 `--access public`）。
+
+## R12 · 外部评审合并批（2026-10-08）
+
+- **来源**：Claude 对仓库的本地评审修复批（分支 `fix/review-2026-10`，未推送/未开 PR）——信任边界、写入事务、水位、计分对齐、文档漂移，共 19 文件 / +361−99。
+- **过程**：补丁在 HEAD `75d3864` 干净可应用；因 OSS 基线落后活树（缺 `retire` 等），改用**三方合并**（base=OSS / ours=活树 / theirs=补丁）——**8 处冲突全部人工仲裁**；另抓修 3 个「合并缝」缺陷：`appendRecordUnlocked` 的 opts 透传断链、"严格查重"与"显式复活"冲突（allowResurrect 整体豁免）、自检故障注入法随真修复（自动建父目录）失效改用目录占位。
+- **落装**：活树核心 + 四插件源码；五件 package.json 补 `engines`（gate/hooks/sleep `>=18`；session/mcp `>=22.15.0`）；`redact()` 增补 `npm_`/`hf_`/`glpat_` 三类前缀；`retire`（软/硬退役 + 防复活）随批次入 OSS。
+- **验证**：活树核心 **97/97**；dist（示例库口径）核心 **104/104**（= 原 89 + 移植的退役族 15 项）；四插件自检全绿（session 18/18）；MCP 桥 17 工具；同步器升级 `oss-sync-20261008d`（内容级复制＋转换；不再覆盖 OSS 专属测试）**隐私终扫零命中**。
+- **约定更新**：OSS 侧 `core/test.mjs` 系「示例库口径」独立维护（与 live 真实库口径分离，新用例按需人工移植）；论文与运营数字不动。
+- **待办**：插件运行时激活（repack→install→重启）随下一批；token 卫生（`npm_` 前缀入 redact 已做，用户侧轮换旧 token）。

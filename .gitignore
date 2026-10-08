@@ -5,3 +5,4 @@ logs/
 *.log
 _selftest.log.jsonl
 .DS_Store
+core/data/_trash/

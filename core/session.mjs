@@ -1,10 +1,10 @@
 // 阿卡夏之书 · 会话层（session layer）—— 单会话记忆（读取 / 抽取 / 索引 / 检索）。
 // 会话层 v0：会话档案读取 / 段抽取 / 索引 / 检索（单会话记忆）；多帧 zstd 容器按魔数逐帧解压。
-import { readFileSync, appendFileSync, writeFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { zstdDecompressSync } from 'node:zlib';
+import { readFileSync, appendFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
-import { ROOT, loadStore, tokenize, matchScore } from './lib.mjs';
+import { ROOT, loadStore, tokenize, scoreTokens, redact, writeFileAtomic } from './lib.mjs';
 
 export const SESSION_DEFAULTS = {
   storeFile: join(ROOT, 'data', 'session.jsonl'),
@@ -13,6 +13,15 @@ export const SESSION_DEFAULTS = {
 };
 
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
+
+/** zstd 能力探测（2026-10 复查）：`zlib.zstdDecompressSync` 自 Node v23.8.0 / v22.15.0 起才有。
+ *  改为命名空间导入 + 调用时探测——旧 Node 上只有会话层报清楚的错，lib / CLI / MCP 其余功能照常加载。 */
+export const ZSTD_MIN_NODE = '>=22.15.0（或 >=23.8.0）';
+export function hasZstd() { return typeof zlib.zstdDecompressSync === 'function'; }
+function zstdDecompressSync(buf) {
+  if (!hasZstd()) throw new Error(`当前 Node ${process.version} 不支持 zstd 解压（会话层需要 Node ${ZSTD_MIN_NODE}）`);
+  return zlib.zstdDecompressSync(buf);
+}
 
 /** 读会话档案（多帧 zstd 拼接容器；单帧兼容）。坏容器抛错。 */
 export function readSessionArchive(filePath) {
@@ -24,6 +33,7 @@ export function readSessionArchive(filePath) {
       i += 3;
     }
   }
+  if (!hasZstd()) zstdDecompressSync(buf); // 能力缺失 → 抛清楚的版本错误（不被下面的「不是有效容器」吞掉）
   if (hits.length <= 1) {
     try {
       return { text: zstdDecompressSync(buf).toString('utf8'), frames: hits.length || 1, frameFails: 0, frameTruncated: 0 };
@@ -146,10 +156,10 @@ function makeSeg(sid, sid8, { seq, time, turn, step, kind, gist, why, keywords, 
     turn: Number.isInteger(turn) ? turn : null,
     step: Number.isInteger(step) ? step : null,
     kind,
-    gist: cut(cleanText(gist), KIND_LIMIT[kind] ?? 400)
+    gist: redact(cut(cleanText(gist), KIND_LIMIT[kind] ?? 400))
   };
-  if (why) rec.why = cut(cleanText(why), 120);
-  rec.keywords = keywords ?? [];
+  if (why) rec.why = redact(cut(cleanText(why), 120));
+  rec.keywords = (keywords ?? []).map((k) => redact(k));
   rec.tools = tools ?? [];
   rec.ptr = ptr ?? {};
   rec.id = `seg-${sid8}-${seq}-${fp8([rec.kind, rec.gist, rec.why ?? '', rec.tools.join(',')].join('|'))}`;
@@ -214,6 +224,7 @@ export function extractSegments(records, { session, emitFrom = 0 } = {}) {
 
 /** 段批量追加（append-only；自动盖 logged_at）。 */
 export function appendSegments(storeFile, segs) {
+  mkdirSync(dirname(storeFile), { recursive: true });
   let added = 0;
   for (const seg of segs) {
     const rec = { ...seg };
@@ -262,7 +273,7 @@ export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.store
       [sid]: { lastSeq: maxSeq, segments: ownedIds.size, conclusions: conclIds.size, indexedAt: new Date().toISOString(), source: file }
     }
   };
-  writeFileSync(metaFile, JSON.stringify(next, null, 2), 'utf8');
+  writeFileAtomic(metaFile, JSON.stringify(next, null, 2));
   return { session: sid, added: incoming.length, skipped, lastSeq: maxSeq, parseFails, frameFails, frameTruncated };
 }
 
@@ -320,11 +331,12 @@ export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, 
     const gistL = String(r.gist ?? '').toLowerCase();
     const extraKeywords = (r.keywords ?? []).filter((k) => !gistL.includes(String(k).toLowerCase()));
     const hay = [r.gist, r.extra, r.why, extraKeywords.join(' ')].filter(Boolean).join(' ').toLowerCase();
-    let score = 0;
-    for (const t of tokens) score += matchScore(hay, t);
-    if (score <= 0) continue;
+    // 与主库同一把尺子（scoreTokens）：整词 ×1 + 回退合计封顶 0.9。结论 +1 只进排序权重。
+    const sc = scoreTokens(hay, tokens);
+    if (sc.score <= 0) continue;
+    const score = sc.score;
     const weight = score + (r.kind === 'conclusion' ? 1.0 : 0);
-    const hit = { id: r.id, session: r.session, seq: r.seq, time: r.kind === 'node' ? (r.time_from ?? '') : r.time, turn: r.turn ?? null, step: r.step ?? null, kind: r.kind, score: +score.toFixed(3), weight: +weight.toFixed(3), gist: r.gist };
+    const hit = { id: r.id, session: r.session, seq: r.seq, time: r.kind === 'node' ? (r.time_from ?? '') : r.time, turn: r.turn ?? null, step: r.step ?? null, kind: r.kind, score: +score.toFixed(3), strong: sc.whole >= 1, weight: +weight.toFixed(3), gist: r.gist };
     if (r.kind === 'node') {
       hit.level = r.level;
       hit.children = r.children ?? [];
@@ -449,12 +461,15 @@ export function buildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, chu
     nodes.push(...parents);
     layer = parents;
   }
-  const prevGen = loadStore('session', storeFile).records.reduce((m, r) => (r.kind === 'node' && r.session === sid ? Math.max(m, Number(r.treegen) || 0) : m), 0);
-  return { treegen: Math.max(Date.now(), prevGen + 1), nodes };
+  // 代际在整个 session.jsonl 上单调（不按会话各算）。同一毫秒里后建的树必须大于先建的，否则跨会话检索测例会判平。
+  const prevGen = loadStore('session', storeFile).records.reduce((m, r) => (r.kind === 'node' ? Math.max(m, Number(r.treegen) || 0) : m), 0);
+  const now = Date.now();
+  return { treegen: now > prevGen ? now : prevGen + 1, nodes };
 }
 
 /** 节点批量追加（append-only；整批带 treegen 代际标记）。 */
 export function appendNodes(storeFile, nodes, treegen) {
+  mkdirSync(dirname(storeFile), { recursive: true });
   let added = 0;
   for (const n of nodes) {
     const rec = { ...n, treegen };

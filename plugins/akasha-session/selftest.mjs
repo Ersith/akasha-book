@@ -4,8 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
 const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');
+
 const SCRATCH = join(tmpdir(), 'akasha-session-selftest');
 mkdirSync(SCRATCH, { recursive: true });
 // 清残：失败路径可能留下的临时目录（成功路径自清）
@@ -202,7 +202,10 @@ if (mod) {
     const mk = (seqs) => Buffer.from(seqs.map((seq) => JSON.stringify({ seq, time: 1791312000000 + seq * 1000, type: 'user/message', data: { content: [{ type: 'text', text: '第' + seq + '条' }] } })).join('\n') + '\n');
     writeFileSync(join(sDir, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([1])));
     const { ctx, handlers } = makeCtx();
-    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'no-such-dir', 'store.jsonl'), minIndexIntervalMs: 0 });
+    // 2026-10-08 合并批：appendSegments 现已自动建父目录（真修复）——改用「store.jsonl 是目录」注入失败
+    // （父目录存在、mkdir 救不了，追加必失败），保持「失败后不停滞」用例语义。
+    mkdirSync(join(dir, 'store.jsonl'));
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0 });
     const fire = () => (handlers['session/event'] ?? []).forEach((fn) => fn({ id: 'abc12345' }, { type: 'turn/end', data: { turn: 1 } }));
     fire();
     fire();

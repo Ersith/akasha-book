@@ -1,6 +1,7 @@
 {
   "name": "@akasha-book/sleep",
   "version": "1.5.1",
+  "engines": { "node": ">=18" },
   "license": "MIT",
   "type": "module",
   "description": "阿卡夏之书睡眠器 v1.5：调度与注入（蒸馏逻辑归核心库 sleep.mjs，可手动 node akasha.mjs sleep）——空闲/定时触发 + 每回合条子 + 新会话唤醒条 + 库脉搏（写→可见通道）+ 回查提示（窗口内失败追一行）",

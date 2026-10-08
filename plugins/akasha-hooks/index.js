@@ -6,12 +6,10 @@
 // 记录到 append-only JSONL；设计见 research\ai-memory-architecture-20261006.md（§7 后台层雏形）。
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-// 默认值：家目录下的 .akasha（可用 config.akashaDir / log 覆盖）。
-const DEFAULT_AKASHA = join(homedir(), '.akasha');
-const DEFAULT_LOG = join(DEFAULT_AKASHA, 'logs', 'hooks.jsonl');
+const DEFAULT_LOG = '~/.akasha/logs\\hooks.jsonl';
+const DEFAULT_AKASHA = '~/.akasha';
 
 export function apply(ctx, config = {}) {
   const logPath = typeof config.log === 'string' && config.log.trim() !== '' ? config.log : DEFAULT_LOG;
@@ -66,11 +64,16 @@ export function apply(ctx, config = {}) {
       const isError = result?.isError === true;
       if (isError) counters.toolErrors += 1;
       if (!logToolResults && !isError) return;
+      let message;
+      if (isError) {
+        message = String(result?.error?.message ?? '').slice(0, 400);
+        try { message = core().redact(message); } catch { /* 核心库缺失时仍截断 */ }
+      }
       write({
         kind: 'tool',
         tool: exec?.name ?? null,
         ok: !isError,
-        message: isError ? String(result?.error?.message ?? '').slice(0, 400) : undefined
+        message
       });
     } catch { /* 见文件头注释 */ }
   });
@@ -79,21 +82,23 @@ export function apply(ctx, config = {}) {
   ctx.on('agent/error', (payload) => {
     try {
       counters.agentErrors += 1;
-      const message = payload?.error instanceof Error ? payload.error.message : String(payload?.error ?? '');
+      let message = payload?.error instanceof Error ? payload.error.message : String(payload?.error ?? '');
+      message = message.slice(0, 400);
+      try { message = core().redact(message); } catch { /* 截断已做 */ }
       write({
         kind: 'agent-error',
         session: String(payload?.agent?.id ?? ''),
         turn: payload?.turn ?? null,
         step: payload?.step ?? null,
-        message: message.slice(0, 400)
+        message
       });
     } catch { /* 见文件头注释 */ }
   });
 
   // 输出审计（v1.1；v1.2 修复累积）：按 attemptId 累积 assistant 文本流，committed 结束时跑核心库 auditText——
   //   引用不存在的库 id → output-audit 线（编造引用嫌疑）；真实 id → usage 线（条目级使用计数 v0）。
-  //   ⚠ 2026-10-07 复查：宿主 revision **逐帧递增**——不得按 revision 重置累积（否则每 chunk 清空、审计恒空）。
-  // 边界（诚实）：assistant-stream 是 emit 语义——只能观察，不能拦截/改写输出（「闸门」暂为「审计线」）。
+  //   ⚠ 2026-10-07 复查：宿主 revision **逐帧递增**（nextRevision() 每 emit 一次）——不得按 revision 重置累积，
+  //   否则每 chunk 清空、审计恒空（output-audit/usage 0 条实证）；跨帧切分的 id 必须能还原。
   const streams = new Map();
   ctx.on('agent/assistant-stream', (payload) => {
     try {
@@ -112,7 +117,7 @@ export function apply(ctx, config = {}) {
         const c = frame.chunk;
         if (c && c.type === 'text-delta' && typeof c.text === 'string') {
           st.text += c.text;
-          if (st.text.length > 400000) st.text = st.text.slice(-400000); // 保尾
+          if (st.text.length > 400000) st.text = st.text.slice(-400000); // 保尾：长输出的尾部对审计更有信息量
         }
         return;
       }

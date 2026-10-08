@@ -7,7 +7,7 @@
 
 ```bash
 node init-example.mjs      # 初始化示例库（六库中性示例 + frontier 文献基石；--reset 可重来）
-node test.mjs              # 自检（82 项；全绿 = 可交付）
+node test.mjs              # 自检（104 项，示例库口径；全绿 = 可交付）
 node akasha.mjs check      # 校验全部数据（exit 非 0 = 有错）
 node akasha.mjs stats      # 计数与来源分布
 node akasha.mjs brief 修订  # 主题简报（跨六库取料，带来源态与时间坐标）

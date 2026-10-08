@@ -2,9 +2,9 @@
 // 迁移自 @akasha-book/akasha-sleep v1.3.1 的 lib/index.js（distillHooks / buildTodos / renderContextLine / renderPulseLine 逐字一致）；
 // 新增：sleepRun（含 --dry / 同日报告不覆盖 / report/state/inbox 写失败观测线）+ shouldSleep（去抖判断）。
 // 手动触发：node akasha.mjs sleep [--dry] —— 与插件自动触发共用同一水位线 sleep-state.json（不重复蒸馏、不丢增量）。
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { ROOT, audit } from './lib.mjs';
+import { ROOT, audit, redact, writeFileAtomic } from './lib.mjs';
 
 export const SLEEP_DEFAULTS = {
   log: join(ROOT, 'logs', 'hooks.jsonl'),
@@ -22,7 +22,7 @@ export function distillHooks(lines) {
     const text = String(raw ?? '').trim();
     if (!text) continue;
     let rec;
-    try { rec = JSON.parse(text); } catch { continue; }
+    try { rec = JSON.parse(text); } catch { counters.badJson = (counters.badJson ?? 0) + 1; continue; }
     counters.lines++;
     if (rec.kind === 'turn-end') counters.turns++;
     else if (rec.kind === 'tool') {
@@ -31,7 +31,7 @@ export function distillHooks(lines) {
       counters.byTool[tool] = (counters.byTool[tool] ?? 0) + 1;
       if (rec.ok === false) {
         counters.toolErrors++;
-        if (notes.length < 5) notes.push(`工具失败 ${tool}: ${String(rec.message ?? '').slice(0, 120)}`);
+        if (notes.length < 5) notes.push(redact(`工具失败 ${tool}: ${String(rec.message ?? '').slice(0, 120)}`));
       }
     } else if (rec.kind === 'gate-denied') counters.denials++;
     else if (rec.kind === 'agent-error') counters.agentErrors++;
@@ -115,10 +115,28 @@ export function sleepRun(opts = {}) {
   try {
     let state = {};
     try { state = JSON.parse(readFileSync(stateFile, 'utf8')); } catch { state = {}; }
-    let all = [];
-    try { all = readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean); } catch { all = []; }
-    const from = Number.isInteger(state.processedLines) ? state.processedLines : 0;
-    const { counters, notes } = distillHooks(all.slice(from));
+    let buf = Buffer.alloc(0);
+    try { buf = readFileSync(logPath); } catch { buf = Buffer.alloc(0); }
+    // 水位线按字节（2026-10 复查）。旧状态只有 processedLines 时折算一次；文件变短视为轮转，从头蒸馏并留 truncated。
+    let fromByte = Number.isInteger(state.processedBytes) ? state.processedBytes : null;
+    let truncated = false;
+    if (fromByte === null && Number.isInteger(state.processedLines) && state.processedLines > 0) {
+      let n = 0; let i = 0;
+      while (n < state.processedLines && i < buf.length) { if (buf[i] === 10) n += 1; i += 1; }
+      fromByte = i;
+    }
+    if (fromByte === null) fromByte = 0;
+    if (fromByte > buf.length) { truncated = true; fromByte = 0; }
+    let end = buf.length;
+    if (end > fromByte && buf[end - 1] !== 10) {
+      const nl = buf.lastIndexOf(10);
+      end = nl >= fromByte ? nl + 1 : fromByte;
+    }
+    const slice = buf.subarray(fromByte, end).toString('utf8').split(/\r?\n/).filter(Boolean);
+    const { counters, notes } = distillHooks(slice);
+    // 对外仍以「条」计（CLI / 旧测试）；字节水位只进 state.processedBytes。
+    const lineFrom = truncated ? 0 : (Number.isInteger(state.processedLines) ? state.processedLines : 0);
+    const lineTo = lineFrom + slice.length;
 
     let auditResult;
     try {
@@ -131,17 +149,17 @@ export function sleepRun(opts = {}) {
     const todo = buildTodos(counters, notes, auditResult);
     const stamp = now.toISOString();
     const date = stamp.slice(0, 10);
-    const report = { date, ranAt: stamp, trigger, processedFrom: from, processedTo: all.length, counters, notes, audit: auditResult, todo };
+    const report = { date, ranAt: stamp, trigger, processedFrom: lineFrom, processedTo: lineTo, processedBytes: end, truncated, counters, notes, audit: auditResult, todo };
 
     if (opts.dry) {
-      return { ok: true, dry: true, report, reportFile: null, todo: todo.length, processedFrom: from, processedTo: all.length };
+      return { ok: true, dry: true, report, reportFile: null, todo: todo.length, processedFrom: lineFrom, processedTo: lineTo, truncated };
     }
 
     let reportFile = `sleep-${date}.json`;
     try {
       mkdirSync(reportDir, { recursive: true });
       if (existsSync(join(reportDir, reportFile))) reportFile = `sleep-${date}-${stamp.slice(11, 19).replace(/:/g, '')}.json`;
-      writeFileSync(join(reportDir, reportFile), JSON.stringify(report, null, 2), 'utf8');
+      writeFileAtomic(join(reportDir, reportFile), JSON.stringify(report, null, 2));
     } catch (error) {
       emit({ kind: 'sleep-report-error', message: String(error?.message ?? error).slice(0, 300), code: String(error?.code ?? '') });
     }
@@ -154,7 +172,8 @@ export function sleepRun(opts = {}) {
     }
 
     const next = {
-      processedLines: all.length,
+      processedBytes: end,
+      processedLines: lineTo,
       lastRunAt: stamp,
       lastTrigger: trigger,
       lastReport: reportFile,
@@ -164,10 +183,10 @@ export function sleepRun(opts = {}) {
     };
     try {
       mkdirSync(dirname(stateFile), { recursive: true });
-      writeFileSync(stateFile, JSON.stringify(next, null, 2), 'utf8');
+      writeFileAtomic(stateFile, JSON.stringify(next, null, 2));
     } catch (error) { emit({ kind: 'sleep-state-error', message: String(error?.message ?? error).slice(0, 200) }); }
 
-    return { ok: true, reportFile, todo: todo.length, processedFrom: from, processedTo: all.length, state: next };
+    return { ok: true, reportFile, todo: todo.length, processedFrom: lineFrom, processedTo: lineTo, truncated, state: next };
   } catch (error) {
     return { ok: false, error: String(error?.message ?? error).slice(0, 300) };
   }

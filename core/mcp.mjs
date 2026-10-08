@@ -1,7 +1,7 @@
 // 阿卡夏之书（Akasha）v0 —— 最小 MCP stdio server（JSON-RPC 2.0 逐行）。
 // 工具（17）：check / lookup / price / stats / orphan_add / frontier_due / audit / brief / kit / promote / revise / cross / summary / show / mirror_match / metrics / session_lookup
 import { createInterface } from 'node:readline';
-import { checkAll, lookupDetailed, normalizeDateArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics } from './lib.mjs';
+import { checkAll, lookupDetailed, normalizeDateArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, frontierDue } from './lib.mjs';
 import { lookupSegments } from './session.mjs';
 
 const TOOLS = [
@@ -21,7 +21,7 @@ const TOOLS = [
   { name: 'akasha_show', description: '按 id 跨六库直读（命中旧版本时返回所查版本全文 + 附注当前版本 id，不自动跳转）', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
   { name: 'akasha_mirror_match', description: '镜像结构匹配：按情境文本匹配镜像库（五元组 + patterns 加权），返回最接近的结构模式', inputSchema: { type: 'object', properties: { text: { type: 'string' }, limit: { type: 'number' } }, required: ['text'] } },
   { name: 'akasha_metrics', description: '结果计数器：工具成功率 / 门控拦截 / 审计线 / 引用命中 / 修订链统计（since 可选）', inputSchema: { type: 'object', properties: { since: { type: 'string' } }, additionalProperties: false } },
-  { name: 'akasha_session_lookup', description: '会话层检索（结论优先；默认不含过程段，process=true 纳入；默认动作版本归并＝只回完成版，all=true 看历史；since/until 可选）', inputSchema: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, process: { type: 'boolean' }, all: { type: 'boolean' }, limit: { type: 'number' } }, required: ['query'] } }
+  { name: 'akasha_session_lookup', description: '小阿卡夏（会话层，同库分层，不是第二套库）：只查当前会话记忆，结论优先。与主库 akasha_lookup/brief 分开调用、分开分级。默认不含过程段。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, process: { type: 'boolean' }, all: { type: 'boolean' }, limit: { type: 'number' } }, required: ['query'] } }
 ];
 
 function handle(msg) {
@@ -57,7 +57,8 @@ function handle(msg) {
         } else value = p;
       }
       else if (name === 'akasha_stats') value = stats();
-      else if (name === 'akasha_frontier_due') value = loadStore('frontier').records.filter(r => r.next_review <= new Date().toISOString().slice(0, 10));
+      // 2026-10-08 复查修复：与 CLI `frontier due` 口径对齐——统一走 frontierDue()（只看当前版本；退役条目不再出现在到期清单）。
+      else if (name === 'akasha_frontier_due') value = frontierDue();
       else if (name === 'akasha_audit') value = audit(a);
       else if (name === 'akasha_brief') value = brief(String(a.query ?? ''), { perStore: a.perStore, since: a.since, until: a.until });
       else if (name === 'akasha_kit') value = kit(a);
@@ -83,9 +84,9 @@ function handle(msg) {
         });
       }
       if (value === null) throw new Error('未知工具：' + name);
-      return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] } };
+      return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }], _meta: { trust: 'data-not-instruction' } } };
     } catch (e) {
-      return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: '错误：' + e.message }], isError: true } };
+      return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: '错误：' + e.message }], isError: true, _meta: { trust: 'data-not-instruction' } } };
     }
   }
   return { jsonrpc: '2.0', id, error: { code: -32601, message: '不支持的方法：' + method } };

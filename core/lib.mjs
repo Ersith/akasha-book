@@ -1,6 +1,6 @@
 // 阿卡夏之书（Akasha）v0 核心库。零依赖（仅 Node stdlib）。
 // 数据：data/*.jsonl（append-only）。规范见 SCHEMA.md / PROTOCOL.md。
-import { readFileSync, appendFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync, statSync, openSync, closeSync, writeSync, fsyncSync, renameSync, unlinkSync, constants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -13,6 +13,55 @@ const SEVERITIES = ['高', '中', '低'];
 
 export function storePath(name) {
   return join(DATA, name + '.jsonl');
+}
+
+/** 凭据形字符串打码（2026-10 复查）。不打路径：实体钩子靠路径，整段打码会拆掉召回。 */
+const REDACT_RES = [
+  [/\bsk-[A-Za-z0-9]{8,}\b/g, 'sk-[redacted]'],
+  [/\bAKIA[0-9A-Z]{16}\b/g, '[redacted-akid]'],
+  [/\bghp_[A-Za-z0-9]{10,}\b/g, 'ghp_[redacted]'],
+  [/\bgithub_pat_[A-Za-z0-9_]{10,}\b/g, '[redacted-gh]'],
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[redacted-slack]'],
+  [/\b(Bearer\s+)[A-Za-z0-9._\-]{8,}/gi, '$1[redacted]'],
+  [/((?:api[_-]?key|token|secret|password|passwd|pwd)\s*[=:]\s*)(\S+)/gi, '$1[redacted]'],
+  // 自家补充（2026-10-08）：npm / HuggingFace / GitLab 凭证前缀
+  [/\bnpm_[A-Za-z0-9]{20,}\b/g, 'npm_[redacted]'],
+  [/\bhf_[A-Za-z0-9]{20,}\b/g, 'hf_[redacted]'],
+  [/\bglpat-[A-Za-z0-9_\-]{16,}\b/g, '[redacted-glpat]']
+];
+export function redact(value) {
+  let out = String(value ?? '');
+  for (const [re, to] of REDACT_RES) out = out.replace(re, to);
+  return out;
+}
+
+/** 原子替换（先写临时文件再 rename）。 */
+export function writeFileAtomic(file, text) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  const fd = openSync(tmp, 'w');
+  try { writeSync(fd, text); fsyncSync(fd); }
+  finally { closeSync(fd); }
+  renameSync(tmp, file);
+}
+
+/** 排他锁。陈锁（>30s）清掉；等待上限 5s。同进程不可重入同一文件。 */
+export function withFileLock(file, fn) {
+  mkdirSync(dirname(file), { recursive: true });
+  const lock = file + '.lock';
+  const start = Date.now();
+  let fd;
+  for (;;) {
+    try { fd = openSync(lock, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY); break; }
+    catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      try { if (Date.now() - statSync(lock).mtimeMs > 30000) { unlinkSync(lock); continue; } } catch { /* 锁刚被取走 */ }
+      if (Date.now() - start > 5000) throw new Error('锁超时：' + lock);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  try { return fn(); }
+  finally { try { closeSync(fd); } catch { /* 已关 */ } try { unlinkSync(lock); } catch { /* 已删 */ } }
 }
 
 export function parseJsonl(text) {
@@ -93,7 +142,8 @@ export function checkAll() {
     errors.forEach(x => report.errors.push({ store: name, ...x }));
     if (dups.length) report.errors.push({ store: name, errors: ['重复 id：' + dups.join(', ')] });
     for (const e of checkSupersedes(name, records)) report.errors.push(e);
-    report.stores[name] = { total: records.length, ok, current: currentRecords(records).length, loadErrors: errors.length };
+    for (const e of checkRetires(name, records)) report.errors.push(e);
+    report.stores[name] = { total: records.length, ok, current: currentRecords(records).length, retired: retiredIds(records).size, loadErrors: errors.length };
   }
   report.ok = report.errors.length === 0;
   return report;
@@ -238,7 +288,7 @@ export function cross(query, opts = {}) {
         .join(' | ');
       const hayL = hay.toLowerCase();
       const sc = scoreTokens(hayL, tokens);
-      if (sc.score > 0) hits.push({ id: r.id, score: sc.score, line: (PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay).slice(0, 240) });
+      if (sc.score > 0) hits.push({ id: r.id, score: sc.score, zeroWeight: name === 'orphan', line: PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay });
     }
     hits.sort((a, b) => b.score - a.score);
     const items = opts.perStore ? hits.slice(0, opts.perStore) : hits;
@@ -278,7 +328,7 @@ export function lookupDetailed(query, opts = {}) {
       }
       if (b.timeSource) stats.timeSource[b.timeSource] += 1;
       if (b.bucket === 'in') stats.dated += 1;
-      const hit = { store: name, id: r.id, score: sc.score, snippet: hay.slice(0, 120) };
+      const hit = { store: name, id: r.id, score: sc.score, strong: name !== 'orphan' && sc.whole >= 1, zeroWeight: name === 'orphan', snippet: redact(hay.slice(0, 120)) };
       if (b.bucket === 'undated') hit.undated = true;
       hits.push(hit);
     }
@@ -321,20 +371,20 @@ export function brief(query, opts = {}) {
         .toLowerCase();
       const hayL = hay.toLowerCase();
       const sc = scoreTokens(hayL, tokens);
-      if (sc.score > 0) scored.push({ r, score: sc.score });
+      if (sc.score > 0) scored.push({ r, score: sc.score, strong: name !== 'orphan' && sc.whole >= 1, zeroWeight: name === 'orphan' });
     }
-    const weight = (x) => x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + emotionBoost(x.r);
-    scored.sort((a, b) => weight(b) - weight(a));
+    const weight = (x) => (x.zeroWeight ? 0 : x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + emotionBoost(x.r));
+    scored.sort((a, b) => weight(b) - weight(a) || Number(b.strong) - Number(a.strong));
     if (scored.length) {
-      groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => briefHit(name, x.r, x.score)) });
+      groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => ({ ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight })) });
     }
   }
-  return {
-    query: q, tokens, groups,
-    note: groups.length
-      ? '库内条目引用时标注「记得·库内」；基石优先级 已实践 > 已复现 > 高引用 > 待验证（未验证先按「待验证」处理）。'
-      : '六库无命中：换词再试；仍无 → 这是「确定不知道」，按协议标注来源态，不要编。'
-  };
+  const strongHits = groups.reduce((n, g) => n + g.hits.filter((h) => h.strong).length, 0);
+  let note;
+  if (!groups.length) note = '六库无命中：换词再试；仍无 → 这是「确定不知道」，按协议标注来源态，不要编。';
+  else if (!strongHits) note = '无强命中（整词命中为零；孤案为零权重，不算证据）：这是「确定不知道」，弱命中只是疑似相关，不要编。';
+  else note = '强命中可标「记得·库内」；弱命中（strong=false）与孤案（zeroWeight）不算证据。基石优先级 已实践 > 已复现 > 高引用 > 待验证。';
+  return { query: q, tokens, groups, strongHits, note };
 }
 
 // 全库摘要：六库计数 + 各库最近 N 条（主行）+ frontier 状态分布 + 审计概要 + 最近写入。
@@ -368,17 +418,27 @@ export function summary(opts = {}) {
 }
 
 // 直读一条：按 id 跨库取全文；命中**旧版本**时返回所查版本全文 + 附注链尾 id（不自动跳转；Letta「needle+expand」的 expand 最小形态）。
-export function show(id) {
+export function show(id, opts = {}) {
   const target = String(id || '').trim();
   if (!target) return { found: false, note: '给一个记录 id' };
-  for (const name of STORES) {
-    const records = loadStore(name).records;
+  const stores = opts.store ? [opts.store] : STORES;
+  for (const name of stores) {
+    const records = loadStore(name, opts.file || storePath(name)).records;
     const rec = currentRecords(records).find(r => r.id === target);
     if (rec) return { found: true, store: name, id: rec.id, record: rec };
     const old = records.find(r => r.id === target);
     if (old) {
       let tip = old;
       for (;;) { const next = records.find(r => r.supersedes === tip.id); if (!next) break; tip = next; }
+      // 退役态优先判定（2026-10-08）：链尾被墓碑 retires 时，不能再提示「当前版本：<链尾>」——链尾本身也已退役。
+      const tomb = records.find(r => r.retires === tip.id);
+      if (tomb) {
+        return {
+          found: false, store: name, id: target, retired: true,
+          note: `该 id 已退役（${tomb.retired_at || '时间未记'}）${tomb.retired_reason ? '：' + tomb.retired_reason : ''}——已不属于当前集（lookup / brief / cross / summary / audit / 列表均不再命中）；历史仍在库里可追溯。`,
+          record: old,
+        };
+      }
       return { found: false, store: name, id: target, note: '该 id 为旧版本（record 字段＝所查版本全文，不会自动跳转）；当前版本：' + tip.id, record: old };
     }
   }
@@ -485,6 +545,11 @@ export function metrics(opts = {}) {
   };
 }
 
+/** 到期复审只看当前版本（旧版 next_review 不报）。 */
+export function frontierDue(today = new Date().toISOString().slice(0, 10)) {
+  return currentRecords(loadStore('frontier').records).filter((r) => r.next_review && r.next_review <= today);
+}
+
 export function price({ severity, irreversibility, cost, good }) {
   const clamp = v => Math.min(5, Math.max(1, Math.round(Number(v) || 1)));
   const s = clamp(severity); const i = clamp(irreversibility); const c = clamp(cost);
@@ -585,6 +650,13 @@ export function audit(opts = {}) {
   const orphans = currentRecords(loadStore('orphan').records);
   const aging = orphans.filter(r => r.created && days(r.created, today) > 90);
   if (aging.length) findings.push({ level: 'info', code: 'orphan-aging', detail: aging.map(r => r.id) });
+
+  for (const name of STORES) {
+    const { errors } = loadStore(name);
+    // 文件不存在（line 0）是空安装，不是损坏。只有解析失败的行才算丢行。
+    const bad = errors.filter((e) => e.line > 0);
+    if (bad.length) findings.push({ level: 'warn', code: 'bad-jsonl', detail: bad.map((e) => `${name}:${e.line}:${e.error}`) });
+  }
 
   return { today, ok: findings.every(f => f.level !== 'warn'), findings, summary: stats() };
 }
@@ -717,9 +789,22 @@ export function promoteInbox(opts = {}) {
 
 // —— 修订链：append-only 之上的「追加式更正」——
 // 约定：修订记录携带 supersedes:<被修订 id>；「当前版本」= 没有被任何记录 supersedes 的记录。
+// 退役（2026-10-08）：墓碑记录携带 retires:<被退役 id>；被退役 id 及其墓碑都不进「当前集」——
+// 于是 lookup / brief / summary / audit / stats 全部自动不再看见它（它们都走 currentRecords）。
 export function currentRecords(records) {
   const superseded = new Set(records.map((r) => r.supersedes).filter((v) => typeof v === 'string' && v !== ''));
-  return records.filter((r) => !superseded.has(r.id));
+  const retired = new Set(records.map((r) => r.retires).filter((v) => typeof v === 'string' && v !== ''));
+  return records.filter((r) => !superseded.has(r.id) && !retired.has(r.id) && !isStr(r.retires));
+}
+
+export function retiredIds(records) {
+  return new Set(records.map((r) => r.retires).filter((v) => typeof v === 'string' && v !== ''));
+}
+
+// 历史 id 集合（含被 supersedes / 被退役 / 墓碑）：**幂等判重必须用它**。
+// 2026-10-08 事故：某脚本用 currentRecords 判重 → 已退役 id 不在当前集 → 被重新追加（复活 + 重复 id）。
+export function allIds(records) {
+  return new Set(records.map((r) => r.id).filter((v) => typeof v === 'string' && v !== ''));
 }
 
 export function checkSupersedes(store, records) {
@@ -734,9 +819,23 @@ export function checkSupersedes(store, records) {
 }
 
 // 追加一版修订：从任意链上版本出发都落到链尾的下一版；未打补丁的字段自动保留。
+const PROTOCOL_ROOT = 'canon-akasha-usage';
+export function isProtocolId(id) {
+  const s = String(id ?? '');
+  return s === PROTOCOL_ROOT || s.startsWith(PROTOCOL_ROOT + '-r');
+}
+
 export function revise(store, id, patch = {}, opts = {}) {
   if (!STORES.includes(store)) throw new Error('未知存储：' + store);
-  const records = loadStore(store, opts.storeFile).records;
+  if (isProtocolId(id) && !opts.allowProtocol) {
+    throw new Error('拒绝修订 ' + id + '：该条渲染进系统提示。模型路径（MCP）不可改；人工确认后用 CLI --allow-protocol。');
+  }
+  const file = opts.storeFile || storePath(store);
+  return withFileLock(file, () => reviseUnlocked(store, id, patch, { ...opts, file }));
+}
+
+function reviseUnlocked(store, id, patch, opts) {
+  const records = loadStore(store, opts.file).records;
   const byId = new Map(records.map((r) => [r.id, r]));
   const found = byId.get(id);
   if (!found) throw new Error('找不到记录：' + id);
@@ -757,19 +856,101 @@ export function revise(store, id, patch = {}, opts = {}) {
   if (patch.logged_at === undefined) delete next.logged_at;
   const errs = validateRecord(store, next);
   if (errs.length) throw new Error('校验失败：' + errs.join('；'));
-  appendRecord(store, next, opts.storeFile ? { file: opts.storeFile } : {});
+  appendRecord(store, next, { file: opts.file, locked: true });
   return { store, id: newId, supersedes: tip.id, root: root.id };
+}
+
+export function checkRetires(store, records) {
+  const ids = new Set(records.map((r) => r.id));
+  const errors = [];
+  for (const r of records) {
+    if (r.retires !== undefined && !ids.has(r.retires)) {
+      errors.push({ store, id: r.id, errors: ['retires 指向不存在的 id：' + r.retires] });
+    }
+  }
+  return errors;
+}
+
+// 退役（2026-10-08，用户裁定）：把一条记录（及其整条修订链）移出「当前集」。
+//   hard=false（默认）：追加墓碑记录（克隆链尾 + id 后缀 -retired + retires 指针）——append-only 不破，
+//                        可追溯「谁在何时因何退役」，且不再出现在任何 currentRecords 视图里。
+//   hard=true         ：把该 id 的整条链与墓碑行从文件里删掉，删前把被删行备份到 data/_trash/<日期>-<store>.jsonl。
+// 返回值：{ store, id, retired, tombstone?, hard, removed?, trash? }
+export function retireRecord(store, id, opts = {}) {
+  if (!STORES.includes(store)) throw new Error('未知存储：' + store);
+  const hard = opts.hard === true;
+  const reason = typeof opts.reason === 'string' && opts.reason.trim() ? opts.reason.trim() : '';
+  const file = opts.file || storePath(store);
+  const records = loadStore(store, file).records;
+  const byId = new Map(records.map((r) => [r.id, r]));
+  if (!byId.has(id)) throw new Error('找不到记录：' + id);
+
+  // 链尾（与 revise 同语义：从任意链上版本出发都落到链尾）
+  let tip = byId.get(id);
+  for (;;) {
+    const next = records.find((r) => r.supersedes === tip.id);
+    if (!next) break;
+    tip = next;
+  }
+  // 已退役的判定只对「软退役」短路（2026-10-08 二次修复：硬删必须继续走下去——
+  // 否则对已退役条目执行 --hard 会静默返回 already、什么也不删，复活出来的重复行就清不掉）。
+  if (!hard && records.some((r) => r.retires === tip.id)) {
+    return { store, id: tip.id, retired: tip.id, already: true, hard: false };
+  }
+
+  // 该 id 名下全部版本
+  const chainIds = new Set([tip.id]);
+  let cursor = tip;
+  while (cursor.supersedes && byId.has(cursor.supersedes)) { cursor = byId.get(cursor.supersedes); chainIds.add(cursor.id); }
+
+  if (hard) {
+    const dropIds = new Set(chainIds);
+    for (const r of records) if (r.retires && dropIds.has(r.retires)) dropIds.add(r.id);   // 连墓碑一起
+    const removed = records.filter((r) => dropIds.has(r.id));
+    const keep = records.filter((r) => !dropIds.has(r.id));
+    const trashDir = join(DATA, '_trash');
+    mkdirSync(trashDir, { recursive: true });
+    const trash = join(trashDir, new Date().toISOString().slice(0, 10) + '-' + store + '.jsonl');
+    if (removed.length) appendFileSync(trash, removed.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    writeFileSync(file, keep.map((r) => JSON.stringify(r)).join('\n') + (keep.length ? '\n' : ''), 'utf8');
+    return { store, id: tip.id, retired: tip.id, hard: true, removed: removed.length, trash };
+  }
+
+  const tomb = { ...tip, id: tip.id + '-retired', retires: tip.id, retired_at: new Date().toISOString() };
+  if (reason) tomb.retired_reason = reason;
+  delete tomb.logged_at;   // 与 revise 一致：墓碑自成一版，盖自己的写入时间戳
+  appendRecord(store, tomb, { file });
+  return { store, id: tip.id, retired: tip.id, tombstone: tomb.id, hard: false, reason };
+}
+
+function appendRecordUnlocked(store, obj, file, opts = {}) {
+  const record = { ...obj };
+  // 防复活（2026-10-08）：已退役的 id 不得被静默重新追加——这正是当晚的实际事故
+  // （脚本拿 currentRecords 判重 → 退役 id 不在当前集 → 被当新条目追加重放）。
+  if (!opts.allowResurrect) {
+    const existing = loadStore(store, file).records;
+    if (retiredIds(existing).has(record.id)) {
+      throw new Error(`id 已退役，拒绝复活：${record.id}（确需重加请传 { allowResurrect: true }，或改用一个新 id）`);
+    }
+    if (existing.some((r) => r.id === record.id)) throw new Error('重复 id：' + record.id);
+  }
+  // 双时态（2026-10-07）：记录时间（logged_at）由写入路径统一盖戳——缺则盖、自带保留；
+  // 事件时间（event_time）由作者写，不强制、不回填历史。
+  if (record.logged_at === undefined) record.logged_at = new Date().toISOString();
+  for (const k of Object.keys(record)) if (typeof record[k] === 'string') record[k] = redact(record[k]);
+  if (record.source && typeof record.source.ref === 'string') record.source = { ...record.source, ref: redact(record.source.ref) };
+  const errs = validateRecord(store, record);
+  if (errs.length) throw new Error('校验失败：' + errs.join('；'));
+  mkdirSync(dirname(file), { recursive: true });
+  const fd = openSync(file, 'a');
+  try { writeSync(fd, JSON.stringify(record) + '\n'); fsyncSync(fd); }
+  finally { closeSync(fd); }
+  return { store, file, id: record.id };
 }
 
 export function appendRecord(store, obj, opts = {}) {
   if (!STORES.includes(store)) throw new Error('未知存储：' + store);
-  const record = { ...obj };
-  // 双时态（2026-10-07）：记录时间（logged_at）由写入路径统一盖戳——缺则盖、自带保留；
-  // 事件时间（event_time）由作者写，不强制、不回填历史。
-  if (record.logged_at === undefined) record.logged_at = new Date().toISOString();
-  const errs = validateRecord(store, record);
-  if (errs.length) throw new Error('校验失败：' + errs.join('；'));
   const file = opts.file || storePath(store);
-  appendFileSync(file, JSON.stringify(record) + '\n', 'utf8');
-  return { store, file, id: record.id };
+  if (opts.locked) return appendRecordUnlocked(store, obj, file, opts);
+  return withFileLock(file, () => appendRecordUnlocked(store, obj, file, opts));
 }

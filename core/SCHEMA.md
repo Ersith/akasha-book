@@ -55,7 +55,7 @@ id；term / trigger / behavior / resolution / source 全部必填（string）。
 | supports | 对应设计稿条目（如 §2.7 离线层） |
 | note | 一句话（可空） |
 
-由 `node tools/import-frontier.mjs` 从设计稿 §4 生成（重跑覆盖）；手工增补走 `add --store frontier --data '<json>'`。
+基石随 `node init-example.mjs` 从 `data-example/frontier.jsonl` 拷入（仓库里没有 `tools/import-frontier.mjs`）。手工增补走 `add --store frontier --data '<json>'`。
 
 ## 时间字段（双时态，2026-10-07 起）
 
@@ -67,6 +67,18 @@ id；term / trigger / behavior / resolution / source 全部必填（string）。
 - 两轴分开：`event_time` 回答「何时发生的」；`logged_at` 回答「何时记下的」——修订链每行都有 `logged_at` ⇒「某条何时被改」可查。
 - 校验：两字段若存在须为非空字符串。
 - 检索过滤口径：`--since / --until` 按「`event_time` 优先、`logged_at` 回退」的日期级字符串比较（UTC）；无时间戳条目在带过滤时被排除（**2026-10-07 起：输出默认提示「另有 N 条日期未知」——未知≠该时段没有；`--undated` 并入、`--report` 出完整报告**）。
+
+## 退役与删除（2026-10-08，用户裁定）
+
+基石分层要求「教程/工具类资料不进 frontier」，而 append-only 只支持追加 ⇒ 需要显式的**移出**原语（CLI；脚本可调 `retireRecord`）：
+
+- `node akasha.mjs retire <store> <id> [--reason '...']` —— **软退役（默认）**：在链尾之后追加一条**墓碑**记录（`id: <链尾 id>-retired`，字段 `retires: <链尾 id>` + `retired_at` + `retired_reason`；其余字段克隆链尾，以便照常通过该校验）。被退役记录**连同其全部修订版本与墓碑本身**都不进「当前集」（`currentRecords`）——因此 `lookup` / `brief` / `cross` / `summary` / `audit` / `stats` / `frontier list` / `orphan list` 全部不再看见它；历史仍在文件里可追溯。
+- `node akasha.mjs retire <store> <id> --hard` —— **删除**：把该 id 的整条修订链与墓碑**行**从存储文件移除；移前先把被删行备份到 `data/_trash/<日期>-<store>.jsonl`（保留 append-only 精神：先留副本，再删）。
+- 幂等：已退役者重复调用返回 `already: true`。
+- 校验：`retires` 必须指向存在的 id（悬空指针由 `check` 报错）；`check` 的每库报告新增 `retired` 计数。
+- 不变式：退役/删除只作用于该 id 的链，不影响其它记录。
+- **幂等判重纪律（2026-10-08 事故后立）**：脚本按 id 判重必须用**历史 id 集合**（`allIds`），**不得用 `currentRecords`** —— 已退役 id 不在当前集，拿它判重会把退役条目当新条目重放（当晚真实事故：4 条被复活并出现重复 id，`check` 报 duplicate）。写入侧另设硬闸：`appendRecord` 拒绝追加已退役 id，确需重加须显式传 `{ allowResurrect: true }`。
+- 硬删的「已退役短路只对软退役生效」：对已退役条目执行 `--hard` 必须继续删（否则复活出来的重复行清不掉）。
 
 ## 校验命令
 
@@ -88,7 +100,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 `node akasha.mjs brief <主题> [--per N]`（MCP：`akasha_brief`）——把「先查再答」从逐条 lookup 升级为按主题取料：
 
-- 主题词按空格/逗号切分，对六库 `LOOKUP_FIELDS` 计分：整词命中 ×1；含中文且 ≥3 字的词追加相邻二字（bigram）回退 ×0.25（2026-10-07 起）——词组未原样出现也能召回；**回退分 <1 = 弱命中（疑似相关），整词级 ≥1 = 强命中**，「确定不知道」看强命中为零；
+- 主题词按空格/逗号切分，对六库 `LOOKUP_FIELDS` 计分：整词命中 ×1；含中文且 ≥3 字的词追加相邻二字（bigram）回退 ×0.25（2026-10-07 起）——词组未原样出现也能召回；**回退分 <1 = 弱命中（疑似相关），整词级 ≥1 = 强命中**。`brief` 在强命中为零时明确写「确定不知道」（弱命中仍列出，但不算证据）。孤案 `zeroWeight`：可见、不加权、不算强命中。
 - `--since / --until`（YYYY-MM-DD，lookup / brief / cross 通用）：按 `event_time`（优先）|| `logged_at` 的日期级比较过滤（UTC 口径）；无时间戳条目被排除（**默认提示「另有 N 条日期未知」；`--undated` 并入、`--report` 完整报告；非法日期即拒**）；brief 每条命中带 `time` 坐标；
 - frontier 命中附加状态权重（已实践 3 > 已复现 2 > 高引用 1 > 待验证 0），每库默认 top 3（`--per` 可调）；
 - 输出带来源态提示：库内引用标注「记得·库内」；无命中时明确「确定不知道，不要编」。
@@ -108,7 +120,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 `node akasha.mjs cross <词> [--per N]`（MCP：`akasha_cross`）——同一主题词在六库的**全部**命中按库并排：
 
-- 当前版本、按命中数排序、**主行不截断**（canon=claim；mirror=境况→反应；orphan=摘要；pricing=行为；lexicon=词条：行为；frontier=题名）；
+- 当前版本、按命中数排序、**主行不截断**（`cross()` 不再 `slice(0, 240)`；canon=claim；mirror=境况→反应；orphan=摘要；pricing=行为；lexicon=词条：行为；frontier=题名）；
 - 「同题多源」提示 + 处置姿势：**矛盾不合并**——留档用孤案（orphan add），定论用修订链（revise）；
 - 与 `brief` 的分工：brief 是「按相关度取前 N 条」（快速了解），cross 是「全摆出来对位」（裁决用）；两者与 lookup 均支持 `--since / --until` 时间过滤。
 
@@ -171,12 +183,12 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 单会话记忆层（设计稿 `docs\superpowers\specs\2026-10-07-session-akasha-design.md` v0.4；计划 `docs\superpowers\plans\2026-10-07-session-layer-v0.md`）：会话档案（含官方压缩掉的历史）→ 段级条目 → 结论优先检索。
 
-- 数据：`data\session.jsonl` + `data\session-meta.json`（append-only；**不在六库 STORES 内**——`check` / `audit` 不涉，六库零改动）。
+- 数据：`data/session.jsonl` + `data/session-meta.json`。这是**同库分层**（v0.1→v0.2，独立库方案已撤回），不是第二套产品：同一 CLI / 同一数据目录 / 同一 MCP 进程。段不进六库 `STORES`，因此 `check` / `audit` 不扫它，避免污染 canon。升格进六库还没有入口。
 - 段字段：`id`（`seg-<sid8>-<seq>-<指纹>`，同内容幂等、档案重写漂移追加新版）/ `store:"session"` / `session` / `seq` / `time` / `turn` / `step` / `kind`（intent / action / conclusion / process）/ `gist`（截断 200–400 字）/ `why`（可选）/ `keywords`（≤12）/ `tools` / `ptr`（原档指针：`seq`；action 另带 `callSeq`）/ `logged_at`。
 - 命令：`node akasha.mjs session index <sessionId|文件路径> [--full]` / `session lookup <词> [--kind a,b --level nodes|segs --since D --until D --process --limit N]` / `session context [--session ID --budget N]` / `session tree [--build] --session ID` / `session node <id>` / `session loopwatch [--since D] [--json]` / `session stats` / `session help`；MCP：`akasha_session_lookup`。
 - **抽象层 v0.2（2026-10-07）**：段之上加**节点**（`kind:"node"`，id `node-<sid8>-L<n>-…`）——机械树：按回合切块 → L1 弧 → L2 幕（>2 块递归、≤3 层）；节点含 `children` / 时间范围 / `gist`（400 字·展示）/ `extra`（1200 字·评分扩面，不渲染）/ `treegen` 代际（重建＝新代，旧代留档不参与检索）。**检索跨层**：lookup 默认纳入节点（只取当前代）；`--level nodes|segs` 分面。**导航纪律**：树＝入口 → 节点停靠 → 段 / ptr 下钻；保真实测（`research\session-tree-v02-fidelity.md`）：顶结论 token 100% / 块级提及 62% / 段层 token 60%——**全保真唯一保证＝ptr 回原档**。
 - **查询纪律**：结论＋动作＝第一入口；过程段仅按需局部调取、绝不整体查阅；官方压缩摘要仅作背景，冲突以可回原档的会话层为准。
 - **调用分级**：被动行 → 定向轻查（session lookup / 主库 lookup·brief）→ 停靠与导航（session tree / node）→ 深取回档（--process / ptr 回原档 / 主库 cross·show）。
-- 计分：整词 ×1 + 中文 bigram 回退 ×0.25（弱命中显示 <1；结论加成 +1.0 只进排序权重，不进展示分）；**记录级口径（2026-10-07 复查）**：命中分 = Σ整词 ×1 + min(Σ回退, 0.9) ⇒ 「≥1 ⟺ 至少一次整词命中」对多词查询恒真。
+- 计分：与主库同一 `scoreTokens`（整词 ×1 + min(Σ回退, 0.9)；结论 +1.0 只进排序权重）。`strong` 表示至少一次整词命中。
 - 覆盖边界：旧格式（8–9 月 chunk 型）仅部分可抽取；读取侧 `frameFails` 记录损坏 / 半写帧；会话层条目**免复审**（天然带时间，非知识断言）。
 - 插件（`@akasha-book/akasha-session` v0.2.3，2026-10-07 起）：`turn/end` 去抖（30s/会话）自动增量索引 + 压缩事件行（`compaction/end` 真值；成功才记）+ 每回合节奏条（`systemPrompt.context`，order 134）；**v0.2 起含循环观测 P0（dry 干跑——只观测不干预）**：流环（**现役格式＝`agent/assistant-stream` 帧**：reasoning/text-delta 累积，480 字符节流 + 8K 尾窗；`assistant/chunk` 系 V0 遗物仅兼容保留；chunk 帧的 turn/step 由 start 帧缓存补全）+ turn 环（turn-stopping/`turn/end` 兜底，取数＝事件流缓存全文）+ 帧/类型探针 → `loop-watch` / `loop-watch-probe` 观测线（写 `logs\hooks.jsonl`；汇总 `session loopwatch`）。观测线 `session-armed` / `session-index` / `session-index-skip` / `session-index-error` / `session-compact`。
