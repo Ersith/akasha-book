@@ -15,6 +15,18 @@ const DEFAULT_AKASHA = join(homedir(), '.akasha');
 const DEFAULT_LOG = join(DEFAULT_AKASHA, 'logs', 'hooks.jsonl');
 const expandHome = (p) => (p === '~' ? homedir() : (p.startsWith('~/') || p.startsWith('~\\')) ? join(homedir(), p.slice(2)) : p);
 
+// B2（wave1）：shell 里经 akasha CLI 的只读查库也算「召回」——只记子命令名（不记命令原文，免泄露）。
+const SHELL_TOOLS = new Set(['bash', 'pwsh', 'sh', 'shell']);
+const CLI_RECALL = /akasha\.mjs["']?\s+(lookup|brief|cross|kit|show|summary|mirror\s+match|session\s+lookup|frontier\s+due)\b/i;
+/** 工具调用若是 akasha CLI 查库子命令 → 归一名（'lookup' / 'mirror-match' / 'session-lookup' …）；否则 null。 */
+export function akashaCliOf(name, args) {
+  try {
+    if (!SHELL_TOOLS.has(String(name ?? ''))) return null;
+    const m = CLI_RECALL.exec(String(args?.command ?? args?.script ?? ''));
+    return m ? m[1].toLowerCase().replace(/\s+/g, '-') : null;
+  } catch { return null; }
+}
+
 export function apply(ctx, config = {}) {
   const logPath = typeof config.log === 'string' && config.log.trim() !== '' ? expandHome(config.log) : DEFAULT_LOG;
   const akashaDir = typeof config.akashaDir === 'string' && config.akashaDir.trim() !== '' ? expandHome(config.akashaDir) : DEFAULT_AKASHA;
@@ -73,11 +85,13 @@ export function apply(ctx, config = {}) {
         message = String(result?.error?.message ?? '').slice(0, 400);
         try { message = core().redact(message); } catch { /* 核心库缺失时仍截断 */ }
       }
+      const akashaCli = akashaCliOf(exec?.name, exec?.arguments);
       write({
         kind: 'tool',
         tool: exec?.name ?? null,
         ok: !isError,
-        message
+        message,
+        ...(akashaCli ? { akashaCli } : {})
       });
     } catch { /* 见文件头注释 */ }
   });

@@ -4,7 +4,7 @@
 // 手动触发：node akasha.mjs sleep [--dry] —— 与插件自动触发共用同一水位线 sleep-state.json（不重复蒸馏、不丢增量）。
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { ROOT, audit, redact, writeFileAtomic } from './lib.mjs';
+import { ROOT, audit, recallSignals, redact, writeFileAtomic } from './lib.mjs';
 
 export const SLEEP_DEFAULTS = {
   log: join(ROOT, 'logs', 'hooks.jsonl'),
@@ -18,12 +18,14 @@ export const SLEEP_DEFAULTS = {
 export function distillHooks(lines) {
   const counters = { lines: 0, turns: 0, tools: 0, toolErrors: 0, denials: 0, agentErrors: 0, byTool: {} };
   const notes = [];
+  const parsed = [];
   for (const raw of lines) {
     const text = String(raw ?? '').trim();
     if (!text) continue;
     let rec;
     try { rec = JSON.parse(text); } catch { counters.badJson = (counters.badJson ?? 0) + 1; continue; }
     counters.lines++;
+    parsed.push(rec);
     if (rec.kind === 'turn-end') counters.turns++;
     else if (rec.kind === 'tool') {
       counters.tools++;
@@ -36,6 +38,12 @@ export function distillHooks(lines) {
     } else if (rec.kind === 'gate-denied') counters.denials++;
     else if (rec.kind === 'agent-error') counters.agentErrors++;
   }
+  // B2（wave1）：召回失败信号——失败回合里「失败前没查库」的计数（口径见 lib.recallSignals）。
+  const rs = recallSignals(parsed);
+  counters.failureTurns = rs.failureTurns;
+  counters.recalledBefore = rs.recalledBefore;
+  counters.recallMisses = rs.misses;
+  counters.lateRecall = rs.lateRecall;
   return { counters, notes };
 }
 
@@ -72,7 +80,8 @@ export function renderContextLine(state) {
     if (state.lastAudit === 'ok') auditBit = '审计 OK';
     else if (typeof state.lastAudit === 'number') auditBit = `审计警告 ${state.lastAudit} 条`;
     const todoBit = Number.isInteger(state.lastTodo) && state.lastTodo > 0 ? `；待办 ${state.lastTodo} 条（inbox.jsonl）` : '';
-    return `阿卡夏·睡眠：${state.lastRunAt}（${state.lastTrigger ?? '?'}）新增 ${c.lines ?? 0} 条 / 工具 ${c.tools ?? 0}（错误 ${c.toolErrors ?? 0}、拦截 ${c.denials ?? 0}）；${auditBit}${todoBit}；报告 ${state.lastReport ?? '（无）'}。`;
+    const recallBit = Number(c.recallMisses) > 0 ? `；失败前未查库 ${c.recallMisses}/${c.failureTurns ?? c.recallMisses} 回合` : '';
+    return `阿卡夏·睡眠：${state.lastRunAt}（${state.lastTrigger ?? '?'}）新增 ${c.lines ?? 0} 条 / 工具 ${c.tools ?? 0}（错误 ${c.toolErrors ?? 0}、拦截 ${c.denials ?? 0}${recallBit}）；${auditBit}${todoBit}；报告 ${state.lastReport ?? '（无）'}。`;
   } catch {
     return '阿卡夏·睡眠：状态读取失败。';
   }

@@ -491,6 +491,53 @@ export function auditText(text) {
 }
 
 /** 结果计数器 v0（2026-10-07）：hook 线 + 修订链统计 → 可机检指标。 */
+// —— 召回失败信号（B2 · 2026-10 wave1）——
+// 双路召回（机械钩子 + 主动查库）漏掉的，只能事后从日志里认出来：某回合出了失败，而失败之前没有任何查库动作。
+// 纯机械口径（代码做计数、语义判断留给模型/人）：
+//   窗口 = 相邻两条 turn-end 之间（hooks.jsonl 的 tool 线不带会话 id → 全局窗口；多会话并发时窗口会混，属近似）；
+//   召回 = 只读查库面成功调用（MCP mcp__akasha__<RECALL_TOOLS>，或 hooks 标注的 akasha CLI 查库子命令 akashaCli）；
+//   失败 = 非记忆工具 ok:false 或 agent-error（记忆工具自身失败不算任务失败，也不算召回；gate-denied 不计）；
+//   每窗口只看第一次失败：之前查过库 → recalledBefore；没查过 → miss（之后才查 → 另记 lateRecall）。
+export const RECALL_TOOLS = Object.freeze(['akasha_lookup', 'akasha_brief', 'akasha_cross', 'akasha_kit', 'akasha_show', 'akasha_summary', 'akasha_mirror_match', 'akasha_session_lookup', 'akasha_frontier_due']);
+export const RECALL_CLI = Object.freeze(['lookup', 'brief', 'cross', 'kit', 'show', 'summary', 'mirror-match', 'session-lookup', 'frontier-due']);
+const MEMORY_PREFIX = 'mcp__akasha__';
+
+/** 一条 hooks 记录是否为「召回」动作（纯函数）。 */
+export function isRecallRecord(rec) {
+  if (!rec || rec.kind !== 'tool' || rec.ok === false) return false;
+  const tool = String(rec.tool ?? '');
+  if (tool.startsWith(MEMORY_PREFIX)) return RECALL_TOOLS.includes(tool.slice(MEMORY_PREFIX.length));
+  return typeof rec.akashaCli === 'string' && RECALL_CLI.includes(rec.akashaCli);
+}
+
+/** 召回失败计数（纯函数；输入为已解析的 hooks 记录，按日志顺序）。 */
+export function recallSignals(records) {
+  const out = { failureTurns: 0, recalledBefore: 0, misses: 0, lateRecall: 0, missRate: 0, samples: [] };
+  let w = { recalled: false, failed: null, late: false };
+  const close = () => {
+    if (w.failed) {
+      out.failureTurns += 1;
+      if (w.recalled) out.recalledBefore += 1;
+      else {
+        out.misses += 1;
+        if (w.late) out.lateRecall += 1;
+        if (out.samples.length < 5) out.samples.push(w.failed);
+      }
+    }
+    w = { recalled: false, failed: null, late: false };
+  };
+  for (const rec of records ?? []) {
+    if (!rec || typeof rec !== 'object') continue;
+    if (rec.kind === 'turn-end') { close(); continue; }
+    if (isRecallRecord(rec)) { if (w.failed) w.late = true; else w.recalled = true; continue; }
+    const isFail = (rec.kind === 'tool' && rec.ok === false && !String(rec.tool ?? '').startsWith(MEMORY_PREFIX)) || rec.kind === 'agent-error';
+    if (isFail && !w.failed) w.failed = { ts: rec.ts ?? null, what: rec.kind === 'agent-error' ? 'agent-error' : String(rec.tool ?? '?') };
+  }
+  close();
+  out.missRate = out.failureTurns ? +(out.misses / out.failureTurns).toFixed(3) : 0;
+  return out;
+}
+
 export function metrics(opts = {}) {
   const logPath = opts.log || join(ROOT, 'logs', 'hooks.jsonl');
   const since = opts.since ? String(opts.since).slice(0, 10) : null;
@@ -499,10 +546,12 @@ export function metrics(opts = {}) {
   const counters = { tools: 0, toolErrors: 0, denials: 0, agentErrors: 0, turnEnds: 0, sleeps: 0, wakeNotes: 0, outputAudits: 0, usageRefs: 0 };
   const toolErrorsByName = {}; const usageById = {};
   const memoryByName = {}; let memoryCalls = 0;
+  const kept = [];
   for (const raw of lines) {
     let rec;
     try { rec = JSON.parse(raw); } catch { continue; }
     if (since && String(rec.ts || '').slice(0, 10) < since) continue;
+    kept.push(rec);
     if (rec.kind === 'tool') {
       counters.tools += 1;
       const toolName = String(rec.tool ?? '?');
@@ -539,6 +588,7 @@ export function metrics(opts = {}) {
       perTurn: +(memoryCalls / Math.max(1, counters.turnEnds)).toFixed(2),
       byTool: memoryByName
     },
+    recall: recallSignals(kept),
     topToolErrors: Object.entries(toolErrorsByName).sort((a, b) => b[1] - a[1]).slice(0, 5),
     topUsage: Object.entries(usageById).sort((a, b) => b[1] - a[1]).slice(0, 10),
     revisions: { count: revisions, longest, longestId }

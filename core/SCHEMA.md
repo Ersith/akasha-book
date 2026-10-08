@@ -179,6 +179,13 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 `node akasha.mjs metrics [--since D]`（MCP：`akasha_metrics`）——工具成功率 / 门控拦截 / agent 错误 / 回合 / 睡眠 / 唤醒条 / 审计线 / 引用命中 / 修订链统计（总数与最长链）；数据源＝`logs\hooks.jsonl` + 六库修订链。
 
+**召回信号（`recall`，wave1 · B2）**——双路召回漏掉的，只能事后从日志认出：
+- 窗口＝相邻两条 `turn-end` 之间（`tool` 线不带会话 id → 全局窗口；多会话并发时会混，属**近似**，口径固定、可复算）；
+- 召回＝只读查库面成功调用：MCP `mcp__akasha__` + {`akasha_lookup` / `brief` / `cross` / `kit` / `show` / `summary` / `mirror_match` / `session_lookup` / `frontier_due`}，或 hooks 在 shell 工具线上标注的 `akashaCli`（akasha CLI 查库子命令名，只记子命令、不记命令原文）；
+- 失败＝非记忆工具 `ok:false` 或 `agent-error`（记忆工具自身失败、`gate-denied` 不计）；每窗口只看**第一次**失败；
+- 计数：`failureTurns`（有失败的回合）/ `recalledBefore`（失败前查过库）/ `misses`（失败前没查库）/ `lateRecall`（miss 中事后才查）/ `missRate` / `samples`（≤5，`{ts, what}`）。
+- 同一口径进睡眠报告 `counters`（`failureTurns` / `recalledBefore` / `recallMisses` / `lateRecall`），门口条子在 `recallMisses>0` 时追「失败前未查库 m/n 回合」。只计数、不判语义：漏召是否「本该查到」由复盘（模型 / 人）判断。
+
 ## 会话层（session，2026-10-07 起）
 
 单会话记忆层（设计稿 `docs\superpowers\specs\2026-10-07-session-akasha-design.md` v0.4；计划 `docs\superpowers\plans\2026-10-07-session-layer-v0.md`）：会话档案（含官方压缩掉的历史）→ 段级条目 → 结论优先检索。

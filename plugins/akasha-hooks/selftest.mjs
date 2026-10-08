@@ -74,6 +74,24 @@ try { apply(ctxC, { log: logC, akashaDir: dirC }); } catch (e) { threw = e; }
 assert.equal(threw, null, '无核心时 apply 不得抛：' + (threw && threw.message));
 assert.ok(readFileSync(logC, 'utf8').includes('"kind":"activated"'), '降级时激活线仍在');
 
+// —— 5b. B2（wave1）：shell 里的 akasha CLI 查库子命令标 akashaCli（只记子命令名，不记命令原文）——
+{
+  const { akashaCliOf } = await import('./index.js');
+  assert.equal(akashaCliOf('bash', { command: 'node core/akasha.mjs lookup 某词' }), 'lookup');
+  assert.equal(akashaCliOf('pwsh', { command: 'node "C:/x/akasha.mjs" mirror match 某段文本' }), 'mirror-match', '带引号的脚本路径（Windows 常见）也认');
+  assert.equal(akashaCliOf('pwsh', { command: 'node akasha.mjs mirror  match 文本' }), 'mirror-match');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs session lookup 词 --limit 3' }), 'session-lookup');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs add --store canon --data {}' }), null, '写入子命令不算召回');
+  assert.equal(akashaCliOf('read', { command: 'node akasha.mjs lookup x' }), null, '非 shell 工具不看');
+  const hB = {};
+  const logB = join(dir, 'hooks-b2.jsonl');
+  apply({ on(name, fn) { (hB[name] = hB[name] || []).push(fn); return () => {}; } }, { log: logB, akashaDir: dir });
+  for (const fn of hB['tools/result']) fn({ name: 'bash', arguments: { command: 'node akasha.mjs brief 某主题 # secret-ish' } }, { isError: false });
+  const toolLine = readFileSync(logB, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((l) => l.kind === 'tool');
+  assert.equal(toolLine.akashaCli, 'brief', JSON.stringify(toolLine));
+  assert.ok(!JSON.stringify(toolLine).includes('secret-ish'), '不记命令原文');
+}
+
 // —— 6. 2026-10 wave1：默认路径回归——默认日志必须落在 $HOME/.akasha/logs，不得在 cwd 下建出字面量 `~` 目录 ——
 {
   const fakeHome = mkdtempSync(join(scratchRoot, 'akasha-hooks-home-'));
