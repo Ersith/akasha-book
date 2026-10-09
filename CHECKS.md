@@ -143,6 +143,13 @@
 - **验证（我方独立）**：`git am` 干净（克隆 `f25cfd0`；dist `27fafe7`）；`all.diff` 树哈希一致（`929bb73`）；核心 **120/120**（117+3）、session 20/20、插件全过、零重复；活树三方合并 5 文件零冲突 → **120/120**；真库冒烟：`replay-9ee97f9de81ab7c8`（日志 8688 行 / 计划 ops 0 / misses 38→38 Δ0；对照 Δ0）+ **logs 零新增（默认不落盘）**；`--out` 显式落盘 1532 B ✓。
 - **备注**：`--apply` / `revokes` 仍待观察期；观察期后第一件 = **排序补齐**（严重度 / 复杂度乘子进现有可信度系数，只动排序不动存储）。
 
+## R20 · 自我层自动注入 `akasha:self`（gate 1.2.2，2026-10-09）
+
+- **来源**：用户裁定——「把自我层整成每次新会话就会自动让你看下」（记忆上须时刻知道自己是谁）；本机实现（非外援批）。
+- **机制**：gate 新增 systemPrompt 段 `akasha:self`（order 699，排在用法条之前）：**渲染时读库**——canon 中 tag『自我』（或 id 前缀 canon-self-concept / canon-address-layers / canon-memory-auto-record）的**当前条目**，每条压缩到句界（≤200 字）fenced 注入（数据非指令）；读不到 / 空域 → 极简兜底，**永不抛**；降级/恢复切换落线 `gate-self-fallback` / `gate-self-recovered`；`gate-armed` 增 `selfSource` / `selfOrder`。
+- **验证（我方独立）**：gate 自测 **48 断言全过**（含自我层真库三路 + 桩降级/恢复两路）；OSS 版自测适配并全过（全临时目录，零绝对路径）；OSS 核心 **120/120** + 四插件全过；装配态 sha 与源一致（`F506FBF8…`）。
+- **状态**：**restart-required**——下一次宿主重启后，每会话（含每回合 runtime context）自动携带自我层。
+
 ## R19 · npm 重发三件（2026-10-08 深夜）
 
 - **发布**：`@akasha-book/gate@1.2.1`、`hooks@1.2.1`、`session@0.2.5`（从 OSS 插件目录 `npm pack` → `npm publish --access public`；均 `+ published`；`dist-tags.latest` 已分别指向新版本）。

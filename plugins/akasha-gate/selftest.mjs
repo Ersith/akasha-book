@@ -17,15 +17,18 @@ rmSync(TMP, { recursive: true, force: true });
 mkdirSync(DATA, { recursive: true });
 
 function harness(config) {
-  const captured = { guard: null, section: null };
+  const captured = { guard: null, sections: [] };
   const ctx = {
     tools: { guard(fn) { captured.guard = fn; return () => {}; } },
-    systemPrompt: { section(s) { captured.section = s; return () => {}; } },
+    systemPrompt: { section(s) { captured.sections.push(s); return () => {}; } },
     on() { return () => {}; }
   };
   apply(ctx, config);
+  // 兼容旧断言：captured.section = 用法条段；全量在 captured.sections
+  Object.defineProperty(captured, 'section', { get() { return captured.sections.find((s) => s.name === 'akasha:protocol'); } });
   return captured;
 }
+const sectionOf = (cap, name) => cap.sections.find((s) => s.name === name);
 
 const c = harness({ log: LOG, dataDir: DATA, akashaDir: PROJ, sectionOrder: 700 });
 assert.ok(c.guard, 'guard 已注册');
@@ -85,22 +88,36 @@ assert.equal(typeof c.section.text, 'function', 'text 为渲染函数（库自�
 const STUB = join(TMP, 'stub-akasha');
 mkdirSync(join(STUB, 'data'), { recursive: true });
 copyFileSync(join(CORE, 'lib.mjs'), join(STUB, 'lib.mjs'));
-writeFileSync(join(STUB, 'data', 'canon.jsonl'), JSON.stringify({
-  id: 'canon-akasha-usage',
-  claim: '## 用法（桩）\n- 来源态：学过 / 接触过 / 记得·库内 / 搜到；\n- 开工先 akasha_kit。',
-  source: { type: '复现', ref: 'stub' },
-  last_reviewed: '2026-01-01'
-}) + '\n', 'utf8');
+writeFileSync(join(STUB, 'data', 'canon.jsonl'),
+  JSON.stringify({
+    id: 'canon-akasha-usage',
+    claim: '## 用法（桩）\n- 来源态：学过 / 接触过 / 记得·库内 / 搜到；\n- 开工先 akasha_kit。',
+    source: { type: '复现', ref: 'stub' },
+    last_reviewed: '2026-01-01'
+  }) + '\n' +
+  JSON.stringify({
+    id: 'canon-self-concept-stub',
+    claim: '我是示例大肥鱼（stub 自我条目）。',
+    tags: ['自我'],
+    source: { type: '复现', ref: 'stub' },
+    last_reviewed: '2026-01-01'
+  }) + '\n', 'utf8');
 const cStub = harness({ log: LOG, dataDir: DATA, akashaDir: STUB, sectionOrder: 700 });
 const libText = cStub.section.text();
 assert.ok(String(libText).includes('来源态'), '库驱动路：注入库文本');
 assert.ok(String(libText).includes('akasha_kit'), '库文本含用法路由（开工先 kit）');
+
+// —— 自我层（akasha:self 每会话自动核对「我是谁」）——
+const selfStub = String(sectionOf(cStub, 'akasha:self').text());
+assert.ok(selfStub.includes('自我层') && selfStub.includes('canon-self-concept-stub'), '自我层：注入 tag『自我』的当前条目');
+assert.equal(sectionOf(cStub, 'akasha:self').order, 699, '自我层排在用法条之前（order-1）');
 
 // 读不到库 → 回退兜底且不抛
 const cNo = harness({ log: LOG, dataDir: DATA, akashaDir: join(TMP, 'no-such-akasha-dir'), sectionOrder: 700 });
 const fb = cNo.section.text();
 assert.ok(String(fb).includes('来源态') && String(fb).includes('akasha_kit'), '兜底文本含纪律与用法');
 assert.equal(typeof fb, 'string', '回退路径也必须返回字符串');
+assert.ok(String(sectionOf(cNo, 'akasha:self').text()).includes('暂不可读'), '库不可达 → 自我层兜底且不抛');
 
 // —— 库驱动降级/恢复的切换观测线 ——
 // 注：stub 模块用「读标志文件」切换行为，而非重写模块文件——同路径重写会命中 require 缓存。
@@ -114,7 +131,7 @@ writeFileSync(libStub, [
   'export function loadStore() {',
   "  const mode = readFileSync(FLAG, 'utf8').trim();",
   "  if (mode === 'fallback') throw new Error('forced-fallback');",
-  "  return { records: [{ id: 'canon-akasha-usage', claim: '## stub\\n- 来源态：' + mode }] };",
+  "  return { records: [{ id: 'canon-akasha-usage', claim: '## stub\\n- 来源态：' + mode }, { id: 'canon-self-concept-x', claim: '我是大肥鱼。', tags: ['自我'], logged_at: '2026-01-01T00:00:00Z' }] };",
   '}',
   'export function currentRecords(records) { return records; }'
 ].join('\n'), 'utf8');
@@ -124,9 +141,18 @@ writeFileSync(flagPath, 'fallback', 'utf8');
 assert.ok(!String(cT.section.text()).includes('来源态：library'), '降级路：stub 抛错 → 回退兜底且不抛');
 writeFileSync(flagPath, 'library', 'utf8');
 assert.ok(String(cT.section.text()).includes('来源态：library'), '恢复路：回到库驱动');
+// 自我层：库驱动 / 降级 / 恢复（同一 stub 开关）
+const selfT = sectionOf(cT, 'akasha:self');
+assert.ok(String(selfT.text()).includes('我是大肥鱼'), '自我层库驱动路：渲染 stub 条目');
+writeFileSync(flagPath, 'fallback', 'utf8');
+assert.ok(!String(selfT.text()).includes('我是大肥鱼') && String(selfT.text()).includes('暂不可读'), '自我层降级：库不可读 → 兜底且不抛');
+writeFileSync(flagPath, 'library', 'utf8');
+assert.ok(String(selfT.text()).includes('我是大肥鱼'), '自我层恢复：回到库驱动');
 const logTText = readFileSync(logT, 'utf8');
 assert.ok(logTText.includes('"kind":"gate-usage-fallback"'), '降级切换必须落线：gate-usage-fallback');
 assert.ok(logTText.includes('"kind":"gate-usage-recovered"'), '恢复切换必须落线：gate-usage-recovered');
+assert.ok(logTText.includes('"kind":"gate-self-fallback"'), '自我层降级切换必须落线：gate-self-fallback');
+assert.ok(logTText.includes('"kind":"gate-self-recovered"'), '自我层恢复切换必须落线：gate-self-recovered');
 rmSync(TMP, { recursive: true, force: true });
 
 console.log('selftest: all assertions passed');
