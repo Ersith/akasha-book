@@ -43,7 +43,8 @@ const DEFAULTS = {
   timerCheckMs: 3600000,
   contextOrder: 130,
   pulseOrder: 132,
-  addressOrder: 133
+  addressOrder: 133,
+  preflightOrder: 135  // C1｜易错点前置（order 135；C3 若上线则 136，优先级 C3 > C1）
 };
 
 /** 唤醒条是否值得推（有内容才说话）：无睡眠记录 / 有待办 / 审计有警告。 */
@@ -197,6 +198,52 @@ export function apply(ctx, config = {}) {
       return core().renderAddressLine('');
     }
   });
+
+  // C1｜易错点前置（pre-flight hint，2026-10-10 解冻后实现；评审 v2 定稿）
+  // 依据：可预防漏召率 91.2%（回合级）、会话级 100% ⇒ 缺的不是知识，是"动作前把库拉进来"。
+  // 形态：一行 ≤80 字，只提示不阻断；关（preflightHints:false）则**提示与事件双停**（不写假触发）。
+  // 近似说明（如实）：context 行在**回合开始**渲染，此刻还不知道本回合会调用什么工具，
+  //   故用"最近失败的工具"作为**预提示**（近 30 分钟窗口 + 同工具去重）；"本回合尚未查库"这一前置
+  //   在渲染时无法判定，改为"上一个回合没有查库动作时更倾向提示"的弱化版（v1 取"总是可提示"，由去重与上限约束）。
+  const preflightState = { tool: null, at: 0 };
+  if (cfg.preflightHints !== false) {
+    ctx.systemPrompt.context({
+      name: 'akasha:preflight',
+      order: cfg.preflightOrder,
+      text: () => {
+        try {
+          const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
+          const now = Date.now();
+          const WINDOW = 30 * 60 * 1000;
+          const recent = (recentFailures || []).filter((f) => now - f.at <= WINDOW);
+          if (!recent.length) return null;
+          const last = recent[recent.length - 1];
+          const tool = String(last.tool || '');
+          const map = lib.RECALL_TRAP_MAP || {};
+          const ids = map[tool];
+          if (!ids || !ids.length) return null;                       // 不在映射表 ⇒ 不提示
+          if (preflightState.tool === tool && now - preflightState.at < WINDOW) return null;  // 同工具 30 分钟去重
+          const ACTIONS = {
+            'canon-trap-edit-context-mismatch': '先 read 原文再改、改完复核',
+            'canon-trap-read-offset-range': '先用 grep 拿真实行号再读',
+            'canon-trap-grep-exit2-path': '换浅范围/排除 node_modules 再 grep',
+            'canon-trap-unknown-tool-name': '只从本会话可见工具面选名字',
+            'canon-trap-provider-method-list': '先列方法清单再调用',
+          };
+          const id = ids.find((x) => ACTIONS[x]) || ids[0];
+          const act = ACTIONS[id] || '先查库再动手';
+          const line = '[坑前提示] ' + tool + ' 前：' + act + ' —— 条目 ' + id;
+          preflightState.tool = tool; preflightState.at = now;
+          try {                                                        // 事件：关闭时走不到这里（双停）
+            const fs = require_('node:fs');
+            fs.appendFileSync(join(cfg.akashaDir, 'logs', 'hooks.jsonl'),
+              JSON.stringify({ ts: new Date().toISOString(), kind: 'preflight', tool, entry: id }) + '\n');
+          } catch { /* 事件失败不影响提示 */ }
+          return line.length <= 80 ? line : line.slice(0, 79) + '…';
+        } catch { return null; }
+      }
+    });
+  }
 
   // 空闲触发（事件失败开放）。
   ctx.on('agent/status', (payload) => {
