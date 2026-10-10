@@ -215,7 +215,7 @@ export function apply(ctx, config = {}) {
           const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
           const now = Date.now();
           const WINDOW = 30 * 60 * 1000;
-          const recent = (recentFailures || []).filter((f) => now - f.at <= WINDOW);
+          const recent = (recentFailures || []).filter((f) => now - Number(f.ts ?? f.at) <= WINDOW);  // 字段是 ts（见 noteFailure）
           if (!recent.length) return null;
           const last = recent[recent.length - 1];
           const tool = String(last.tool || '');
@@ -235,9 +235,8 @@ export function apply(ctx, config = {}) {
           const line = '[坑前提示] ' + tool + ' 前：' + act + ' —— 条目 ' + id;
           preflightState.tool = tool; preflightState.at = now;
           try {                                                        // 事件：关闭时走不到这里（双停）
-            const fs = require_('node:fs');
-            fs.appendFileSync(join(cfg.akashaDir, 'logs', 'hooks.jsonl'),
-              JSON.stringify({ ts: new Date().toISOString(), kind: 'preflight', tool, entry: id }) + '\n');
+            appendFileSync(join(cfg.akashaDir, 'logs', 'hooks.jsonl'),   // 用文件顶部已导入的 appendFileSync
+              JSON.stringify({ ts: new Date().toISOString(), kind: 'preflight', tool, entry: id }) + '\n', 'utf8');
           } catch { /* 事件失败不影响提示 */ }
           return line.length <= 80 ? line : line.slice(0, 79) + '…';
         } catch { return null; }
