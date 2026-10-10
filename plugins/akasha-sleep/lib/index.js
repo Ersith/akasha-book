@@ -166,11 +166,26 @@ export function apply(ctx, config = {}) {
       if (recentFailures.length > 20) recentFailures.splice(0, recentFailures.length - 20);
     } catch { /* 静默 */ }
   };
+  // 极限观测（2026-10-11 用户令）：把「该查库了」变成**可见信号**，不靠记性——针对"200 轮后忘记查库"的观察。
+  const obs = { turn: 0, steps: 0, compactions: 0, usedToolsN: 0, lastRecallTurn: null };
+  const isRecallTool = (name) => /^mcp__akasha__/.test(String(name || ''));
   ctx.on('tools/result', (exec, result) => {
-    usedTools.add(String(exec?.name ?? '?'));                     // 首用预告用（2026-10-11）
+    const tool = String(exec?.name ?? '?');
+    usedTools.add(tool);                                          // 首用预告用（2026-10-11）
+    obs.usedToolsN = usedTools.size;
+    if (isRecallTool(tool)) obs.lastRecallTurn = obs.turn;         // 召回动作 ⇒ 刷新"距上次查库"
     if (result?.isError === true) noteFailure(exec?.name);
   });
   ctx.on('agent/error', () => noteFailure('agent'));
+  // 轮次与压缩真值：能拿到就用真值，拿不到就保持 0（宁缺勿假）
+  try { ctx.on('agent/turn-stopping', (p) => { if (p && typeof p.turn === 'number') obs.turn = p.turn; }); } catch { /* 事件不存在 */ }
+  try { ctx.on('agent/turn-end', (p) => { if (p && typeof p.turn === 'number') obs.turn = Math.max(obs.turn, p.turn); }); } catch { /* 事件不存在 */ }
+  try {
+    ctx.on('session/event', (p) => {
+      const t = String(p?.type ?? p?.name ?? p?.eventType ?? '');
+      if (t.startsWith('compaction/end') || (t === 'compaction' && p?.phase === 'end')) obs.compactions++;
+    });
+  } catch { /* 事件不存在 */ }
 
   // 库脉搏（v1.3；v1.5 起附加回查行）：写→可见通道——并行会话 / 脚本写入库后，下一回合即可见并命名新内容。
   ctx.systemPrompt.context({
@@ -346,6 +361,23 @@ export function apply(ctx, config = {}) {
             }
           }
           return null;
+        } catch { return null; }
+      }
+    });
+  }
+
+  // 极限观测行（2026-10-11，用户令）：轮次维度的机械钩子——把「该查库了」变成可见信号，不靠记性。
+  //   只在知道轮次时渲染（拿不到真值就保持静默，不伪造）。硬约束同 C1：**一行、≤80 字**。
+  if (cfg.extremeObs !== false) {
+    ctx.systemPrompt.context({
+      name: 'akasha:extreme',
+      order: (cfg.pulseOrder ?? 132) + 2,
+      text: () => {
+        try {
+          if (!obs.turn) return null;
+          const gap = obs.lastRecallTurn === null ? '(本会话尚未查库)' : '距今 ' + Math.max(0, obs.turn - obs.lastRecallTurn) + ' 轮';
+          const line = '[极限观测] 轮=' + obs.turn + ' 压缩=' + obs.compactions + ' 上次查库=' + gap;
+          return line.length <= 80 ? line : line.slice(0, 79) + '…';
         } catch { return null; }
       }
     });
