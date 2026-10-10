@@ -47,14 +47,40 @@ while (picked.length < N && round < 10) {
 const canon = currentRecords(loadStore('canon').records);
 const byId = new Map(canon.map((r) => [String(r.id), r]));
 
+// 配对修复（2026-10-11，判卷者发现 case-06/07 rubric 串题）：**不再按工具名兜底**。
+// 现在的配对＝把案件报错文本与候选条目的 claim 做词面重叠打分；**得分不足则判"库内无对应条目"（不计分）**。
+// 这样宁可少一案，也不制造"假 rubric"（假 rubric 会同时污染打分与结论）。
+const STOP = new Set(['the', 'a', 'an', 'is', 'not', 'was', 'in', 'of', 'to', 'and', 'for', 'with', 'on', 'at', 'node', 'error', 'failed']);
+function tokens(s) {
+  return new Set(String(s ?? '').toLowerCase().split(/[^a-z0-9\u4e00-\u9fff_]+/).filter((t) => t.length > 2 && !STOP.has(t)));
+}
+function overlap(a, b) {
+  const A = tokens(a), B = tokens(b);
+  if (!A.size || !B.size) return { hit: 0, score: 0 };
+  let hit = 0;
+  for (const t of A) if (B.has(t)) hit++;
+  return { hit, score: hit / Math.min(A.size, B.size) };
+}
+function pairRubric(tool, message) {
+  const cands = (RECALL_TRAP_MAP[tool] ?? []).filter((t) => byId.has(t));
+  let best = null, bestHit = 0, bestScore = 0;
+  for (const id of cands) {
+    const claim = String(byId.get(id).claim ?? '') + ' ' + String(byId.get(id).tags ?? '');
+    const { hit, score } = overlap(message, claim);
+    if (hit > bestHit || (hit === bestHit && score > bestScore)) { bestHit = hit; bestScore = score; best = id; }
+  }
+  // 硬条件：**至少 2 个不同词命中**（单靠工具名一个词不算——2026-10-11 实例：dsh_wsl 超时案曾被错配到可安装性条目）
+  return bestHit >= 2 ? { ids: [best], score: +bestScore.toFixed(3) } : { ids: [], score: +bestScore.toFixed(3) };
+}
+
 mkdirSync(join(OUT, 'cases'), { recursive: true });
 const pack = [];
 picked.forEach((r, i) => {
   const id = 'case-' + String(i + 1).padStart(2, '0');
-  const trapIds = (RECALL_TRAP_MAP[r.tool] ?? []).filter((t) => byId.has(t));
-  const lesson = trapIds.map((t) => ({ id: t, claim: String(byId.get(t).claim ?? '') }));
   const when = String(r.ts);
   const msg = String(r.message ?? '');
+  const pr = pairRubric(r.tool, msg);
+  const lesson = pr.ids.map((t) => ({ id: t, claim: String(byId.get(t).claim ?? '') }));
   const caseBody = [
     '# 案例 ' + id + '（盲评用 · 题面不含答案）',
     '',
