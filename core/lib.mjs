@@ -1660,7 +1660,7 @@ export function recallSignals(records, opts = {}) {
 export const RECALL_TRAP_MAP = Object.freeze({
   pwsh: ['canon-review-manual-20261010', 'canon-npm-publish-20261010', 'canon-dsh-store-remediation-20261010'],
   bash: ['canon-review-manual-20261010'],
-  edit: ['canon-review-manual-20261010'],
+  edit: ['canon-trap-edit-context-mismatch', 'canon-review-manual-20261010'],
   write: ['canon-review-manual-20261010'],
   read: ['canon-review-manual-20261010'],
   grep: ['canon-review-manual-20261010'],
