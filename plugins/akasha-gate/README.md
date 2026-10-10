@@ -24,7 +24,7 @@ npm pack
 <!-- store-status -->
 ## 兼容与状态（DSH STORE 口径 · 2026-10-10）
 
-**固定源（immutable source）**：本版本的源码冻结于 Commit `d311ad54d1dc2cd2697c7b9eeac57eaa6466fc04`（对应 `plugins/akasha-gate/package.json` 的 version）。
+**固定源（immutable source）**：本版本的源码冻结于 Commit `3cfdca7a18cff74a7c1d4c081e94525d35a239cd`（对应 `plugins/akasha-gate/package.json` 的 version）。
 兼容声明见 manifest 的 `dsh.compatibility.dshReleases`：**0.2.0-rc.2 = compatible**（本机实测运行），
 `0.2.1-alpha.1` / `0.2.1-alpha.2` 尚未实测 ⇒ 按契约如实写 `unknown`（不猜、不吹）。
 
