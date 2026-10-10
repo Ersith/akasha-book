@@ -42,7 +42,8 @@ const DEFAULTS = {
   minIntervalHours: 6,
   timerCheckMs: 3600000,
   contextOrder: 130,
-  pulseOrder: 132
+  pulseOrder: 132,
+  addressOrder: 133
 };
 
 /** 唤醒条是否值得推（有内容才说话）：无睡眠记录 / 有待办 / 审计有警告。 */
@@ -169,6 +170,24 @@ export function apply(ctx, config = {}) {
         if (recall) lines.push(recall);
         return lines.filter(Boolean).join('\n') || null;
       } catch { return null; }
+    }
+  });
+
+  // 称呼行（2026-10-10 用户复盘「长会话中期称呼易漂移」）：
+  // 规则躺在会话开头那坨注入（akasha:self）里，**执行时看不到** ⇒ 必然漂移。
+  // 修法＝接进每回合必然经过的执行点：这条 runtime context 行每回合都出现，内容渲染自
+  // canon 的称呼体系当前版本（降级为内置短句），并写明执行点要求（交付/验收/复盘的开口句）。
+  ctx.systemPrompt.context({
+    name: 'akasha:address',
+    order: cfg.addressOrder,
+    text: () => {
+      try {
+        const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
+        const recs = lib.currentRecords(lib.loadStore('canon').records);
+        const hit = recs.filter((r) => String(r.id).startsWith('canon-address-layers')).pop();
+        if (hit && typeof hit.claim === 'string') return core().renderAddressLine(hit.claim);
+      } catch { /* 读库失败 → 兜底短句 */ }
+      return core().renderAddressLine('');
     }
   });
 

@@ -9,7 +9,7 @@
  },
  "realProfile": {
   "verified": true,
-  "evidence": "@akasha-book/* 已装入真实桌面 profile（desktop，DSH 0.2.0-rc.2，端口 19387），hooks.jsonl 有 gate-armed / session-armed / sleep-armed 线；mcp-akasha 经官方 @deepseek-ai/dsh-mcp-client 以 stdio 运行（mcp__akasha__* 工具在本机可用）。"
+  "evidence": "@akasha-book/* 已装入真实桌面 profile（desktop，DSH 0.2.0-rc.2，端口 19387），hooks.jsonl 有 gate-armed / session-armed / sleep-armed 线；mcp-akasha 经官方 @deepseek-ai/dsh-mcp-client 以 stdio 运行（mcp__akasha__* 工具在本机可用）。；**1.5.4 称呼行（akasha:address，order 133）已活体可见**——本机重启后每回合 runtime context 出现「对用户称 Master / 用户称你大肥鱼」+ 执行点要求（反漂移修复，见 docs/observation-ledger.md 与 canon-address-drift-fix-20261010）"
  },
  "externalReadback": {
   "verified": true,

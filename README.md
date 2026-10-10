@@ -50,6 +50,7 @@
   - `@akasha-book/mcp`：MCP 注册桥
 - `paper/` —— 论文 v0.5（设计、实现与初步运营报告）
 - `docs/INSTALL.md` —— **安装与配置**（含五插件所需配置、验收四条、以及我们踩过的坑：配置别只写在包内 patch）
+- `docs/observation-ledger.md` —— **观察台账**（基线快照 / 漏召率复盘 / 候选池五项评估 / A1·A2·arousal·rank 的判据）
 - `docs/upstream-contracts.md` —— **对 DSH 的耦合点**（消息形状 / 工具定义 / 装载 / 观测线）与「升级宿主时的固定检查动作」
 - `deps.md` —— 依赖标注（平台 / 插件 / npm）
 - `CHECKS.md` —— 发布前隐私与安全扫描记录（四轮 + 维护同步复扫）

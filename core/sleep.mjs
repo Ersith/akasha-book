@@ -223,12 +223,31 @@ export function sleepRun(opts = {}) {
 }
 
 /** 回查提示（v1.5，2026-10-07）：窗口内有失败（工具 / agent）→ 一行提示（幂等：同窗口渲染结果稳定）；无 → null。 */
-export function renderRecallLine(failures, nowMs = Date.now(), windowMs = 1800000) {
-  const recent = (Array.isArray(failures) ? failures : []).filter((f) => f && typeof f.ts === 'number' && nowMs - f.ts <= windowMs);
+export function renderRecallLine(failures, nowMs = Date.now(), windowMs = 1800000) {  const recent = (Array.isArray(failures) ? failures : []).filter((f) => f && typeof f.ts === 'number' && nowMs - f.ts <= windowMs);
   if (!recent.length) return null;
   const tools = [...new Set(recent.map((f) => String(f.tool || '未知')))].slice(0, 4);
   const minutes = Math.round(windowMs / 60000);
   return `阿卡夏·回查提示：近 ${minutes} 分钟内 ${recent.length} 次失败（${tools.join(' / ')}）——先查库（lookup / brief 相关主题）再继续；失败回查：库里本来有没有能救它的东西？`;
+}
+
+/**
+ * 称呼行（v1.5.4，2026-10-10 用户复盘）：**防长会话称呼漂移**。
+ * 起因：称呼规则躺在会话开头的注入块（akasha:self）里，而回复时没有任何执行点去看它 ⇒ 中期必然漂移。
+ * 修法：接进**每回合必然经过的执行点**（runtime context 行），并把「执行点要求」写明。
+ * 渲染自 canon 的称呼体系当前版本（取 ① 与 ③ 之间那段＝Master 与大肥鱼；括号说明与加粗剔除以保持一行）；
+ * 读不到库时不抛，退内置短句。
+ */
+export function renderAddressLine(claim) {
+  const s = String(claim ?? '').replace(/\s+/g, ' ').trim();
+  const a = s.indexOf('①');
+  const b = s.indexOf('③');
+  const core = a >= 0 && b > a ? s.slice(a, b) : '';
+  const body = (core || '① **Master**——用户要求模型对其使用的称呼；② **大肥鱼**——用户对模型（DSH）的称呼（爱称，与桌宠「小肥鱼」同形象）。')
+    .replace(/\*\*/g, '')
+    .replace(/（[^）]*）/g, '')
+    .replace(/\([^)]*\)/g, '')
+    .trim();
+  return '阿卡夏·称呼：' + body.slice(0, 150) + ' ⇒ 交付 / 验收 / 复盘等节点的回复开口句带 Master。';
 }
 
 // —— 睡眠期合并 / 丢弃：只出计划（wave2 §2 第一批，2026-10-08）——
