@@ -1662,11 +1662,13 @@ export const RECALL_TRAP_MAP = Object.freeze({
   bash: ['canon-review-manual-20261010'],
   edit: ['canon-trap-edit-context-mismatch', 'canon-review-manual-20261010'],
   write: ['canon-review-manual-20261010'],
-  read: ['canon-review-manual-20261010'],
-  grep: ['canon-review-manual-20261010'],
+  read: ['canon-trap-read-offset-range', 'canon-review-manual-20261010'],
+  grep: ['canon-trap-grep-exit2-path', 'canon-review-manual-20261010'],
   dsh_wsl: ['canon-review-manual-20261010', 'canon-installability-20261010'],
   codex_exec: ['canon-review-manual-20261010'],
   apply_patch: ['canon-review-manual-20261010'],
+  'multi_tool_use.parallel': ['canon-trap-unknown-tool-name'],
+  cordis_inspect_query: ['canon-trap-provider-method-list'],
 });
 
 /** 结构性不可预防（2026-10-10 实测：web_fetch 被误判为可预防）——网络/环境类失败，**任何记忆都不可能预防**。 */
