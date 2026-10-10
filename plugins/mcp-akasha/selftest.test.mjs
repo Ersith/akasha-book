@@ -99,6 +99,25 @@ try {
     assert.equal(partial.size, 0, '回滚后不得残留任何注册（实际 ' + partial.size + ' 个）');
   }
 
+  // 对外安装体验回归：用户机器上未必有 `node` 在 PATH ⇒ 必须自动回退到宿主自带 node
+  {
+    const reg = new Map();
+    const logs = [];
+    const ctx = {
+      tools: { register(definition) { reg.set(definition.name, definition); return () => reg.delete(definition.name); } },
+      logger: { info: (m) => logs.push(String(m)), error: (m) => logs.push('ERROR ' + String(m)) },
+      effect: () => {},
+    };
+    await apply(ctx, {
+      serverName: 'akasha', transport: 'stdio', command: 'node', args: [join(coreCopy, 'mcp.mjs')],
+      startupTimeoutMs: 30000, toolCallTimeoutMs: 30000, failOnStartupError: false, env: { PATH: '' },
+    });
+    for (let i = 0; i < 40 && reg.size === 0; i++) await new Promise((r) => setTimeout(r, 500));
+    assert.ok(logs.some((l) => /回退到宿主自带 node/.test(l)), '应记录 node 回退日志（实际日志：' + logs.slice(-2).join(' | ').slice(0, 140) + '）');
+    assert.ok(reg.size > 0, '回退后仍应注册到工具（实际 ' + reg.size + ' 个）');
+    console.log('node 回退：注册 ' + reg.size + ' 个工具');
+  }
+
   // 失败闭合：malformed 配置（缺 command）必须显式拒绝，而不是静默无工具（apply 是 async → 用 rejects）
   await assert.rejects(apply({ tools: { register: () => () => {} }, logger: {} }, { command: '' }), /command/, '缺 command → fail closed（显式拒绝）');
 

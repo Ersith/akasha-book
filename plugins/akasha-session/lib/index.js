@@ -13,7 +13,9 @@ import { Worker } from 'node:worker_threads';
 export const inject = ['systemPrompt', 'timer'];
 
 // 默认值：家目录（~/.akasha）；sessionsRoot 按你的宿主实际会话档案目录配置。
-const AKASHA_HOME = join(homedir(), '.akasha');
+// 库根：`AKASHA_DIR` 环境变量 → 家目录下的 .akasha（2026-10-10：一处配置贯通 log/store/meta）。
+const ENV_AKASHA = typeof process.env.AKASHA_DIR === 'string' && process.env.AKASHA_DIR.trim() !== '' ? process.env.AKASHA_DIR.trim() : null;
+const AKASHA_HOME = ENV_AKASHA ? (ENV_AKASHA === '~' ? homedir() : (ENV_AKASHA.startsWith('~/') || ENV_AKASHA.startsWith('~\\') ? join(homedir(), ENV_AKASHA.slice(2)) : ENV_AKASHA)) : join(homedir(), '.akasha');
 const DEFAULTS = {
   log: join(AKASHA_HOME, 'logs', 'hooks.jsonl'),
   akashaDir: AKASHA_HOME,

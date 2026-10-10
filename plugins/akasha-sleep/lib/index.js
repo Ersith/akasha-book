@@ -28,7 +28,10 @@ export const deepFreeze = (value) => {
 export const createUserMessage = (input) => deepFreeze({ ...structuredClone(input), role: 'user', id: newMessageId() });
 
 // 默认值：家目录下的 .akasha（可用 config 逐项覆盖）。
-const DEFAULT_AKASHA = join(homedir(), '.akasha');
+// 默认值：`AKASHA_DIR` 环境变量 → 家目录下的 .akasha（2026-10-10：一处配置贯通全部路径，
+// 对外安装体验——此前用户必须逐项写 log/stateFile/inboxFile/akashaDir，漏一项就落到别处）。
+const ENV_AKASHA = typeof process.env.AKASHA_DIR === 'string' && process.env.AKASHA_DIR.trim() !== '' ? process.env.AKASHA_DIR.trim() : null;
+const DEFAULT_AKASHA = ENV_AKASHA ? (ENV_AKASHA === '~' ? homedir() : (ENV_AKASHA.startsWith('~/') || ENV_AKASHA.startsWith('~\\') ? join(homedir(), ENV_AKASHA.slice(2)) : ENV_AKASHA)) : join(homedir(), '.akasha');
 const DEFAULTS = {
   log: join(DEFAULT_AKASHA, 'logs', 'hooks.jsonl'),
   akashaDir: DEFAULT_AKASHA,

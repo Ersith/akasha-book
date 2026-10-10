@@ -229,12 +229,23 @@ export async function apply(ctx, config = {}) {
     logError('未配置 args（通常应指向 mcp.mjs 的路径）');
   }
 
-  const client = new StdioMcpClient({ command: cfg.command, args: cfg.args, env: cfg.env, cwd: cfg.cwd, log: (m) => log(m) });
+  let client = new StdioMcpClient({ command: cfg.command, args: cfg.args, env: cfg.env, cwd: cfg.cwd, log: (m) => log(m) });
   const disposers = new Map();
   const disposeAll = () => { for (const dispose of disposers.values()) { try { dispose(); } catch { /* ignore */ } } disposers.clear(); };
 
   const boot = (async () => {
-    await client.start();
+    try {
+      await client.start();
+    } catch (error) {
+      // 2026-10-10（对外安装体验）：用户机器上未必有 `node` 在 PATH（DSH 自带运行时）。
+      // 若配置里就是 `node` 而启动失败（ENOENT），自动改用**宿主自己的**可执行文件重试一次。
+      const looksLikeEnvNode = String(cfg.command).trim().toLowerCase() === 'node';
+      const isMissing = String(error?.code ?? '') === 'ENOENT' || /ENOENT/.test(String(error?.message ?? ''));
+      if (!looksLikeEnvNode || !isMissing) throw error;
+      log(`command='node' 不可用（${String(error?.message ?? error).slice(0, 120)}）→ 回退到宿主自带 node：${process.execPath}`);
+      client = new StdioMcpClient({ command: process.execPath, args: cfg.args, env: cfg.env, cwd: cfg.cwd, log: (m) => log(m) });
+      await client.start();
+    }
     const info = await client.initialize(cfg.startupTimeoutMs);
     log(`已连接 ${String(info?.serverInfo?.name ?? 'unknown')} ${String(info?.serverInfo?.version ?? '')}`.trim());
     const listed = await client.listTools(cfg.startupTimeoutMs);

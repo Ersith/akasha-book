@@ -9,9 +9,11 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-// 默认值：家目录下的 .akasha（可用 config.akashaDir / log 覆盖）。
+// 默认值：`AKASHA_DIR` 环境变量 → 家目录下的 .akasha（可用 config.akashaDir / log 覆盖）。
 // ⚠ 2026-10 wave1：不得写成字面量 '~/...'——Node 不展开 `~`（会在 cwd 下建出名为 `~` 的目录）。
-const DEFAULT_AKASHA = join(homedir(), '.akasha');
+// 2026-10-10（对外安装体验）：AKASHA_DIR 一处配置贯通 log 默认值；缺它时脱敏/审计会静默降级。
+const ENV_AKASHA = typeof process.env.AKASHA_DIR === 'string' && process.env.AKASHA_DIR.trim() !== '' ? expandHome(process.env.AKASHA_DIR) : null;
+const DEFAULT_AKASHA = ENV_AKASHA ?? join(homedir(), '.akasha');
 const DEFAULT_LOG = join(DEFAULT_AKASHA, 'logs', 'hooks.jsonl');
 const expandHome = (p) => (p === '~' ? homedir() : (p.startsWith('~/') || p.startsWith('~\\')) ? join(homedir(), p.slice(2)) : p);
 

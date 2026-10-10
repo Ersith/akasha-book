@@ -1,6 +1,6 @@
 {
   "name": "@akasha-book/session",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "repository": { "type": "git", "url": "https://github.com/Ersith/akasha-book.git", "directory": "plugins/akasha-session" },
   "engines": { "node": ">=22.15.0" },
   "license": "MIT",

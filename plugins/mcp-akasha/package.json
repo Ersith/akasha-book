@@ -1,6 +1,6 @@
 {
   "name": "@akasha-book/mcp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "repository": { "type": "git", "url": "https://github.com/Ersith/akasha-book.git", "directory": "plugins/mcp-akasha" },
   "engines": { "node": ">=22.15.0" },
   "license": "MIT",

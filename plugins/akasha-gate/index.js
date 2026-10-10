@@ -15,11 +15,14 @@ import { dirname, join, resolve, sep } from 'node:path';
 
 export const inject = ['tools', 'systemPrompt'];
 
-// 默认值：家目录下的 .akasha（可用 config.akashaDir / dataDir / log 覆盖）。
+// 默认值：`AKASHA_DIR` 环境变量 → 家目录下的 .akasha（可用 config.akashaDir / dataDir / log 逐项覆盖）。
 // ⚠ 2026-10 wave1：合并批曾把默认值写成字面量 '~/.akasha/...'——Node 不展开 `~`，
 //   isDataPath 永远比不中真实库路径（门控默认失效），日志落进 cwd 下名为 `~` 的目录。
 //   默认值必须用 homedir()；配置值以 `~` 开头的也在这里展开。
-const DEFAULT_AKASHA_DIR = join(homedir(), '.akasha');
+// 2026-10-10（对外安装体验）：**一处配置贯通**——只要设了 AKASHA_DIR（或 config.akashaDir），
+//   dataDir / log 默认值都跟着走；此前必须逐项配，漏一项就静默降级（本机实测踩过）。
+const ENV_AKASHA = typeof process.env.AKASHA_DIR === 'string' && process.env.AKASHA_DIR.trim() !== '' ? expandHome(process.env.AKASHA_DIR) : null;
+const DEFAULT_AKASHA_DIR = ENV_AKASHA ?? join(homedir(), '.akasha');
 const DEFAULT_DATA_DIR = join(DEFAULT_AKASHA_DIR, 'data');
 const DEFAULT_LOG = join(DEFAULT_AKASHA_DIR, 'logs', 'hooks.jsonl');
 /** `~` / `~/x` / `~\x` → 家目录；其余原样。 */
