@@ -102,12 +102,15 @@ for (const p of PACKS) {
   }
   const pkgPath = join(DST_ROOT, p.dst, 'package.json');
   if (existsSync(pkgPath)) {
+    // ⚠ **合并语义**（2026-10-11 三次踩坑后定）：仓里的 package.json 是**提交件**——含活树没有的
+    //   repository{} / license / scripts.test / dsh.compatibility.dshReleases（商城审计要这些，
+    //   整包覆盖会一次掉 5 分）。⇒ 只从活树取 `version`，其余一律保留仓内既有值。
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
     const before = pkg.version;
-    pkg.name = p.name; pkg.version = p.ver; delete pkg.private;
+    pkg.name = p.name; pkg.version = p.ver;
     if (!pkg.publishConfig) pkg.publishConfig = { access: 'public' };
     if (!DRY) writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
-    lines.push('  ' + p.name.padEnd(24) + ' 文件 ' + String(n).padStart(2) + '（映射命中 ' + m + '）  ' + before + ' → ' + p.ver);
+    lines.push('  ' + p.name.padEnd(24) + ' 文件 ' + String(n).padStart(2) + '（映射命中 ' + m + '）  ' + before + ' → ' + p.ver + '（保留提交件字段）');
   } else lines.push('  ' + p.name.padEnd(24) + ' 文件 ' + n + '  ⚠ 实位无 package.json');
   copied += n; mapped += m;
 }
