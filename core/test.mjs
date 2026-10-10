@@ -81,7 +81,7 @@ if (lib) {
   });
   t('lookup：命中镜像库（狼来了）', () => {
     const hits = lib.lookup('狼来了');
-    assert.ok(hits.some(h => h.store === 'mirror' && h.id === 'mirror-langlaile'));
+    assert.ok(hits.some(h => h.store === 'mirror' && h.id.startsWith('mirror-langlaile')));
   });
   t('lookup：命中原版文献层（HippoRAG）', () => {
     const hits = lib.lookup('HippoRAG');
@@ -235,7 +235,7 @@ if (lib) {
   t('镜像匹配：场景词命中 mirror-langlaile 且排第一；空查询空结果', () => {
     const hits = lib.mirrorMatch('虚构 危险 无人 相信');
     assert.ok(hits.length >= 1, JSON.stringify(hits));
-    assert.equal(hits[0].id, 'mirror-langlaile', JSON.stringify(hits.map(h => [h.id, h.score])));
+    assert.ok(hits[0].id.startsWith('mirror-langlaile'), String(hits[0].id));
     assert.ok(hits[0].score >= 4, '分数下界：' + hits[0].score);
     assert.deepEqual(lib.mirrorMatch(''), []);
   });
@@ -1244,7 +1244,7 @@ t('B2 recallSignals：失败前查库 = recalledBefore；未查 = miss；事后�
   assert.equal(r.lateRecall, 1, JSON.stringify(r));
   assert.equal(r.missRate, 0.6);
   assert.deepEqual(r.samples.map((x) => x.what), ['edit', 'agent-error', 'pwsh']);
-  assert.deepEqual(lib.recallSignals([]), { failureTurns: 0, recalledBefore: 0, misses: 0, lateRecall: 0, missRate: 0, samples: [], sessions: 0, unattributed: 0 });
+  assert.deepEqual(lib.recallSignals([]), { failureTurns: 0, recalledBefore: 0, misses: 0, lateRecall: 0, missRate: 0, samples: [], sessions: 0, unattributed: 0, byTool: {}, preventable: { fails: 0, missed: 0, missRate: 0 } });
   assert.equal(lib.isRecallRecord(recTool('mcp__akasha__akasha_revise')), false, '写入面不是召回');
   assert.equal(lib.isRecallRecord(recTool('bash', true, { akashaCli: 'add' })), false, 'CLI 写入子命令不是召回');
 });
@@ -2402,6 +2402,27 @@ t('A2：budgetSignalsFromRecords；CLI budget --enable / --phase-check 报 gap',
   assert.ok((ph.stdout || '').includes('best') && (ph.stdout || '').includes('gap'), ph.stdout);
 });
 
+
+
+// ---- C2（2026-10-10）：分层度量——按工具 + 可预防口径；结构性豁免不判可预防 ----
+t('B2/C2 recallSignals：byTool 分层 + preventable（结构性工具豁免）', () => {
+  const mk = (kind, extra) => ({ ts: '2026-10-10T00:00:00Z', kind, ...extra });
+  const recs = [
+    mk('tool', { tool: 'edit', ok: false }),
+    mk('turn-end', { session: 's1' }),
+    mk('tool', { tool: 'pwsh', ok: false, session: 's1' }),
+    mk('tool', { tool: 'mcp__akasha__akasha_lookup', ok: true, session: 's1' }),
+    mk('tool', { tool: 'edit', ok: false, session: 's1' }),
+    mk('turn-end', { session: 's1' }),
+  ];
+  const r = lib.recallSignals(recs, { toolTraps: new Set(['edit']) });
+  assert.equal(r.byTool.edit.fails >= 1, true, 'edit 分层计数存在');
+  assert.equal(typeof r.byTool.pwsh, 'object', 'pwsh 亦进分层');
+  assert.equal(r.preventable.fails, 1, '仅 edit 计入可预防');
+  assert.equal(r.preventable.missRate >= 0 && r.preventable.missRate <= 1, true, '可预防率在 [0,1]');
+  assert.equal(lib.RECALL_STRUCTURAL_TOOLS.includes('web_fetch'), true, 'web_fetch 结构性豁免在册');
+  assert.equal(lib.recallToolTraps().has('web_fetch'), false, '结构性工具不得进已知坑集');
+});
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {

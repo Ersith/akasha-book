@@ -383,7 +383,15 @@ switch (cmd) {
     const mt = r.memoryTools;
     lines.push(`轻查动作率（记忆工具·MCP 面，2026-10-07 起）：调用 ${mt.calls} 次（占工具 ${(mt.share * 100).toFixed(1)}% / 每回合 ${mt.perTurn} 次）` + (Object.keys(mt.byTool).length ? '；' + Object.entries(mt.byTool).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t, n]) => `${t.replace('mcp__akasha__', '')}×${n}`).join('，') : ''));
     const rc = r.recall;
-    if (rc) lines.push(`召回信号（失败回合 ${rc.failureTurns}）：失败前已查库 ${rc.recalledBefore} / 未查库 ${rc.misses}（其中事后才查 ${rc.lateRecall}）；漏召率 ${rc.failureTurns ? (rc.missRate * 100).toFixed(1) + '%' : '—'}` + (rc.samples.length ? '；样本 ' + rc.samples.slice(0, 3).map((x) => `${x.what}@${String(x.ts ?? '?').slice(0, 16)}`).join('，') : ''));
+    if (rc) {
+          const prev = rc.preventable ?? { fails: 0, missed: 0, missRate: 0 };
+          const byTool = Object.entries(rc.byTool ?? {}).sort((a, b) => b[1].fails - a[1].fails).slice(0, 3)
+            .map(([t, v]) => `${t}×${v.fails}(未查${v.missed}${v.preventableMisses ? '/可预防漏' + v.preventableMisses : ''})`).join('，');
+          lines.push(`召回信号（失败回合 ${rc.failureTurns}）：失败前已查库 ${rc.recalledBefore} / 未查库 ${rc.misses}（其中事后才查 ${rc.lateRecall}）；漏召率 ${rc.failureTurns ? (rc.missRate * 100).toFixed(1) + '%' : '—'}`
+            + `；**可预防口径（C2）**：库内有同类坑的失败 ${prev.fails} 次，其中漏召 ${prev.missed} 次（可预防漏召率 ${prev.fails ? (prev.missRate * 100).toFixed(1) + '%' : '—'}）`
+            + (byTool ? `；按工具 top3：${byTool}` : '')
+            + (rc.samples.length ? '；样本 ' + rc.samples.slice(0, 2).map((x) => `${x.what}@${String(x.ts ?? '?').slice(0, 16)}`).join('，') : ''));
+        }
     print(r, lines.join('\n'));
     break;
   }

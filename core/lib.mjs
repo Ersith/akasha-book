@@ -1598,8 +1598,9 @@ export function sessionKeyOf(rec) {
 }
 
 /** 召回失败计数（纯函数；输入为已解析的 hooks 记录，按日志顺序；按会话分区）。 */
-export function recallSignals(records) {
-  const out = { failureTurns: 0, recalledBefore: 0, misses: 0, lateRecall: 0, missRate: 0, samples: [], sessions: 0, unattributed: 0 };
+export function recallSignals(records, opts = {}) {
+  const toolTraps = opts.toolTraps instanceof Set ? opts.toolTraps : null; // C2：已知坑工具集（null＝不判）
+  const out = { failureTurns: 0, recalledBefore: 0, misses: 0, lateRecall: 0, missRate: 0, samples: [], sessions: 0, unattributed: 0, byTool: {}, preventable: { fails: 0, missed: 0, missRate: 0 } };
   const wins = new Map();  // key -> { recalled, failed, late, starRecall }
   const seen = new Set();
   const win = (k) => { let w = wins.get(k); if (!w) { w = { recalled: false, failed: null, late: false }; wins.set(k, w); } return w; };
@@ -1608,10 +1609,17 @@ export function recallSignals(records) {
     wins.delete(k);
     if (!w || !w.failed) return;
     out.failureTurns += 1;
+    const tool = String(w.failed.what ?? '?');
+    const tally = (out.byTool[tool] ??= { fails: 0, missed: 0, late: 0, preventableMisses: 0 });
+    tally.fails += 1;
+    const preventable = toolTraps ? toolTraps.has(tool) : null;
+    if (preventable === true) out.preventable.fails += 1;
     if (w.recalled) out.recalledBefore += 1;
     else {
       out.misses += 1;
-      if (w.late) out.lateRecall += 1;
+      tally.missed += 1;
+      if (w.late) { out.lateRecall += 1; tally.late += 1; }
+      if (preventable === true) { out.preventable.missed += 1; tally.preventableMisses += 1; }
       if (out.samples.length < 5) out.samples.push(w.failed);
     }
   };
@@ -1637,7 +1645,22 @@ export function recallSignals(records) {
   for (const k of [...wins.keys()]) close(k);
   out.sessions = seen.size;
   out.missRate = out.failureTurns ? +(out.misses / out.failureTurns).toFixed(3) : 0;
+  out.preventable.missRate = out.preventable.fails ? +(out.preventable.missed / out.preventable.fails).toFixed(3) : 0;
   return out;
+}
+
+/** C2（2026-10-10）：**已知坑工具集**——库里对该工具名有强命中即视为"本可预防"。
+ *  口径粗但可机检；定义与局限见 docs/observation-ledger.md §1（可换更细的映射表）。 */
+/** 结构性不可预防（2026-10-10 实测：web_fetch 被误判为可预防）——网络/环境类失败，**任何记忆都不可能预防**。 */
+export const RECALL_STRUCTURAL_TOOLS = Object.freeze(['web_fetch', 'web_search']);
+
+export function recallToolTraps(candidates = ['pwsh', 'edit', 'write', 'read', 'grep', 'glob', 'bash', 'web_fetch', 'web_search', 'dsh_wsl', 'codex_exec', 'apply_patch']) {
+  const traps = new Set();
+  for (const tool of candidates) {
+    if (RECALL_STRUCTURAL_TOOLS.includes(tool)) continue; // 结构性豁免：网络/环境类不判可预防
+    try { const d = lookupDetailed(tool, {}); if ((d.hits ?? []).some((h) => h.strong)) traps.add(tool); } catch { /* 库不可用 → 不判 */ }
+  }
+  return traps;
 }
 
 /** 结果计数器 v0（2026-10-07）：hook 线 + 修订链统计 → 可机检指标。 */
@@ -1691,7 +1714,7 @@ export function metrics(opts = {}) {
       perTurn: +(memoryCalls / Math.max(1, counters.turnEnds)).toFixed(2),
       byTool: memoryByName
     },
-    recall: recallSignals(kept),
+    recall: recallSignals(kept, { toolTraps: recallToolTraps() }),
     topToolErrors: Object.entries(toolErrorsByName).sort((a, b) => b[1] - a[1]).slice(0, 5),
     topUsage: Object.entries(usageById).sort((a, b) => b[1] - a[1]).slice(0, 10),
     revisions: { count: revisions, longest, longestId }
@@ -1868,7 +1891,7 @@ export function kit(opts = {}) {
   };
 
   const hints = [];
-  if (!sleep) hints.push('睡眠从未运行：等待首个空闲（或 timer 兜底）触发，或检查 @akasha-book/sleep 是否激活。');
+  if (!sleep) hints.push('睡眠从未运行：等待首个空闲（或 timer 兜底）触发，或检查 @local/akasha-sleep 是否激活。');
   if (inbox.totalItems > 0) hints.push(`待办 ${inbox.totalItems} 条（logs\\inbox.jsonl）：按「失败回查 / 孤案候选 / 召回复盘（recall-miss）」处理或转正式条目。`);
   for (const f of review.findings) if (f.level === 'warn') hints.push(`审计警告：${f.code} ×${f.count}（akasha_audit / akasha_frontier_due 可查明细）。`);
   hints.push('开工姿势：相关主题先 brief；事实性断言带来源态（学过 / 接触过 / 记得·库内 / 搜到）。');
