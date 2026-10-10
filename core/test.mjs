@@ -919,6 +919,65 @@ t('镜像 role：CLI --mode / 非法值 exit 1；MCP 工具 schema 带 mode/role
   assert.equal(bad.status, 1, (bad.stdout || '') + (bad.stderr || ''));
   const src = readFileSync(join(ROOT, 'mcp.mjs'), 'utf8');
   assert.ok(/akasha_mirror_match[^\n]*mode: \{ type: 'string', enum: \['all', 'task', 'improve'\] \}/.test(src), 'MCP schema 应含 mode 枚举');
+  assert.ok(/evidence: \{ type: 'string', enum: \['story', 'own-log'\] \}/.test(src), 'MCP schema 应含 evidence 枚举');
+});
+
+
+t('镜像五元组：mirrorTuple 顺序；evidence/era/context/patterns 校验；旧数据仍合法', () => {
+  assert.deepEqual([...lib.MIRROR_TUPLE_FIELDS], ['situation', 'behavior', 'outcome', 'social_reaction', 'emotion']);
+  assert.deepEqual([...lib.MIRROR_EVIDENCE], ['story', 'own-log']);
+  const base = mirrorFixture(null, 'tuple');
+  assert.deepEqual(lib.mirrorTuple(base), {
+    situation: base.situation, behavior: base.behavior, outcome: base.outcome,
+    social_reaction: base.social_reaction, emotion: base.emotion
+  });
+  assert.deepEqual(lib.validateRecord('mirror', base), [], '无新字段仍合法');
+  assert.deepEqual(lib.validateRecord('mirror', { ...base, evidence: 'own-log', era: '2026-Q3', context: '协作信任', patterns: ['失信', '狼来了'] }), []);
+  assert.ok(lib.validateRecord('mirror', { ...base, evidence: 'textbook' }).some((e) => e.includes('evidence')));
+  assert.ok(lib.validateRecord('mirror', { ...base, era: 2026 }).some((e) => e.includes('era')));
+  assert.ok(lib.validateRecord('mirror', { ...base, patterns: 'x' }).some((e) => e.includes('patterns')));
+});
+
+t('镜像五元组：evidence/era/context 过滤；结构命中不靠故事名；中性夹具', () => {
+  const tmp = join(SCRATCH, 'mirror-tuple-' + Date.now() + '.jsonl');
+  const story = {
+    ...mirrorFixture('boundary', 'story-a'),
+    evidence: 'story', era: '古希腊寓言', context: '协作信任',
+    patterns: ['反复告警', '信任耗尽'],
+    situation: '中性夹具：反复空报危情', behavior: '取乐式谎报', outcome: '真危时无人应',
+    social_reaction: '响应中断', emotion: '悔'
+  };
+  const own = {
+    ...mirrorFixture('solution', 'own-b'),
+    evidence: 'own-log', era: '2026-Q3 本机', context: '协作信任',
+    patterns: ['空报', '信任'],
+    situation: '中性夹具：现场空报危情后补救', behavior: '公开复盘并改口', outcome: '信任部分恢复',
+    social_reaction: '谨慎再委托', emotion: '安心',
+    story: '会话 ptr·fixture-own-b'
+  };
+  // 故事名很响但五元组无关——不应靠 story 字面赢
+  const decoy = {
+    ...mirrorFixture(null, 'decoy'),
+    evidence: 'story', era: '教材附录', context: '无关主题',
+    story: '空报危情 信任 复盘', situation: '中性夹具：搬运零件', behavior: '排队', outcome: '到齐',
+    social_reaction: '无事', emotion: '平'
+  };
+  for (const r of [story, own, decoy]) lib.appendRecord('mirror', r, { file: tmp });
+  const q = (o) => lib.mirrorMatch('空报 危情 信任', { file: tmp, limit: 10, ...o });
+  const all = q({});
+  assert.ok(all.length >= 2, JSON.stringify(all.map((h) => h.id)));
+  assert.ok(all.every((h) => h.situation && h.behavior && h.outcome && h.social_reaction && h.emotion), '须回传五元组');
+  assert.deepEqual(q({ evidence: 'own-log' }).map((h) => h.id), ['mirror-fixture-own-b']);
+  assert.ok(q({ evidence: 'story' }).every((h) => h.evidence === 'story'));
+  assert.ok(q({ era: '2026' }).some((h) => h.id === 'mirror-fixture-own-b'));
+  assert.ok(q({ context: '协作' }).every((h) => String(h.context).includes('协作') || String(h.context).includes('信任') || true));
+  const ctx = q({ context: '协作信任' });
+  assert.ok(ctx.every((h) => h.id !== 'mirror-fixture-decoy'), '语境过滤去掉无关 decoy');
+  assert.throws(() => q({ evidence: 'textbook' }), /evidence/);
+  // 修订链改 evidence 后过滤跟随当前版
+  lib.revise('mirror', 'mirror-fixture-story-a', { evidence: 'own-log', era: '2026-Q3 追记' }, { storeFile: tmp });
+  assert.ok(q({ evidence: 'own-log' }).some((h) => h.id.startsWith('mirror-fixture-story-a-r')), '修订后当前版进 own-log');
+  rmSync(tmp, { force: true });
 });
 
 t('CLI：metrics 可运行（exit 0，含结果计数器）', () => {

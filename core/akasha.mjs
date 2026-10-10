@@ -135,15 +135,33 @@ switch (cmd) {
     if (sub === 'match') {
       const text = rest.slice(1).join(' ');
       let hits;
-      try { hits = mirrorMatch(text, { limit: Number(flags.limit) || 3, mode: flags.mode, role: flags.role }); }
-      catch (e) { print(null, String(e.message) + '\n用法：node akasha.mjs mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary]'); code = 1; break; }
-      const scope = flags.role ? `只看${flags.role === 'solution' ? '解法' : '边界'}` : flags.mode === 'task' ? '做任务：解法 + 未分层' : flags.mode === 'improve' ? '改流程：边界 + 未分层' : '';
+      try {
+        hits = mirrorMatch(text, {
+          limit: Number(flags.limit) || 3, mode: flags.mode, role: flags.role,
+          evidence: flags.evidence, era: typeof flags.era === 'string' ? flags.era : undefined,
+          context: typeof flags.context === 'string' ? flags.context : undefined
+        });
+      } catch (e) {
+        print(null, String(e.message) + '\n用法：node akasha.mjs mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]');
+        code = 1; break;
+      }
+      const scopeParts = [];
+      if (flags.role) scopeParts.push(`只看${flags.role === 'solution' ? '解法' : '边界'}`);
+      else if (flags.mode === 'task') scopeParts.push('做任务：解法 + 未分层');
+      else if (flags.mode === 'improve') scopeParts.push('改流程：边界 + 未分层');
+      if (flags.evidence) scopeParts.push('证据=' + flags.evidence);
+      if (typeof flags.era === 'string') scopeParts.push('时代~' + flags.era);
+      if (typeof flags.context === 'string') scopeParts.push('语境~' + flags.context);
+      const scope = scopeParts.join('；');
       const lines = [`镜像匹配「${text}」${scope ? '（' + scope + '）' : ''}：` + (hits.length ? `命中 ${hits.length} 条` : '（无命中）')];
       const tag = { solution: '[解法] ', boundary: '[边界] ' };
-      for (const h of hits) lines.push(`  [${h.score}] ${tag[h.role] ?? ''}${h.id}: ${h.situation} → ${h.outcome}（${h.emotion}）`);
+      for (const h of hits) {
+        const ev = h.evidence === 'own-log' ? '[实证] ' : h.evidence === 'story' ? '[典故] ' : '';
+        lines.push(`  [${h.score}] ${tag[h.role] ?? ''}${ev}${h.id}: ${h.situation} → ${h.outcome}（${h.emotion}）`);
+      }
       print(hits, lines.join('\n'));
     } else {
-      print(null, '用法：node akasha.mjs mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary]');
+      print(null, '用法：node akasha.mjs mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]');
       code = 1;
     }
     break;
@@ -494,7 +512,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D] [--include-refuted] [--today D] [--load-balance] [--balance-log F]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary]|sleep [--dry]|sleep --replay [--log F] [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
+    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D] [--include-refuted] [--today D] [--load-balance] [--balance-log F]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]|sleep [--dry]|sleep --replay [--log F] [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
     code = cmd ? 1 : 0;
 }
 process.exit(code);

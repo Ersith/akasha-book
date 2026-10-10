@@ -14,6 +14,10 @@ const SEVERITIES = ['高', '中', '低'];
 export const MIRROR_ROLES = Object.freeze(['solution', 'boundary']);
 /** mirrorMatch 的 mode：task＝解法 + 未分层；improve＝边界 + 未分层；all（缺省）＝不过滤（旧行为）。 */
 export const MIRROR_MODES = Object.freeze(['all', 'task', 'improve']);
+/** 五元组字段顺序：情境模式 → 行为 → 结果 → 社会反应 → 情绪词（结构匹配，不按字面故事）。 */
+export const MIRROR_TUPLE_FIELDS = Object.freeze(['situation', 'behavior', 'outcome', 'social_reaction', 'emotion']);
+/** 证据口径：story＝典故/教材（给名字）；own-log＝本人日志（给证据）。抗教材偏见：可按 evidence 过滤。 */
+export const MIRROR_EVIDENCE = Object.freeze(['story', 'own-log']);
 
 export function storePath(name) {
   return join(DATA, name + '.jsonl');
@@ -106,6 +110,11 @@ export function validateRecord(store, r) {
       if (!isStr(r[f])) e.push('缺少 ' + f);
     // wave1：解法库 / 边界库同库分层（可选字段；缺省 = 未分层，行为与旧版一致）。
     if (r.role !== undefined && !MIRROR_ROLES.includes(r.role)) e.push('role 须为 ' + MIRROR_ROLES.join('/') + '（解法 / 边界；可省略）');
+    // wave4：出处/时代/语境/结构标签（均可选；缺省＝旧数据不受影响）。
+    if (r.evidence !== undefined && !MIRROR_EVIDENCE.includes(r.evidence)) e.push('evidence 须为 ' + MIRROR_EVIDENCE.join('/') + '（可省略）');
+    if (r.era !== undefined && !isStr(r.era)) e.push('era 须为非空字符串（可省略）');
+    if (r.context !== undefined && !isStr(r.context)) e.push('context 须为非空字符串（可省略）');
+    if (r.patterns !== undefined && (!Array.isArray(r.patterns) || r.patterns.some((x) => typeof x !== 'string'))) e.push('patterns 须为字符串数组（可省略）');
   }
   if (store === 'orphan') {
     for (const f of ['summary', 'observed', 'hypothesis', 'would_confirm', 'would_refute'])
@@ -251,7 +260,7 @@ export function checkPromotions(loaded, sessionFile) {
 
 const LOOKUP_FIELDS = {
   canon: ['claim', 'tags'],
-  mirror: ['situation', 'behavior', 'outcome', 'social_reaction', 'emotion', 'story'],
+  mirror: ['situation', 'behavior', 'outcome', 'social_reaction', 'emotion', 'story', 'era', 'context', 'patterns'],
   orphan: ['summary', 'observed', 'hypothesis'],
   pricing: ['behavior'],
   lexicon: ['term', 'trigger', 'behavior', 'resolution'],
@@ -915,7 +924,7 @@ function briefHit(store, r, score) {
   const base = { id: r.id, score, time: tsOf(r) ? String(tsOf(r)).slice(0, 10) : null, valence: typeof r.valence === 'number' ? r.valence : null, arousal: typeof r.arousal === 'number' ? r.arousal : null };
   if (store === 'canon') return { ...base, claim: r.claim, source: r.source && r.source.type, ref: r.source && r.source.ref, last_reviewed: r.last_reviewed };
   if (store === 'frontier') return { ...base, title: r.title, status: r.status, topic: r.topic, supports: Array.isArray(r.supports) ? r.supports : [], url: r.url };
-  if (store === 'mirror') return { ...base, situation: r.situation, outcome: r.outcome, emotion: r.emotion };
+  if (store === 'mirror') return { ...base, ...mirrorTuple(r), story: r.story ?? null, evidence: MIRROR_EVIDENCE.includes(r.evidence) ? r.evidence : null, era: r.era ?? null, context: r.context ?? null, role: MIRROR_ROLES.includes(r.role) ? r.role : null };
   if (store === 'orphan') return { ...base, summary: r.summary, severity: r.severity };
   if (store === 'pricing') return { ...base, behavior: r.behavior, valence: r.valence, severity_default: r.severity_default };
   if (store === 'lexicon') return { ...base, term: r.term, resolution: r.resolution };
@@ -1033,16 +1042,31 @@ export function show(id, opts = {}) {
   return { found: false, note: '六库均无此 id：' + target };
 }
 
-/** 镜像结构匹配（2026-10-07）：五元组字段计分（situation 权重 ×2）+ patterns 可选加权；返回 top N。 */
+/** 抽出五元组（纯函数；不写库）。顺序见 MIRROR_TUPLE_FIELDS。 */
+export function mirrorTuple(r) {
+  const rec = r && typeof r === 'object' ? r : {};
+  const out = {};
+  for (const f of MIRROR_TUPLE_FIELDS) out[f] = rec[f] ?? '';
+  return out;
+}
+
+/**
+ * 镜像结构匹配（2026-10-07；wave4 补 evidence/era/context 过滤与回传）。
+ * 五元组字段计分（situation 权重 ×2）+ patterns 可选加权；结构优先于字面故事名。
+ * 过滤：mode/role（wave1）；evidence（story|own-log）；era/context（子串，大小写不敏感）。
+ */
 export function mirrorMatch(text, opts = {}) {
   const tokens = tokenize(text);
   if (!tokens.length) return [];
   const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 3;
-  // wave1：解法 / 边界分层。mode 宽过滤（未分层条目总在）；role 严过滤（只要该层）。非法值直接报错，不静默放宽。
   const mode = opts.mode === undefined || opts.mode === null || opts.mode === '' ? 'all' : String(opts.mode);
   if (!MIRROR_MODES.includes(mode)) throw new Error('mode 须为 ' + MIRROR_MODES.join('/'));
   const role = opts.role === undefined || opts.role === null || opts.role === '' ? null : String(opts.role);
   if (role !== null && !MIRROR_ROLES.includes(role)) throw new Error('role 须为 ' + MIRROR_ROLES.join('/'));
+  const evidence = opts.evidence === undefined || opts.evidence === null || opts.evidence === '' ? null : String(opts.evidence);
+  if (evidence !== null && !MIRROR_EVIDENCE.includes(evidence)) throw new Error('evidence 须为 ' + MIRROR_EVIDENCE.join('/'));
+  const eraNeedle = opts.era ? String(opts.era).toLowerCase() : null;
+  const ctxNeedle = opts.context ? String(opts.context).toLowerCase() : null;
   const keepRole = (r) => {
     const rr = MIRROR_ROLES.includes(r.role) ? r.role : null;
     if (role) return rr === role;
@@ -1050,10 +1074,19 @@ export function mirrorMatch(text, opts = {}) {
     if (mode === 'improve') return rr !== 'solution';
     return true;
   };
+  const keepMeta = (r) => {
+    if (evidence) {
+      const ev = MIRROR_EVIDENCE.includes(r.evidence) ? r.evidence : null;
+      if (ev !== evidence) return false;
+    }
+    if (eraNeedle && !String(r.era ?? '').toLowerCase().includes(eraNeedle)) return false;
+    if (ctxNeedle && !String(r.context ?? '').toLowerCase().includes(ctxNeedle)) return false;
+    return true;
+  };
   const hits = [];
   for (const r of currentRecords(loadStore('mirror', opts.file || storePath('mirror')).records)) {
-    if (!keepRole(r)) continue;
-    const fields = [['situation', 2], ['behavior', 1], ['outcome', 1], ['social_reaction', 1], ['emotion', 1]];
+    if (!keepRole(r) || !keepMeta(r)) continue;
+    const fields = MIRROR_TUPLE_FIELDS.map((f, i) => [f, f === 'situation' ? 2 : 1]);
     let score = 0;
     for (const [f, w] of fields) {
       const hay = String(r[f] ?? '').toLowerCase();
@@ -1067,9 +1100,13 @@ export function mirrorMatch(text, opts = {}) {
     }
     if (score > 0) {
       hits.push({
-        id: r.id, score: +score.toFixed(2), role: MIRROR_ROLES.includes(r.role) ? r.role : null,
-        situation: r.situation ?? '', behavior: r.behavior ?? '', outcome: r.outcome ?? '',
-        social_reaction: r.social_reaction ?? '', emotion: r.emotion ?? ''
+        id: r.id, score: +score.toFixed(2),
+        role: MIRROR_ROLES.includes(r.role) ? r.role : null,
+        evidence: MIRROR_EVIDENCE.includes(r.evidence) ? r.evidence : null,
+        era: r.era ?? null, context: r.context ?? null,
+        story: r.story ?? '',
+        patterns: Array.isArray(r.patterns) ? r.patterns.slice() : [],
+        ...mirrorTuple(r)
       });
     }
   }
