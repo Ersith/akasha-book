@@ -40,15 +40,20 @@ switch (cmd) {
     const rSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: null };
     const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
     if (!rSel.ok || !rUnt.ok) { console.error(rSel.error || rUnt.error); code = 1; break; }
-    const { hits, stats } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined });
+    const { hits, stats, knowledge } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined });
     const tierOf = (h) => (h.displayTier ? ' ' + h.displayTier : '') + (h.stale ? ' 待复核' : '') + (h.refuted ? ' refuted' : '');
     const lines = hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score})${tierOf(h)}${h.undated ? ' [未定年]' : ''} ${h.snippet}`) : ['（无结果）'];
+    if (knowledge) {
+      const tag = { known: '记得·库内', uncertain: '不确定', 'confirmed-unknown': '确定不知道' }[knowledge.stance] || knowledge.stance;
+      lines.push(`· 认知态：${tag}（${knowledge.stance}）`);
+      if (knowledge.search) lines.push('· 外网契约：' + knowledge.search.interface);
+    }
     if (flags.since || flags.until) {
       const ex = stats.undatedSamples.length ? '（例：' + stats.undatedSamples.map(s => s.id).join('、') + '）' : '';
       lines.push(`· 另有 ${stats.undated} 条日期未知${ex}· ${stats.excluded} 条因日期范围排除。日期未知＝无法参与「该时段发生了什么」的判断，≠该时段没有它。`);
       if (flags.report) lines.push(`· 报告：范围内 ${stats.dated} · 未知 ${stats.undated} · 范围外 ${stats.excluded} · 时间来源 event_time ${stats.timeSource.event_time} / logged_at ${stats.timeSource.logged_at}${flags.undated ? '（--undated 已并入）' : '（--undated 可并入）'}`);
     }
-    print(flags.report ? { hits, stats } : hits, lines.join('\n'));
+    print(flags.report ? { hits, stats, knowledge } : hits, lines.join('\n'));
     break;
   }
   case 'brief': {
@@ -69,6 +74,13 @@ switch (cmd) {
         else if (g.store === 'lexicon') lines.push(`  - ${t}${h.term}: ${h.resolution}`);
         else lines.push(`  - ${t}${h.id}`);
       }
+    }
+    if (b.knowledge) {
+      const k = b.knowledge;
+      const tag = { known: '记得·库内', uncertain: '不确定', 'confirmed-unknown': '确定不知道' }[k.stance] || k.stance;
+      lines.push(`· 认知态：${tag}（${k.stance} · 层 ${k.layer}）`);
+      if (k.cites && k.cites.length) lines.push('· 弱来源：' + k.cites.map((c) => `${c.store}/${c.id}${c.tier ? '[' + c.tier + ']' : ''}`).join('；'));
+      if (k.search) lines.push('· 外网契约：' + k.search.interface + '（宿主实现；core 不搜索）');
     }
     if (b.note) lines.push(b.note);
     if (flags.since || flags.until) {

@@ -540,6 +540,62 @@ export const LOAD_BALANCE_DEFAULTS = Object.freeze({
   maxCorrection: 1.5
 });
 export const RANK_DEFAULTS = Object.freeze({ loadBalance: false });
+
+// —— 知识分层（wave4）——
+// 路由：模型内建 → 技能/插件 → 本地大图馆（六库）→ 外网检索（宿主可插）。
+// core 不实现搜索器；只定义层标签、认知态与 hostWebSearch 契约。可信度 T1..T5 挂在 library 层命中上。
+export const KNOWLEDGE_LAYERS = Object.freeze([
+  Object.freeze({ id: 'model', order: 1, label: '模型内建', host: false,
+    note: '官方模型参数内知识；不可审计，只作起点，不得冒充库内证据' }),
+  Object.freeze({ id: 'skill', order: 2, label: '技能/插件', host: false,
+    note: '宿主 skill / 工具说明' }),
+  Object.freeze({ id: 'library', order: 3, label: '本地大图馆', host: false,
+    stores: Object.freeze(['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier']),
+    note: '已核共识；原文不可变，注释/改口走 revise；frontier 经 due/recheck 排期刷新' }),
+  Object.freeze({ id: 'web', order: 4, label: '外网检索', host: true,
+    rankBy: Object.freeze(['citation', 'credibility']),
+    note: '宿主接入；按 citation×credibility 排序建议；回灌只许 append/annotate，不覆盖原文' })
+]);
+export const EPISTEMIC_STANCES = Object.freeze(['known', 'uncertain', 'confirmed-unknown']);
+
+/** 宿主外网检索契约（不实现搜索）。rankBy 含 credibility，与 TIER_WEIGHT 对齐。 */
+export function webSearchRequest(query, opts = {}) {
+  return {
+    interface: 'akasha.hostWebSearch',
+    version: 1,
+    query: String(query ?? ''),
+    rankBy: ['citation', 'credibility'],
+    credibilityWeights: { T1: TIER_WEIGHT.T1, T2: TIER_WEIGHT.T2, T3: TIER_WEIGHT.T3, T4: TIER_WEIGHT.T4, T5: TIER_WEIGHT.T5 },
+    accept: '结果以新条目或注释 append；不得改写已有原文。',
+    note: 'core 只定义契约；由宿主实现检索并回灌。'
+  };
+}
+
+/**
+ * 认知态路由（纯函数）：known / uncertain / confirmed-unknown。
+ * strongHits>0 → known；仅有可引用弱来源 → uncertain（须引 cites）；否则 confirmed-unknown（可带 search 契约）。
+ */
+export function knowledgeRoute({ query = '', strongHits = 0, cites = [], orphanOnly = false } = {}) {
+  const cited = Array.isArray(cites) ? cites.slice(0, 8) : [];
+  if (strongHits > 0) {
+    return {
+      stance: 'known', layer: 'library', layers: KNOWLEDGE_LAYERS, cites: [], search: null,
+      note: '强命中可标「记得·库内」（命中行带可信度层级，如 T3；待复核只是展示）。弱命中、孤案（zeroWeight）、refute 不算证据。层级系数只影响排序。基石优先级 已实践 > 已复现 > 高引用 > 待验证。'
+    };
+  }
+  if (cited.length > 0) {
+    return {
+      stance: 'uncertain', layer: 'library', layers: KNOWLEDGE_LAYERS, cites: cited, search: null,
+      note: '「不确定」——仅有弱命中/疑似相关：须引用下列来源，不得写成确定；无据处保持不确定。'
+    };
+  }
+  return {
+    stance: 'confirmed-unknown', layer: 'library', layers: KNOWLEDGE_LAYERS, cites: [],
+    search: webSearchRequest(query), next: ['web'],
+    note: '「确定不知道」——本地大图馆无可用证据' + (orphanOnly ? '（仅有零权重孤案）' : '') + '。按协议标注来源态，不要编；宿主可按 search 契约接外网检索。'
+  };
+}
+
 /** 类别模板：由 credibilityOf.cls 选定。协议条强制 sev/cpx = 1（不让 arousal 抬协议）。 */
 export const RANK_TEMPLATES = Object.freeze({
   protocol: Object.freeze({ severityScale: 0, complexityScale: 0, label: 'protocol' }),
@@ -871,7 +927,7 @@ export function credibilityTodos(opts = {}) {
 export function lookupDetailed(query, opts = {}) {
   const q = String(query || '').trim().toLowerCase();
   const stats = { dated: 0, undated: 0, undatedSamples: [], excluded: 0, timeSource: { event_time: 0, logged_at: 0 } };
-  if (!q) return { hits: [], stats };
+  if (!q) return { hits: [], stats, knowledge: knowledgeRoute({ query: '', strongHits: 0, cites: [] }) };
   const tokens = tokenize(q);
   const hits = [];
   const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
@@ -910,7 +966,14 @@ export function lookupDetailed(query, opts = {}) {
       hits.push(hit);
     }
   }
-  return { hits: hits.sort((a, b) => b.rank - a.rank || b.score - a.score).slice(0, 20), stats };
+  const ranked = hits.sort((a, b) => b.rank - a.rank || b.score - a.score).slice(0, 20);
+  const strongHits = ranked.filter((h) => h.strong).length;
+  const cites = ranked.filter((h) => !h.strong && !h.zeroWeight).map((h) => ({
+    store: h.store, id: h.id, tier: h.tier ?? null, displayTier: h.displayTier ?? null
+  }));
+  const orphanOnly = strongHits === 0 && cites.length === 0 && ranked.some((h) => h.zeroWeight);
+  const knowledge = knowledgeRoute({ query: q, strongHits, cites, orphanOnly });
+  return { hits: ranked, stats, knowledge };
 }
 
 export function lookup(query, opts = {}) {
@@ -933,7 +996,7 @@ function briefHit(store, r, score) {
 
 export function brief(query, opts = {}) {
   const q = String(query || '').trim();
-  if (!q) return { query: q, tokens: [], groups: [], note: '空查询：给一个主题词（多个词用空格分隔）。' };
+  if (!q) return { query: q, tokens: [], groups: [], strongHits: 0, note: '空查询：给一个主题词（多个词用空格分隔）。', knowledge: knowledgeRoute({ query: '', strongHits: 0, cites: [] }) };
   const tokens = tokenize(q);
   const perStore = Number.isInteger(opts.perStore) && opts.perStore > 0 ? opts.perStore : 3;
   const groups = [];
@@ -975,12 +1038,17 @@ export function brief(query, opts = {}) {
       }) });
     }
   }
-  const strongHits = groups.reduce((n, g) => n + g.hits.filter((h) => h.strong).length, 0);
-  let note;
-  if (!groups.length) note = '六库无命中：换词再试；仍无 → 这是「确定不知道」，按协议标注来源态，不要编。';
-  else if (!strongHits) note = '无强命中（整词命中为零；孤案为零权重，不算证据）：这是「确定不知道」，弱命中只是疑似相关，不要编。';
-  else note = '强命中可标「记得·库内」（命中行带层级标签，如 T3；待复核只是展示）；弱命中（strong=false）、孤案（zeroWeight）与被 refute 的记录不算证据。层级系数只影响排序，不改变 strong。基石优先级 已实践 > 已复现 > 高引用 > 待验证。';
-  return { query: q, tokens, groups, strongHits, note };
+  const flat = [];
+  for (const g of groups) for (const h of g.hits) flat.push({ ...h, store: g.store });
+  const strongHits = flat.filter((h) => h.strong).length;
+  const cites = flat.filter((h) => !h.strong && !h.zeroWeight).map((h) => ({
+    store: h.store, id: h.id, tier: h.tier ?? null, displayTier: h.displayTier ?? null,
+    ref: h.ref || h.url || null, source: h.source || h.status || null
+  }));
+  const orphanOnly = strongHits === 0 && cites.length === 0 && flat.some((h) => h.zeroWeight);
+  const knowledge = knowledgeRoute({ query: q, strongHits, cites, orphanOnly });
+  const note = knowledge.note;
+  return { query: q, tokens, groups, strongHits, note, knowledge };
 }
 
 // 全库摘要：六库计数 + 各库最近 N 条（主行）+ frontier 状态分布 + 审计概要 + 最近写入。

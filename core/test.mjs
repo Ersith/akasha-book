@@ -2242,6 +2242,52 @@ t('A1：自我层豁免——self-concept/address-layers/memory-auto-record 与 
   assert.equal(lib.isSelfLayerRecord({ id: 'canon-self-concept-x' }), true);
 });
 
+
+t('知识分层：KNOWLEDGE_LAYERS 四层；webSearchRequest 契约不含搜索实现', () => {
+  assert.deepEqual(lib.KNOWLEDGE_LAYERS.map((l) => l.id), ['model', 'skill', 'library', 'web']);
+  assert.equal(lib.KNOWLEDGE_LAYERS.find((l) => l.id === 'web').host, true);
+  assert.deepEqual([...lib.EPISTEMIC_STANCES], ['known', 'uncertain', 'confirmed-unknown']);
+  const req = lib.webSearchRequest('中性夹具查询词');
+  assert.equal(req.interface, 'akasha.hostWebSearch');
+  assert.equal(req.version, 1);
+  assert.deepEqual(req.rankBy, ['citation', 'credibility']);
+  assert.equal(req.credibilityWeights.T1, 1);
+  assert.ok(req.query.includes('中性'));
+  // 确认 lib 源码不实现 http 搜索
+  const src = readFileSync(join(ROOT, 'lib.mjs'), 'utf8');
+  assert.ok(!/https?:\/\/.*search|fetch\(['\"]https?:\/\//.test(src.split('webSearchRequest')[1]?.slice(0, 800) || ''), 'webSearchRequest 邻近不应出现真实搜索实现');
+});
+
+t('知识分层：knowledgeRoute 三态；brief/lookup 强失→确定不知道，弱命中→不确定并 cites', () => {
+  assert.equal(lib.knowledgeRoute({ strongHits: 2 }).stance, 'known');
+  const unk = lib.knowledgeRoute({ query: 'xyzzy-no-hit', strongHits: 0, cites: [] });
+  assert.equal(unk.stance, 'confirmed-unknown');
+  assert.equal(unk.search.interface, 'akasha.hostWebSearch');
+  assert.ok(String(unk.note).includes('确定不知道'));
+  const unc = lib.knowledgeRoute({
+    strongHits: 0,
+    cites: [{ store: 'canon', id: 'canon-fixture-weak', tier: 'T5' }]
+  });
+  assert.equal(unc.stance, 'uncertain');
+  assert.ok(String(unc.note).includes('不确定'));
+  assert.equal(unc.cites[0].id, 'canon-fixture-weak');
+
+  // brief：无命中
+  const miss = lib.brief('xyzzy-guaranteed-miss-9f3a');
+  assert.equal(miss.knowledge.stance, 'confirmed-unknown');
+  assert.ok(String(miss.note).includes('确定不知道'));
+  assert.equal(miss.knowledge.search.interface, 'akasha.hostWebSearch');
+
+  // lookupDetailed 同步
+  const lu = lib.lookupDetailed('xyzzy-guaranteed-miss-9f3a');
+  assert.equal(lu.knowledge.stance, 'confirmed-unknown');
+
+  // 有强命中的真实词（示例库）
+  const hit = lib.brief('阿卡夏');
+  assert.ok(hit.strongHits > 0, '示例库应有强命中');
+  assert.equal(hit.knowledge.stance, 'known');
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

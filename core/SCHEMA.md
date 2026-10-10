@@ -112,7 +112,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 - 主题词按空格/逗号切分，对六库 `LOOKUP_FIELDS` 计分：整词命中 ×1；含中文且 ≥3 字的词追加相邻二字（bigram）回退 ×0.25（2026-10-07 起）——词组未原样出现也能召回；**回退分 <1 = 弱命中（疑似相关），整词级 ≥1 = 强命中**。`brief` 在强命中为零时明确写「确定不知道」（弱命中仍列出，但不算证据）。孤案 `zeroWeight`：可见、不加权、不算强命中。
 - `--since / --until`（YYYY-MM-DD，lookup / brief / cross 通用）：按 `event_time`（优先）|| `logged_at` 的日期级比较过滤（UTC 口径）；无时间戳条目被排除（**默认提示「另有 N 条日期未知」；`--undated` 并入、`--report` 完整报告；非法日期即拒**）；brief 每条命中带 `time` 坐标；
 - frontier 命中附加状态权重（已实践 3 > 已复现 2 > 高引用 1 > 待验证 0），每库默认 top 3（`--per` 可调）；
-- 输出带来源态提示：库内引用标注「记得·库内」；无命中时明确「确定不知道，不要编」。
+- 输出带来源态提示：库内强命中标注「记得·库内」；仅弱命中 →「不确定」并引用 cites；无可用证据 →「确定不知道，不要编」（见「知识分层」）。
 
 ## 起床包（kit）
 
@@ -265,6 +265,27 @@ verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", a
 
 `node akasha.mjs mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary] [--evidence story|own-log] [--era 子串] [--context 子串]`（MCP：`akasha_mirror_match`）——按**结构**匹配五元组（situation ×2）+ `patterns` 加权；可按证据口径 / 时代 / 语境过滤。返回 top N（五元组全文 + role / evidence / era / context / story / patterns）。
 - **分层查询（wave1）**：`--mode task`（MCP `mode:"task"`）＝解法 + 未分层（做任务）；`--mode improve`＝边界 + 未分层（改流程 / 复盘）；缺省 `all` 不过滤（与旧行为一致）；`--role solution|boundary` 严过滤（只要该层）。非法值报错（exit 1），不静默放宽。
+
+## 知识分层（wave4，2026-10-10）
+
+路由（由近到远，**不**另开存储）：
+
+| 层 | id | 说明 |
+|---|---|---|
+| 模型内建 | `model` | 官方模型知识；不可审计，只作起点 |
+| 技能/插件 | `skill` | 宿主 skill / 工具说明 |
+| 本地大图馆 | `library` | 六库已核共识；原文不可变，注释走 `revise`；frontier 继续用 `frontier due` / `recheck` **排期刷新** |
+| 外网检索 | `web` | **宿主可插**；core 只暴露 `webSearchRequest` / `knowledge.search` 契约（`interface: akasha.hostWebSearch`），按 **citation × credibility**（对齐 T1..T5 权重）排序建议；**不**在 core 实现搜索器 |
+
+认知态（`knowledgeRoute` → `brief` / `lookupDetailed.knowledge`）：
+
+| stance | 何时 | 说辞 |
+|---|---|---|
+| `known` | 有强命中 | 「记得·库内」；命中行带可信度层级 |
+| `uncertain` | 仅弱命中 | 「不确定」——必须引用 `cites`（id / tier / ref），不得写成确定 |
+| `confirmed-unknown` | 无可用证据 | 「确定不知道」——不要编；`search` 契约供宿主接外网 |
+
+与既有可信度（wave2 §3）正交：T1..T5 只描述 **library** 层条目质量；分层决定「查到哪一层、如何开口」。
 
 ## 排序补齐（严重度 × 可信度 × 复杂度，wave3，2026-10-10）
 
