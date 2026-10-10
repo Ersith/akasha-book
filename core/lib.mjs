@@ -296,11 +296,17 @@ export function scoreTokens(hayL, tokens) {
   return { whole, fb, score: whole + Math.min(fb, 0.9) };
 }
 
-// 情绪 boost（2026-10-07）：价值信号参与召回——arousal 线性加权 + 负价小幅加权（教训优先）。
+// 情绪 tip（2026-10-07；wave3 起 arousal 主进 rankFactors.severity，避免与乘子双计）。
+// emotionBoost 仍保留：旧测试与「只要 tip 不要整套因子」的调用方；brief 排序改走 rankFactors，
+// 负价只留 +0.25 tip（教训优先），不再把 arousal 加进 base。
 export function emotionBoost(r) {
   const arousal = typeof r.arousal === 'number' ? r.arousal : 0;
   const negative = typeof r.valence === 'number' && r.valence < 0 ? 0.25 : 0;
   return +(arousal * 0.5 + negative).toFixed(3);
+}
+/** brief 用的负价 tip（不含 arousal，arousal 已进严重度乘子）。 */
+export function valenceTip(r) {
+  return typeof r?.valence === 'number' && r.valence < 0 ? 0.25 : 0;
 }
 
 // 时间过滤（2026-10-07）：时间戳 = event_time（事件时间，优先）|| logged_at（记录时间，ISO UTC）。
@@ -392,10 +398,10 @@ export function cross(query, opts = {}) {
       const hayL = hay.toLowerCase();
       const sc = scoreTokens(hayL, tokens);
       if (sc.score > 0) {
-        const weight = cred ? cred.weight : 1;
+        const rf = applyRank(sc.score, name, r, cred, opts);
         hits.push({
           id: r.id, score: sc.score, zeroWeight: name === 'orphan', line: PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay,
-          rank: +((name === 'orphan' ? sc.score : sc.score * weight)).toFixed(4),
+          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity,
           tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
         });
       }
@@ -509,6 +515,85 @@ export function credibilityOf(store, chain, opts = {}) {
   };
 }
 
+// —— 排序补齐（wave3 · 严重度 × 可信度 × 复杂度）——
+// 只进排序 / 展示，不改存储。不新增字段：用已有 severity / severity_default / valence / arousal。
+// strong / weak 仍只看 scoreTokens 整词命中；孤案仍 zeroWeight。时间仍只做 --since/--until 门与有效期门。
+// A1 负载均衡校正：观察期默认关闭（RANK_DEFAULTS.loadBalance = false）；本批不启用。
+export const RANK_DEFAULTS = Object.freeze({ loadBalance: false });
+/** 类别模板：由 credibilityOf.cls 选定。协议条强制 sev/cpx = 1（不让 arousal 抬协议）。 */
+export const RANK_TEMPLATES = Object.freeze({
+  protocol: Object.freeze({ severityScale: 0, complexityScale: 0, label: 'protocol' }),
+  snapshot: Object.freeze({ severityScale: 1, complexityScale: 1, label: 'snapshot' }),
+  frontier: Object.freeze({ severityScale: 1, complexityScale: 1, label: 'frontier' }),
+  evergreen: Object.freeze({ severityScale: 1, complexityScale: 1, label: 'evergreen' })
+});
+const ORPHAN_SEV = Object.freeze({ '高': 1, '中': 0.75, '低': 0.5 });
+const clamp01 = (n) => Math.max(0, Math.min(1, n));
+/** arousal → [0.5, 1]：缺省不压到 0，避免「没写 arousal」被当成最不严重。 */
+const arousalUnit = (a) => 0.5 + 0.5 * clamp01(a);
+
+/**
+ * 从已有字段读严重度 / 复杂度（纯函数；不写库）。
+ * severity：orphan.severity → pricing.severity_default/5 → arousal 映射 → 1。
+ * complexity：无独立字段。若严重度已来自显式 severity 且有 arousal，则 arousal 当复杂度代理；
+ *            若严重度已来自 arousal，复杂度固定 1（避免同一信号乘两次）。否则 1。
+ * valence 负价不进乘子（仍由 brief 行首 ⚠ / 小幅 tip 表达）；不改 strong。
+ */
+export function severityComplexityOf(store, r) {
+  const rec = r && typeof r === 'object' ? r : {};
+  let severity = 1;
+  let severityFrom = 'default';
+  if (store === 'orphan' && ORPHAN_SEV[rec.severity] != null) {
+    severity = ORPHAN_SEV[rec.severity];
+    severityFrom = 'severity';
+  } else if (store === 'pricing' && Number.isInteger(rec.severity_default) && rec.severity_default >= 1 && rec.severity_default <= 5) {
+    severity = rec.severity_default / 5;
+    severityFrom = 'severity_default';
+  } else if (typeof rec.arousal === 'number' && Number.isFinite(rec.arousal)) {
+    severity = +arousalUnit(rec.arousal).toFixed(4);
+    severityFrom = 'arousal';
+  }
+  let complexity = 1;
+  let complexityFrom = 'default';
+  if (severityFrom !== 'arousal' && typeof rec.arousal === 'number' && Number.isFinite(rec.arousal)) {
+    complexity = +arousalUnit(rec.arousal).toFixed(4);
+    complexityFrom = 'arousal';
+  }
+  return { severity, complexity, severityFrom, complexityFrom };
+}
+
+/**
+ * 排序因子：factor = credibility × severity' × complexity'（模板缩放后）。
+ * cred 缺省按 weight=1、cls=evergreen。refuted → factor 0。
+ * loadBalance 钩子保留但默认关闭：打开也不改本批结果（恒等）。
+ */
+export function rankFactors(store, r, cred = null, opts = {}) {
+  const c = cred && typeof cred === 'object' ? cred : { weight: 1, cls: 'evergreen', refuted: false, tier: null };
+  const tpl = RANK_TEMPLATES[c.cls] || RANK_TEMPLATES.evergreen;
+  const sc = severityComplexityOf(store, r);
+  const severity = tpl.severityScale === 0 ? 1 : +(1 + (sc.severity - 1) * tpl.severityScale).toFixed(4);
+  const complexity = tpl.complexityScale === 0 ? 1 : +(1 + (sc.complexity - 1) * tpl.complexityScale).toFixed(4);
+  const credibility = c.refuted ? 0 : (typeof c.weight === 'number' ? c.weight : 1);
+  let factor = +(credibility * severity * complexity).toFixed(6);
+  const loadBalance = opts.loadBalance === true || RANK_DEFAULTS.loadBalance === true;
+  if (loadBalance) {
+    // 观察期占位：恒等。将来若启用，只乘排序，永不改 strong / score。
+    factor = +factor.toFixed(6);
+  }
+  return {
+    credibility, severity, complexity, factor,
+    severityFrom: sc.severityFrom, complexityFrom: sc.complexityFrom,
+    template: tpl.label, loadBalance, tier: c.tier ?? null, cls: c.cls ?? null
+  };
+}
+
+/** 词法分（及 brief 的 status/tip）× 排序因子。孤案 / zeroWeight → 只用词法分（零权重约定）。 */
+export function applyRank(score, store, r, cred, opts = {}) {
+  const f = rankFactors(store, r, cred, opts);
+  if (store === 'orphan' || opts.zeroWeight) return { rank: +Number(score).toFixed(4), ...f };
+  return { rank: +(Number(score) * f.factor).toFixed(4), ...f };
+}
+
 function recordsOf(name, opts = {}) {
   const file = (opts.files && opts.files[name]) || storePath(name);
   return loadStore(name, file).records;
@@ -599,12 +684,12 @@ export function lookupDetailed(query, opts = {}) {
       }
       if (b.timeSource) stats.timeSource[b.timeSource] += 1;
       if (b.bucket === 'in') stats.dated += 1;
-      // strong 只看整词命中；层级系数只进 rank，不进 score。
+      // strong 只看整词命中；严重度×可信度×复杂度只进 rank，不进 score。
       const strong = name !== 'orphan' && sc.whole >= 1;
-      const weight = cred ? cred.weight : 1;
+      const rf = applyRank(sc.score, name, r, cred, opts);
       const hit = {
         store: name, id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan', snippet: redact(hay.slice(0, 120)),
-        rank: +((name === 'orphan' ? sc.score : sc.score * weight)).toFixed(4),
+        rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity,
         tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
       };
       if (b.bucket === 'undated') hit.undated = true;
@@ -654,19 +739,25 @@ export function brief(query, opts = {}) {
       const sc = scoreTokens(hayL, tokens);
       if (sc.score > 0) scored.push({ r, cred, score: sc.score, strong: name !== 'orphan' && sc.whole >= 1, zeroWeight: name === 'orphan' });
     }
-    // 层级系数乘在排序权重上（过期不改这个系数——过期只降展示层）。孤案与 refuted 权重归零，strong 不看系数。
+    // 排序 = (词法分 + frontier 状态 + 负价 tip) × (严重度 × 可信度 × 复杂度)。
+    // arousal 进严重度乘子，不再加进 base（防双计）。过期不改存储层系数。strong 不看乘子。
     const weight = (x) => {
       if (x.zeroWeight || (x.cred && x.cred.refuted)) return 0;
-      const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + emotionBoost(x.r);
-      return base * (x.cred ? x.cred.weight : 1);
+      const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + valenceTip(x.r);
+      return applyRank(base, name, x.r, x.cred, opts).rank;
     };
     scored.sort((a, b) => weight(b) - weight(a) || Number(b.strong) - Number(a.strong));
     if (scored.length) {
-      groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => ({
-        ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight,
-        tier: x.cred ? x.cred.tier : null, displayTier: x.cred ? x.cred.displayTier : null,
-        stale: !!(x.cred && x.cred.stale), refuted: !!(x.cred && x.cred.refuted)
-      })) });
+      groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => {
+        const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + valenceTip(x.r);
+        const rf = applyRank(base, name, x.r, x.cred, opts);
+        return {
+          ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight,
+          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity,
+          tier: x.cred ? x.cred.tier : null, displayTier: x.cred ? x.cred.displayTier : null,
+          stale: !!(x.cred && x.cred.stale), refuted: !!(x.cred && x.cred.refuted)
+        };
+      }) });
     }
   }
   const strongHits = groups.reduce((n, g) => n + g.hits.filter((h) => h.strong).length, 0);

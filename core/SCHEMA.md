@@ -258,11 +258,29 @@ verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", a
 `node akasha.mjs mirror match <情境文本> [--limit N]`（MCP：`akasha_mirror_match`）——把现场情境按**结构**匹配到镜像库：五元组字段计分（situation 权重 ×2）+ 可选 `patterns` 标签加权（子串命中 ×2）；返回 top N（含五元组全文与 `role`，供照镜与引用）。
 - **分层查询（wave1）**：`--mode task`（MCP `mode:"task"`）＝解法 + 未分层（做任务）；`--mode improve`＝边界 + 未分层（改流程 / 复盘）；缺省 `all` 不过滤（与旧行为一致）；`--role solution|boundary` 严过滤（只要该层）。非法值报错（exit 1），不静默放宽。
 
+## 排序补齐（严重度 × 可信度 × 复杂度，wave3，2026-10-10）
+
+`lookup` / `brief` / `cross` 的 **rank**（排序权重）在可信度系数之上再乘严重度与复杂度。只影响排序与命中行上的 `severity` / `complexity` / `factor` 字段；**不改存储**，不新增 schema 字段。
+
+```
+factor = credibility × severity' × complexity'
+rank  = (词法分[+ frontier 状态][+ 负价 tip]) × factor   // 孤案：rank = 词法分（zeroWeight）
+```
+
+- **credibility**：已有 `credibilityOf(...).weight`（T1..T5；refuted = 0）。过期只降展示层，不改这个系数。
+- **severity**（不写库，从已有字段读）：`orphan.severity` 高/中/低 → 1 / 0.75 / 0.5；`pricing.severity_default` 1..5 → n/5；否则若有 `arousal` → `0.5 + 0.5×arousal`；再否则 1。
+- **complexity**（无独立字段）：若严重度已来自显式 severity 且有 `arousal`，则 `arousal` 映射为复杂度代理；若严重度已来自 `arousal`，复杂度固定 1（防双计）；否则 1。
+- **类别模板**：由 `credibilityOf.cls` 选定（protocol / snapshot / frontier / evergreen）。**协议条**强制 severity'=complexity'=1（不让 arousal 抬协议排序）。
+- **时间**：仍只做 `--since/--until` 过滤与有效期门，**不是**主排序权重。
+- **strong / weak**：仍只看 `scoreTokens` 整词命中 ≥ 1；乘子不参与。
+- **A1 负载均衡**：`RANK_DEFAULTS.loadBalance = false`（观察期默认关）。`rankFactors(..., { loadBalance:true })` 目前恒等，只留开关。
+- **emotionBoost**：API 保留；`brief` 的 base 不再加 arousal（改走严重度乘子），负价只留 +0.25 tip。
+
 ## 情绪字段（valence / arousal，2026-10-07 起）
 
 - 任意库记录可带**可选** `valence`（[-1,1]）与 `arousal`（[0,1]）；越界拒绝（pricing 库的 `valence` 仍为必填）。
 - **回写通道**：`node akasha.mjs price --severity N --irreversibility N --cost N [--good|--bad] --apply-store <store> --apply-id <id>`（MCP `akasha_price` 的 `applyStore/applyId`）——计算后经**修订链**写回该条目（追加新版，不改原文）。
-- **用途**：brief 排序 boost（arousal ×0.5 + 负价 +0.25，`emotionBoost` 纯函数可测）；负价条目在 brief 行前加 `⚠`；`kit.history` 输出负价 top3（**病史负价注入**的最小形态）。
+- **用途**：`arousal` 进排序严重度乘子（见上「排序补齐」）；负价在 brief 行前加 `⚠`，并留 +0.25 tip。`emotionBoost`（arousal×0.5+负价）API 仍保留可测，但 brief 排序不再把它整段加进 base。`kit.history` 输出负价 top3（**病史负价注入**的最小形态）。
 
 ## 输出审计与使用计数（v0，2026-10-07 起）
 

@@ -1926,6 +1926,80 @@ t('CLI：sleep --replay 只读（可 --out）、两次 replayId 相同；与 --a
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+
+// —— wave3 排序补齐：严重度 × 可信度 × 复杂度（只进 rank；中性夹具）——
+t('排序：severityComplexityOf 用已有字段；缺省为 1；arousal 不双计', () => {
+  assert.deepEqual(lib.severityComplexityOf('orphan', { severity: '高' }), { severity: 1, complexity: 1, severityFrom: 'severity', complexityFrom: 'default' });
+  assert.equal(lib.severityComplexityOf('orphan', { severity: '中' }).severity, 0.75);
+  assert.equal(lib.severityComplexityOf('pricing', { severity_default: 4, valence: -0.5 }).severity, 0.8);
+  const fromA = lib.severityComplexityOf('canon', { arousal: 1 });
+  assert.equal(fromA.severity, 1); assert.equal(fromA.severityFrom, 'arousal'); assert.equal(fromA.complexity, 1, 'arousal 已作严重度则复杂度固定 1');
+  const both = lib.severityComplexityOf('orphan', { severity: '低', arousal: 1 });
+  assert.equal(both.severity, 0.5); assert.equal(both.complexity, 1); assert.equal(both.complexityFrom, 'arousal');
+  assert.equal(lib.severityComplexityOf('canon', {}).severity, 1);
+  assert.equal(lib.valenceTip({ valence: -0.2 }), 0.25);
+  assert.equal(lib.valenceTip({ valence: 0.2 }), 0);
+  assert.equal(lib.RANK_DEFAULTS.loadBalance, false, 'A1 负载均衡观察期默认关闭');
+});
+t('排序：factor = 可信度 × 严重度 × 复杂度；协议模板忽略 sev/cpx；不改 strong', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-rank-'));
+  try {
+    const J = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+    const claim = 'rank-fixture widget calibration alpha';
+    writeFileSync(files.canon, J([
+      { id: 'canon-fx-hi', claim, source: { type: '复现', ref: 'f' }, last_reviewed: '2026-09-01', arousal: 1, logged_at: '2026-01-01T00:00:00Z' },
+      { id: 'canon-fx-lo', claim, source: { type: '共识', ref: 'f' }, last_reviewed: '2026-09-01', arousal: 0, logged_at: '2026-01-02T00:00:00Z' },
+      { id: 'canon-akasha-usage', claim, source: { type: '复现', ref: 'f' }, last_reviewed: '2026-09-01', arousal: 1 }
+    ]));
+    writeFileSync(files.orphan, J([
+      { id: 'orphan-fx-sev', summary: claim, observed: 'o', hypothesis: 'h', would_confirm: 'c', would_refute: 'r', severity: '高', created: '2026-09-01' }
+    ]));
+    for (const n of lib.STORES) if (n !== 'canon' && n !== 'orphan') writeFileSync(files[n], '');
+    const opts = { files, today: '2026-10-08' };
+    const hi = lib.rankFactors('canon', { arousal: 1 }, { weight: 1, cls: 'evergreen', tier: 'T1' });
+    const lo = lib.rankFactors('canon', { arousal: 0 }, { weight: 0.5, cls: 'evergreen', tier: 'T5' });
+    assert.equal(hi.factor, 1); assert.equal(lo.severity, 0.5); assert.equal(lo.factor, 0.25);
+    const proto = lib.rankFactors('canon', { arousal: 1 }, { weight: 1, cls: 'protocol', tier: 'T1' });
+    assert.equal(proto.severity, 1); assert.equal(proto.complexity, 1); assert.equal(proto.template, 'protocol');
+    const hits = lib.lookup('rank-fixture widget', opts);
+    const ids = hits.filter((h) => h.id.startsWith('canon-fx-') || h.id === 'canon-akasha-usage').map((h) => h.id);
+    assert.ok(ids.indexOf('canon-fx-hi') < ids.indexOf('canon-fx-lo'), '高严重度×高层级排前：' + ids);
+    const a = hits.find((h) => h.id === 'canon-fx-hi'); const b = hits.find((h) => h.id === 'canon-fx-lo');
+    assert.equal(a.score, b.score); assert.equal(a.strong, true); assert.equal(b.strong, true);
+    assert.ok(a.rank > b.rank);
+    assert.equal(a.severity, 1); assert.equal(b.severity, 0.5);
+    assert.equal(b.factor, 0.25);
+    const orphan = hits.find((h) => h.id === 'orphan-fx-sev');
+    assert.ok(orphan); assert.equal(orphan.zeroWeight, true); assert.equal(orphan.strong, false);
+    assert.equal(orphan.rank, orphan.score, '孤案零权重：rank=score，不乘因子');
+    const on = lib.rankFactors('canon', { arousal: 1 }, { weight: 1, cls: 'evergreen' }, { loadBalance: true });
+    assert.equal(on.factor, hi.factor, 'loadBalance 打开仍恒等（观察期占位）');
+    assert.equal(on.loadBalance, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+t('排序：brief 用 valence tip + 因子；emotionBoost 仍可调用但不进 brief base', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-rank-brief-'));
+  try {
+    const J = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+    const claim = 'brief-rank fixture beta';
+    writeFileSync(files.canon, J([
+      { id: 'canon-fx-neg', claim, source: { type: '官方', ref: 'f' }, last_reviewed: '2026-09-01', valence: -0.8, arousal: 0.2 },
+      { id: 'canon-fx-pos', claim, source: { type: '官方', ref: 'f' }, last_reviewed: '2026-09-01', valence: 0.8, arousal: 0.2 }
+    ]));
+    for (const n of lib.STORES) if (n !== 'canon') writeFileSync(files[n], '');
+    const b = lib.brief('brief-rank fixture', { files, today: '2026-10-08', perStore: 5 });
+    const g = b.groups.find((x) => x.store === 'canon');
+    assert.ok(g && g.hits.length === 2);
+    assert.equal(g.hits[0].id, 'canon-fx-neg', '同层级同 arousal 时负价 tip 让教训靠前');
+    assert.equal(g.hits[0].strong, g.hits[1].strong);
+    assert.equal(g.hits[0].score, g.hits[1].score);
+    assert.ok(g.hits[0].rank > g.hits[1].rank);
+    assert.equal(lib.emotionBoost({ arousal: 1, valence: -1 }), 0.75, 'emotionBoost API 保留');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

@@ -31,6 +31,11 @@ async function ta(name, fn) {
   try { await fn(); passed++; console.log('PASS', name); }
   catch (e) { failures.push([name, e]); console.log('FAIL', name, '—', e.message); }
 }
+/** 依赖 zstd 的异步用例：Node 20 等无 zstd 时 SKIP（与 tz 同口径；4ab8856 worker 用例曾漏掉）。 */
+async function tza(name, fn) {
+  if (HAS_ZSTD) return ta(name, fn);
+  skipped.push(name); console.log('SKIP', name, `— Node ${process.version} 无 zstd`);
+}
 async function waitFor(pred, { timeoutMs = 20000, stepMs = 100 } = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -394,7 +399,7 @@ if (mod) {
   });
 
   // ---------- v0.4：索引 worker 化 ----------
-  await ta('worker：宿主只投递 → 后台索引 → via=worker 落线（hostMs < 5ms）', async () => {
+  await tza('worker：宿主只投递 → 后台索引 → via=worker 落线（hostMs < 5ms）', async () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
     const log = join(dir, 'hooks.jsonl');
     const sessionsRoot = join(dir, 'sessions');
@@ -422,7 +427,7 @@ if (mod) {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  await ta('worker：降级链——worker 起不来时立即回 inline（不丢活）', async () => {
+  await tza('worker：降级链——worker 起不来时立即回 inline（不丢活）', async () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
     const log = join(dir, 'hooks.jsonl');
     const sessionsRoot = join(dir, 'sessions');
