@@ -403,7 +403,7 @@ export function cross(query, opts = {}) {
         const rf = applyRank(sc.score, name, r, cred, { ...rankOpts, strong });
         hits.push({
           id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan', line: PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay,
-          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, balance: rf.balance,
+          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
           tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
         });
       }
@@ -718,12 +718,15 @@ export function loadBalanceEnabled(opts = {}) {
   return opts.loadBalance === true || RANK_DEFAULTS.loadBalance === true;
 }
 
-/** 词法分（及 brief 的 status/tip）× 排序因子 [× A1 校正]。孤案 / zeroWeight → 只用词法分。 */
+/** 词法分（及 brief 的 status/tip）× 排序因子 [× A1 校正]。孤案 / zeroWeight → 只用词法分。
+ * factorApplied：因子是否乘进了 rank。孤案仍算出 factor/severity/complexity 供对照，但 rank=score，factorApplied=false。 */
 export function applyRank(score, store, r, cred, opts = {}) {
   const f = rankFactors(store, r, cred, opts);
   const enabled = loadBalanceEnabled(opts);
-  const base = { ...f, loadBalance: enabled, balance: { enabled: false, correction: 1 } };
-  if (store === 'orphan' || opts.zeroWeight) return { rank: +Number(score).toFixed(4), ...base };
+  const base = { ...f, loadBalance: enabled, balance: { enabled: false, correction: 1 }, factorApplied: true };
+  if (store === 'orphan' || opts.zeroWeight) {
+    return { rank: +Number(score).toFixed(4), ...base, factorApplied: false };
+  }
   let rank = Number(score) * f.factor;
   if (enabled) {
     const win = opts.usageWindow || resolveUsageWindow(opts);
@@ -830,7 +833,7 @@ export function lookupDetailed(query, opts = {}) {
       const rf = applyRank(sc.score, name, r, cred, { ...rankOpts, strong });
       const hit = {
         store: name, id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan', snippet: redact(hay.slice(0, 120)),
-        rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, balance: rf.balance,
+        rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
         tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
       };
       if (b.bucket === 'undated') hit.undated = true;
@@ -895,7 +898,7 @@ export function brief(query, opts = {}) {
         const rf = applyRank(base, name, x.r, x.cred, { ...rankOpts, strong: x.strong });
         return {
           ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight,
-          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, balance: rf.balance,
+          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
           tier: x.cred ? x.cred.tier : null, displayTier: x.cred ? x.cred.displayTier : null,
           stale: !!(x.cred && x.cred.stale), refuted: !!(x.cred && x.cred.refuted)
         };

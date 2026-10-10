@@ -1973,6 +1973,10 @@ t('排序：factor = 可信度 × 严重度 × 复杂度；协议模板忽略 se
     const orphan = hits.find((h) => h.id === 'orphan-fx-sev');
     assert.ok(orphan); assert.equal(orphan.zeroWeight, true); assert.equal(orphan.strong, false);
     assert.equal(orphan.rank, orphan.score, '孤案零权重：rank=score，不乘因子');
+    assert.equal(orphan.factorApplied, false, '孤案 factorApplied=false（字段仍可见）');
+    assert.equal(typeof orphan.factor, 'number');
+    const applied = hits.find((h) => h.id === 'canon-fx-hi');
+    assert.equal(applied.factorApplied, true);
     // A1 默认关：不开 loadBalance 时 applyRank 不含校正
     const off = lib.applyRank(2, 'canon', { id: 'x', arousal: 1 }, { weight: 1, cls: 'evergreen' }, {});
     assert.equal(off.balance.enabled, false);
@@ -2077,6 +2081,17 @@ t('A1：默认关不改序；开启后热条退后且 score/strong 不变；可�
     assert.ok(Array.isArray(hits));
     if (hits[0]) assert.ok(!hits[0].balance || hits[0].balance.enabled === false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+t('排序：孤案命中带 factorApplied:false；其它库 true', () => {
+  const o = lib.applyRank(3, 'orphan', { id: 'orphan-x', severity: '高' }, null);
+  assert.equal(o.rank, 3);
+  assert.equal(o.factorApplied, false);
+  assert.ok(o.factor > 0);
+  const c = lib.applyRank(3, 'canon', { id: 'canon-x', arousal: 1 }, { weight: 0.8, cls: 'evergreen' });
+  assert.equal(c.factorApplied, true);
+  assert.equal(c.rank, +(3 * c.factor).toFixed(4));
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);

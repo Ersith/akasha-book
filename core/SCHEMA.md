@@ -264,7 +264,7 @@ verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", a
 
 ```
 factor = credibility × severity' × complexity'
-rank  = (词法分[+ frontier 状态][+ 负价 tip]) × factor   // 孤案：rank = 词法分（zeroWeight）
+rank  = (词法分[+ frontier 状态][+ 负价 tip]) × factor   // 孤案：rank = 词法分（zeroWeight）；命中带 factorApplied:false（factor/severity/complexity 仍给出对照，但不乘进 rank）
 ```
 
 - **credibility**：已有 `credibilityOf(...).weight`（T1..T5；refuted = 0）。过期只降展示层，不改这个系数。
