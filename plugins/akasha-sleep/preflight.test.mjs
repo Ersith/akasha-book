@@ -178,5 +178,15 @@ T('⑯ 压缩 ≥3 且未查库 ⇒ 提示先查', !!cmpRow && /先查库再答/
 for (const fn of cap15.handlers['tools/result'] || []) fn({ name: 'mcp__akasha__akasha_lookup' }, { isError: false });
 for (const fn of cap15.handlers['agent/turn-stopping'] || []) fn({ turn: 131 });
 T('⑰ 刚查过库 ⇒ 不再催（闭环）', !!cmpRow && !/先查库再答|强制/.test(cmpRow.text() || ''), String(cmpRow && cmpRow.text()));
+// ⑱ 核心约定常驻行（库驱动 + 兜底）
+const cap18 = captureRows({ akashaDir: FIX, preflightHints: false }, []);
+const convRow = cap18.rows.find((r) => r.name === 'akasha:conventions');
+T('⑱ 注册了 akasha:conventions 行', !!convRow, JSON.stringify(cap18.rows.map((r) => r.name)));
+T('⑱ 读不到条目 ⇒ 用兜底且非空', typeof (convRow && convRow.text()) === 'string' && convRow.text().startsWith('[约定] '), String(convRow && convRow.text()));
+makeFixture([mk('edit', 24 * 60 * 60 * 1000)], [{ id: 'canon-core-conventions', claim: 'c', line: '测试约定行A｜测试约定行B' }]);
+const cap18b = captureRows({ akashaDir: FIX, preflightHints: false }, []);
+const convRow2 = cap18b.rows.find((r) => r.name === 'akasha:conventions');
+T('⑱ 库有 line ⇒ 渲染条目内容（改条目＝改注入）', typeof (convRow2 && convRow2.text()) === 'string' && convRow2.text().includes('测试约定行A'), String(convRow2 && convRow2.text()));
+T('⑱ ≤160 字', (convRow2.text() || '').length <= 160);
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

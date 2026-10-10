@@ -426,6 +426,29 @@ export function apply(ctx, config = {}) {
     });
   }
 
+  // 核心约定常驻行（2026-10-11 用户裁定）：**防目标漂移**——压缩丢的是"我们怎么做事"（实测五条约定存活 0–21%），
+  //   而每回合注入的称呼层 100% 存活 ⇒ 把核心约定也做成**常驻**。**库驱动**：渲染时读 canon 的
+  //   `canon-core-conventions` 当前版本的 `line` 字段 ⇒ **改约定＝改条目**（不碰代码）；读不到 ⇒ 内置兜底（永不为空）。
+  //   行宽**破例放宽到 160 字**（其余行均为 80）：它是漂移锚，值得多占一行。
+  if (cfg.conventions !== false) {
+    const CONV_ID = 'canon-core-conventions';
+    const FALLBACK_CONVENTIONS = '库无界·装载有界｜来源态四标签｜修订链：追加不改原文｜零编造（红线）｜称呼：Master/大肥鱼';
+    const clipLong = (s) => (s.length <= 160 ? s : s.slice(0, 159) + '…');
+    ctx.systemPrompt.context({
+      name: 'akasha:conventions',
+      order: (cfg.pulseOrder ?? 132) + 4,
+      text: () => {
+        try {
+          const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
+          const recs = lib.currentRecords(lib.loadStore('canon').records);
+          const rec = recs.filter((r) => String(r.id) === CONV_ID || String(r.id).startsWith(CONV_ID + '-r')).pop();
+          const text = (rec && typeof rec.line === 'string' && rec.line.trim()) ? rec.line.trim() : FALLBACK_CONVENTIONS;
+          return clipLong('[约定] ' + text);
+        } catch { return clipLong('[约定] ' + FALLBACK_CONVENTIONS); }
+      }
+    });
+  }
+
   // 空闲触发（事件失败开放）。
   ctx.on('agent/status', (payload) => {
     try { if (payload?.status === 'idle') maybeSleep('idle'); } catch { /* 静默 */ }
