@@ -1,6 +1,6 @@
 {
   "name": "@akasha-book/hooks",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "repository": { "type": "git", "url": "https://github.com/Ersith/akasha-book.git", "directory": "plugins/akasha-hooks" },
   "engines": { "node": ">=18" },
   "license": "MIT",

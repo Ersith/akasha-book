@@ -83,6 +83,9 @@ assert.ok(readFileSync(logC, 'utf8').includes('"kind":"activated"'), '降级时�
   assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs session lookup 词 --limit 3' }), 'session-lookup');
   assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs add --store canon --data {}' }), null, '写入子命令不算召回');
   assert.equal(akashaCliOf('read', { command: 'node akasha.mjs lookup x' }), null, '非 shell 工具不看');
+  // 2026-10-10 人读复查：工具目录长了（dsh_wsl 在跑），分类集合没跟上 → 漏计召回。此处钉住。
+  assert.equal(akashaCliOf('dsh_wsl', { command: 'node core/akasha.mjs brief 某主题' }), 'brief', 'dsh_wsl 里的查库也须计入召回');
+  assert.equal(akashaCliOf('dsh_wsl', { command: 'node akasha.mjs add --store canon --data {}' }), null, 'dsh_wsl 写子命令不算召回');
   const hB = {};
   const logB = join(dir, 'hooks-b2.jsonl');
   apply({ on(name, fn) { (hB[name] = hB[name] || []).push(fn); return () => {}; } }, { log: logB, akashaDir: dir });

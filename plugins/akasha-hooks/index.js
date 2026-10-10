@@ -16,7 +16,8 @@ const DEFAULT_LOG = join(DEFAULT_AKASHA, 'logs', 'hooks.jsonl');
 const expandHome = (p) => (p === '~' ? homedir() : (p.startsWith('~/') || p.startsWith('~\\')) ? join(homedir(), p.slice(2)) : p);
 
 // B2（wave1）：shell 里经 akasha CLI 的只读查库也算「召回」——只记子命令名（不记命令原文，免泄露）。
-const SHELL_TOOLS = new Set(['bash', 'pwsh', 'sh', 'shell']);
+// 2026-10-10 人读复查补 `dsh_wsl`：工具目录长了，这个集合没跟上 ⇒ WSL 里的查库不会被计入召回。
+const SHELL_TOOLS = new Set(['bash', 'pwsh', 'sh', 'shell', 'dsh_wsl']);
 const CLI_RECALL = /akasha\.mjs["']?\s+(lookup|brief|cross|kit|show|summary|mirror\s+match|session\s+lookup|frontier\s+due)\b/i;
 /** 工具调用若是 akasha CLI 查库子命令 → 归一名（'lookup' / 'mirror-match' / 'session-lookup' …）；否则 null。 */
 export function akashaCliOf(name, args) {
