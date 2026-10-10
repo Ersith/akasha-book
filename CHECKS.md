@@ -182,3 +182,11 @@
 - **落地与回滚**：活树已并（快照 `_rollback-20261010-rank\`：lib.mjs / test.mjs / SCHEMA.md / akasha-README.md / plugin-selftest.mjs）；**MCP 常驻进程需重启才吃到新排序**（CLI 与后续索引调用即时生效）。
 - **工程坑（归档）**：① 外援补丁来自 CRLF 工作树，落本仓 LF 活树时每个文件首个 hunk 即失败——需「路径映射 + **剥 CR**」后 `git apply`；② 非运行时 node（`_tools\node20`）在 `D:\dsh-temp` 下 `mkdtemp` 报 EPERM（沙箱按程序放行）——TEMP 指到工作区即通。
 - **遗留**：A1 负载均衡启用时机；`arousal: 0`（显式平静）降权至 sev 0.5、而不写 arousal 为中性 1.0——语义按现状，留待观察。
+## R24 · A1 检索负载均衡（默认关闭，PID 式）2026-10-10
+
+- **来源**：外援 Claude 补丁（基线 `ef4e033`；tarball `akasha-a1.tar.gz` 32 KB：两补丁 + all.diff）——`0001` A1 负载均衡（默认关）+ `0002` 孤案 `factorApplied:false`（上一轮我方复核提出的展示口径修正）。用户裁定「并」。
+- **机制**：`core/lib.mjs` 增 `LOAD_BALANCE_DEFAULTS`（windowMs 7 天 / kP 1 / kExplore 0.25 / kD 0.5 / slopeThresh 0.05 / 夹 [0.25, 1.5]）、`usageWindowFromRecords / usageWindowFromLog / resolveUsageWindow`（从 `logs/hooks.jsonl` 的 usage 行算 total / distinct / quota / HHI 前后半斜率）、`loadBalanceCorrection`：① 超配额降 boost `1/(1+kP·error/quota)`；② **零引用且弱命中** → ×(1+kExplore)；③ slope 超阈**且**超配额 → `1/(1+kD·(slope−thresh)/thresh)` 刹车；末尾夹到 `[min, max]`。`applyRank` 在 严重度×可信度×复杂度 因子之后乘校正；命中行带可审计 `balance{}` 与 `factorApplied`。**默认关**（`RANK_DEFAULTS.loadBalance = false`）；开启＝CLI `--load-balance [--balance-log F]` 或 MCP `loadBalance: true`（lookup / brief / cross）。
+- **验证（我方独立）**：两补丁 `git am` 干净（`65c96b1` / `8795938`）；`all.diff` × `git am` **双路树哈希全等**（`d5ab5f568eac0f34907575d6f2b3b5dbf7baee11`）；核心 **128/128**（活树口径）/ **127/127**（OSS 口径）、会话 **22/22**（Node 24）· **15 passed / 0 failed / 7 skipped**（Node 20）；gate / hooks / sleep 全绿；**默认关零行为变化**（8 个查询在「顺序 × rank × factor × strong」上逐条相同）；**开启后 strong 集合不变**；**独立夹具 9/9**（手算对账：超配额 0.36 · 探索 1.25 · 整词命中不给探索 · 刹车叠加夹到 0.25 · 上限夹 1.5 · 空窗口=1 不误伤 · 端到端 rank 3→0.75 并重排）；真数据上校正**全为 1.000**（无超配额、slope 0.018 < 0.05）⇒ 现库等于休眠。
+- **落地与回滚**：活树已并（快照 `_rollback-20261010-a1\`：lib.mjs / test.mjs / SCHEMA.md / akasha.mjs / mcp.mjs）；新增设计文档 `research/weight-internalization-pid.md`；**MCP 面需重启才吃到 `loadBalance` 参数**（不带参数行为不变）。
+- **工程坑补充**：由行数组重组的映射补丁若**丢失末尾换行**，`git apply` 报 `corrupt patch at line N`——重组后须补回文件末尾换行。
+- **遗留**：启用时机（默认关，待语料/引用量增长后再评估）；`kExplore` 目前只对弱命中生效（按设计）。
