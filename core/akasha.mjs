@@ -2,7 +2,7 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseStabilityCheck, padBlockToStride, CONTEXT_BUDGET_DEFAULTS } from './lib.mjs';
+import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS } from './lib.mjs';
 import { replayHistory, sleepPlan, sleepRun } from './sleep.mjs';
 import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
@@ -95,9 +95,14 @@ switch (cmd) {
     const enabled = !!flags.enable || !!flags['context-budget'];
     if (flags['phase-check'] != null) {
       const mem = flags['phase-check'] === true ? '中性夹具记忆短语' : String(flags['phase-check']);
-      const r = phaseStabilityCheck(mem, { stride: Number(flags.stride) || 2 });
-      print(r, `相位验收 S=${r.stride}：` + (r.stable ? '稳定（各样本 startPhase=0）' : '不稳定') + ` · ${r.samples.length} 个前缀样本`);
-      code = r.stable ? 0 : 1;
+      const r = phaseResidueSample(mem, { stride: Number(flags.stride) || 2 });
+      const lines = [
+        `相位验收 S=${r.stride}（residue 采样 · 前缀扰动 ×${r.samples.length}）`,
+        `  主指标 best−worst gap=${r.gap}（best=${r.best} worst=${r.worst}）`,
+        `  residueMeans=${JSON.stringify(r.residueMeans)} residueGap=${r.residueGap}`,
+        '  （客户端无法对齐 provider 相位；padding 非修复）'
+      ];
+      print(r, lines.join('\n'));
       break;
     }
     if (!enabled) {
@@ -113,7 +118,7 @@ switch (cmd) {
     for (const [name, src] of Object.entries(alloc.sources)) {
       lines.push(`  ${name}: tokens=${src.tokens} share=${src.share} Δ=${src.rawDelta}` + (src.exempt ? ' [exempt]' : '') + (src.reasons.length ? ' ' + src.reasons.map((x) => x.code).join(',') : ''));
     }
-    lines.push('· 相位：' + alloc.phase.method);
+    lines.push('· 相位策略：' + alloc.phase.method + '（冗余放置；非 padding 对齐）');
     print(alloc, lines.join('\n'));
     break;
   }

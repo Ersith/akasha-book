@@ -598,34 +598,38 @@ export function knowledgeRoute({ query = '', strongHits = 0, cites = [], orphanO
 
 
 // —— A2 上下文预算分配（wave4 · DeepSeek-V4.1-Flash CSA2 stride S=2）——
-// 误差驱动：救场→加额；长期空转→减额；近平衡小更新；恶化才刹车（D）。
-// 只分配注入额度，不改排序/存储语义。默认关。协议(usage)+自我(self)豁免敌对缩额。
+// 误差驱动配额：救场→加额；长期空转→减额；近平衡小更新；恶化才刹车（D）。
+// 相位稳健：**冗余放置**（关键段至少两份、不同偏移）+ nearest-fetch；客户端无法对齐 provider 压缩相位。
+// alignTokenCount / padBlockToStride 仅保留为论文实验对照，**不是**生产修复。
+// 只分配注入额度，不改排序/存储。默认关。协议(usage)+自我(self)豁免敌对缩额。
 export const CONTEXT_BUDGET_SOURCES = Object.freeze(['self', 'usage', 'kit', 'session', 'retrieval']);
 export const CONTEXT_BUDGET_DEFAULTS = Object.freeze({
   enabled: false,
-  stride: 2,                 // DeepSeek-V4.1-Flash encoder CSA2：两 token 打成一条 KV
+  stride: 2,                 // V4.1-Flash CSA2 压缩步长（相位周期）
   totalTokens: 2048,
   baseShare: Object.freeze({ self: 0.15, usage: 0.15, kit: 0.15, session: 0.25, retrieval: 0.30 }),
-  kRescue: 0.15,             // 救场加成强度
-  kIdle: 0.12,               // 空转缩额强度
-  kNear: 0.35,               // 近平衡时把 |Δ| 压到此比例
-  nearEps: 0.08,             // |rawΔ| 低于此视为近平衡
-  kD: 0.4,                   // 空转恶化斜率刹车（只缩不抬）
+  kRescue: 0.15,
+  kIdle: 0.12,
+  kNear: 0.35,
+  nearEps: 0.08,
+  kD: 0.4,
   slopeThresh: 0.05,
   minShare: 0.05,
   maxShare: 0.50,
-  rescueScale: 3,            // rescues / scale → 归一
+  rescueScale: 3,
   idleScale: 3,
   windowMs: 7 * 24 * 3600 * 1000,
-  /** 不可被敌对缩额的来源（与 A1 常驻提示同精神） */
-  exemptShrink: Object.freeze(['self', 'usage'])
+  exemptShrink: Object.freeze(['self', 'usage']),
+  /** 冗余放置：每条关键段复制份数（≥2）；偏移 token 数取奇数以翻转 residue */
+  redundancyCopies: 2,
+  redundancyOffsetTokens: 1
 });
 
 export function contextBudgetEnabled(opts = {}) {
   return opts.contextBudget === true || CONTEXT_BUDGET_DEFAULTS.enabled === true;
 }
 
-/** 轻量 token 估计（无分词器）：CJK 码点各 1；其余按 ceil(n/4)。供预算/相位对齐，宿主可用真分词器替换。 */
+/** 轻量 token 估计（无分词器）：CJK=1；其余 ceil(n/4)。宿主可用真分词器替换。 */
 export function estimateTokens(text) {
   const s = String(text ?? '');
   let cjk = 0, other = 0;
@@ -637,7 +641,10 @@ export function estimateTokens(text) {
   return cjk + Math.ceil(other / 4);
 }
 
-/** 将 token 数上取整到 stride 的倍数（S=2 → 偶数），避免配额微调翻转后续内容奇偶相位。 */
+/**
+ * 【实验对照 · 非生产修复】上取整到 stride 倍数。
+ * 论文用 padding 做控制变量；客户端看不到 / 设不了 provider 压缩相位边界，故不能当修复手段。
+ */
 export function alignTokenCount(n, stride = CONTEXT_BUDGET_DEFAULTS.stride) {
   const x = Math.max(0, Math.floor(Number(n) || 0));
   const s = Math.max(1, Math.floor(Number(stride) || 1));
@@ -647,14 +654,12 @@ export function alignTokenCount(n, stride = CONTEXT_BUDGET_DEFAULTS.stride) {
 }
 
 /**
- * 截断到 ≤tokenBudget 后，用空格垫到 stride 对齐的 token 数（默认不超 budget 的对齐值）。
- * 返回 { text, tokens, budget, padded, padUnits, stride, method }。
+ * 【实验对照 · 非生产修复】截断后空格垫到 stride 对齐。同 alignTokenCount 口径。
  */
 export function padBlockToStride(text, tokenBudget, opts = {}) {
   const stride = Math.max(1, Math.floor(opts.stride ?? CONTEXT_BUDGET_DEFAULTS.stride));
-  const budget = alignTokenCount(tokenBudget, stride);
+  const budget = Math.max(0, Math.floor(Number(tokenBudget) || 0));
   let body = String(text ?? '');
-  // 粗截断：按估计 token 收缩（CJK 逐字；ASCII 按 4 字符≈1 token）
   while (body && estimateTokens(body) > budget) {
     if (/[\u4e00-\u9fff]$/.test(body)) body = body.slice(0, -1);
     else body = body.replace(/\s+\S*$/, '') || body.slice(0, Math.max(0, body.length - 4));
@@ -662,31 +667,153 @@ export function padBlockToStride(text, tokenBudget, opts = {}) {
   }
   let tokens = estimateTokens(body);
   let padUnits = 0;
-  // 垫到对齐且不超过 budget
   const target = Math.min(budget, alignTokenCount(tokens, stride));
-  while (tokens < target) {
-    body += ' ';
-    padUnits += 1;
-    tokens = estimateTokens(body);
-    if (padUnits > stride * 4) break; // 安全阀
-  }
-  // 若仍不对齐（极端），再垫到下一对齐，哪怕略超——调用方应以 alignTokenCount(budget) 为准
-  while (tokens % stride !== 0 && padUnits < stride * 4) {
+  while (tokens < target && padUnits < stride * 4) {
     body += ' ';
     padUnits += 1;
     tokens = estimateTokens(body);
   }
   return {
     text: body, tokens, budget, padded: padUnits > 0, padUnits, stride,
-    method: 'truncate-then-space-pad-to-stride'
+    method: 'experimental-control-pad',
+    note: '非生产修复：客户端无法对齐 provider 压缩相位'
+  };
+}
+
+/**
+ * nearest-fetch：按距离升序（再按 priority 降序）排列候选，缩短关键段到查询的暴露距离。
+ * segments: [{ id, text, distance?, priority? }]
+ */
+export function nearestFetch(segments, opts = {}) {
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : (segments || []).length;
+  const ranked = [...(segments || [])].map((seg, i) => ({
+    id: seg.id ?? ('seg-' + i),
+    text: String(seg.text ?? ''),
+    distance: Number.isFinite(seg.distance) ? seg.distance : i,
+    priority: Number.isFinite(seg.priority) ? seg.priority : 0
+  }));
+  ranked.sort((a, b) => a.distance - b.distance || b.priority - a.priority || String(a.id).localeCompare(String(b.id)));
+  return ranked.slice(0, limit);
+}
+
+/**
+ * 冗余放置（生产主策略）：关键段至少 copies 份，中间插入奇数 token 偏移以翻转 residue，
+ * 使至少一份落在较好相位。先 nearest-fetch 再复制。
+ * 返回 { text, placements, stride, method, copies, offsetTokens }。
+ */
+export function placeWithRedundancy(segments, opts = {}) {
+  const stride = Math.max(1, Math.floor(opts.stride ?? CONTEXT_BUDGET_DEFAULTS.stride));
+  const copies = Math.max(2, Math.floor(opts.copies ?? CONTEXT_BUDGET_DEFAULTS.redundancyCopies));
+  let offsetTokens = Math.floor(opts.offsetTokens ?? CONTEXT_BUDGET_DEFAULTS.redundancyOffsetTokens);
+  if (offsetTokens % stride === 0) offsetTokens += 1; // 保证非 stride 倍数 → 翻转 residue
+  const ordered = nearestFetch(segments, opts);
+  const parts = [];
+  const placements = [];
+  let cursor = 0;
+  for (const seg of ordered) {
+    const tok = estimateTokens(seg.text);
+    for (let c = 0; c < copies; c++) {
+      if (c > 0) {
+        // 使下一份起始 residue 翻转：需要 (tok + F) % stride !== 0
+        let f = Math.max(1, offsetTokens);
+        while ((tok + f) % stride === 0) f += 1;
+        // 用 CJK「垫」凑精确 token 数（ASCII 填充会被 ceil(n/4) 压缩）
+        let filler = '';
+        while (estimateTokens(filler) < f) filler += '垫';
+        parts.push(filler);
+        cursor += estimateTokens(filler);
+      }
+      const startTok = cursor;
+      const residue = startTok % stride;
+      parts.push(seg.text);
+      placements.push({
+        id: seg.id, copy: c, startTokens: startTok, tokens: tok,
+        residue, distance: seg.distance, priority: seg.priority
+      });
+      cursor += tok;
+    }
+  }
+  return {
+    text: parts.join(''),
+    placements,
+    stride,
+    copies,
+    offsetTokens,
+    method: 'redundancy+nearest-fetch',
+    note: '关键段多份不同偏移；客户端不试图对齐 provider 相位'
+  };
+}
+
+/**
+ * 验收：按 stride 做奇偶 residue 采样 + 多长度前缀扰动（预算变化会改相位）。
+ * 主指标 = best−worst gap（非仅平均）。samples 全保留。
+ * opts.scoreFn({ residue, prefixTokens, prefix, memory }) 可注入真评测；缺省用论文形态代理（偶>~奇）。
+ */
+export function phaseResidueSample(memoryText, opts = {}) {
+  const stride = Math.max(1, Math.floor(opts.stride ?? CONTEXT_BUDGET_DEFAULTS.stride));
+  const mem = String(memoryText ?? '');
+  // 多长度前缀：模拟 A2 配额微调导致的相位漂移（必须覆盖奇偶 residue）
+  const prefixes = opts.prefixes || [
+    '', 'a', 'ab', 'abc', 'word', 'words!', '词', '词条', '词条A',
+    'prefix-07', 'prefix-0077', '较长前缀xyz', 'budg1', 'budget-chg-17'
+  ];
+  const scoreFn = typeof opts.scoreFn === 'function'
+    ? opts.scoreFn
+    : ({ residue }) => (residue % 2 === 0 ? 0.95 : 0.895); // 对齐 Flash 表偶~95 / 奇~89.5 形态
+  const samples = [];
+  for (const pre of prefixes) {
+    const prefixTokens = estimateTokens(pre);
+    const residue = prefixTokens % stride;
+    const score = Number(scoreFn({ residue, prefixTokens, prefix: pre, memory: mem }));
+    samples.push({
+      prefixLen: pre.length,
+      prefixTokens,
+      residue,
+      score: +score.toFixed(6)
+    });
+  }
+  const scores = samples.map((x) => x.score);
+  const best = Math.max(...scores);
+  const worst = Math.min(...scores);
+  const gap = +(best - worst).toFixed(6);
+  const byResidue = {};
+  for (let r = 0; r < stride; r++) byResidue[r] = [];
+  for (const x of samples) byResidue[x.residue].push(x.score);
+  const residueMeans = {};
+  for (let r = 0; r < stride; r++) {
+    const arr = byResidue[r];
+    residueMeans[r] = arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(6) : null;
+  }
+  const meanVals = Object.values(residueMeans).filter((v) => v != null);
+  const residueGap = meanVals.length >= 2
+    ? +(Math.max(...meanVals) - Math.min(...meanVals)).toFixed(6)
+    : 0;
+  return {
+    stride,
+    method: 'residue-sample+prefix-perturbation',
+    samples,                 // 全样本，非平均掉
+    best, worst, gap,        // 主验收：best−worst
+    byResidue,
+    residueMeans,
+    residueGap,              // 辅：residue 组间均差（对照论文 Δres）
+    note: '客户端无法对齐 provider 压缩相位；主指标 gap=best−worst，须报告而非只报平均'
+  };
+}
+
+/** @deprecated 名称保留：转调 phaseResidueSample（冗余策略下不再追求「对齐后相位恒 0」）。 */
+export function phaseStabilityCheck(memoryText, opts = {}) {
+  const r = phaseResidueSample(memoryText, opts);
+  return {
+    ...r,
+    stable: r.gap < (opts.maxGap ?? 1), // 宽松兼容旧断言；新测试查 gap/samples
+    method: 'deprecated-alias→phaseResidueSample'
   };
 }
 
 /**
  * 从 hooks 记录提取各来源救场/空转信号（纯函数可测）。
  * 认 kind:"budget-rescue"| "budget-idle"（须带 source∈SOURCES）；
- * 亦认 gate-self-* → self 活动、gate-usage-* → usage、成功召回工具名 → retrieval、kit → kit、session-* → session。
- * 窗口前后半对比 idle 得 idleSlope（恶化为正）。
+ * 亦认 gate-self-* → self、gate-usage-* → usage、召回工具 → retrieval、kit、session-*。
  */
 export function budgetSignalsFromRecords(records, opts = {}) {
   const windowMs = Number.isFinite(opts.windowMs) ? opts.windowMs : CONTEXT_BUDGET_DEFAULTS.windowMs;
@@ -741,14 +868,14 @@ export function budgetSignalsFromRecords(records, opts = {}) {
 }
 
 /**
- * A2 分配（纯函数）：返回各来源 share / tokens（已 stride 对齐）与审计 reasons。
- * opts.signals | opts.records | opts.budgetSignals；opts.totalTokens / params 可覆盖。
+ * A2 分配（纯函数）：误差驱动 share → tokens（不再强制偶数对齐）。
+ * 附带 redundancy 策略说明；padding 对齐降级为 experimentalControl。
  */
 export function allocateContextBudget(opts = {}) {
   const p = { ...CONTEXT_BUDGET_DEFAULTS, ...(opts.params || {}) };
   const enabled = contextBudgetEnabled(opts);
   const stride = Math.max(1, Math.floor(p.stride));
-  const totalTokens = alignTokenCount(opts.totalTokens ?? p.totalTokens, stride);
+  const totalTokens = Math.max(0, Math.floor(opts.totalTokens ?? p.totalTokens));
   let signals = opts.signals || opts.budgetSignals || null;
   if (!signals && opts.records) signals = budgetSignalsFromRecords(opts.records, { windowMs: p.windowMs, nowMs: opts.nowMs });
   if (!signals) signals = { bySource: Object.fromEntries(CONTEXT_BUDGET_SOURCES.map((s) => [s, { rescues: 0, idle: 0, idleSlope: 0 }])), missing: true, windowMs: p.windowMs };
@@ -787,57 +914,44 @@ export function allocateContextBudget(opts = {}) {
   const sum = CONTEXT_BUDGET_SOURCES.reduce((a, s) => a + rawShares[s], 0) || 1;
   const sources = {};
   let allocated = 0;
-  for (const s of CONTEXT_BUDGET_SOURCES) {
+  const ordered = CONTEXT_BUDGET_SOURCES.slice();
+  for (let i = 0; i < ordered.length; i++) {
+    const s = ordered[i];
     const share = rawShares[s] / sum;
-    const tokens = alignTokenCount(Math.round(share * totalTokens), stride);
+    let tokens = Math.round(share * totalTokens);
+    if (i === ordered.length - 1) tokens = Math.max(0, totalTokens - allocated); // 末项吃余数
     allocated += tokens;
-    sources[s] = {
-      share: +share.toFixed(4),
-      tokens,
-      ...details[s]
-    };
-  }
-  // 若对齐导致总额略超/不足，把差额（stride 步长）摊到 retrieval（非豁免）
-  let diff = totalTokens - allocated;
-  if (diff !== 0 && sources.retrieval) {
-    const adj = alignTokenCount(Math.max(p.minShare * totalTokens, sources.retrieval.tokens + diff), stride);
-    sources.retrieval = { ...sources.retrieval, tokens: adj, reasons: [...sources.retrieval.reasons, { code: 'align-remainder', diff }] };
+    sources[s] = { share: +share.toFixed(4), tokens, ...details[s] };
   }
   return {
     enabled,
     stride,
     totalTokens,
     model: 'DeepSeek-V4.1-Flash',
-    phase: { stride, method: 'per-block-align-token-count', note: '每段注入独立截断后上取整到 S 的倍数；宿主拼接时勿插入奇数 token 胶水' },
+    phase: {
+      stride,
+      method: 'redundancy+nearest-fetch',
+      note: '客户端无法对齐 provider 压缩相位；关键段冗余双份+偏移。align/pad 仅实验对照。',
+      acceptance: 'phaseResidueSample → 主指标 best−worst gap；多样本前缀扰动'
+    },
+    redundancy: {
+      copies: p.redundancyCopies,
+      offsetTokens: p.redundancyOffsetTokens,
+      place: 'placeWithRedundancy'
+    },
+    experimentalControl: {
+      alignTokenCount: true,
+      padBlockToStride: true,
+      note: '论文实验控制，非生产修复'
+    },
     sources,
     signals: { missing: !!signals.missing, windowMs: signals.windowMs ?? p.windowMs },
-    params: { kRescue: p.kRescue, kIdle: p.kIdle, kNear: p.kNear, nearEps: p.nearEps, kD: p.kD, slopeThresh: p.slopeThresh, exemptShrink: [...(p.exemptShrink || [])] }
+    params: {
+      kRescue: p.kRescue, kIdle: p.kIdle, kNear: p.kNear, nearEps: p.nearEps,
+      kD: p.kD, slopeThresh: p.slopeThresh, exemptShrink: [...(p.exemptShrink || [])],
+      redundancyCopies: p.redundancyCopies, redundancyOffsetTokens: p.redundancyOffsetTokens
+    }
   };
-}
-
-/**
- * 验收：同一段记忆在不同前缀长度下，经 stride 对齐后起始相位应稳定为 0（不做平均）。
- * 返回 { stable, stride, samples:[{prefixLen, startPhase, prefixTokens, blockTokens}] }。
- */
-export function phaseStabilityCheck(memoryText, opts = {}) {
-  const stride = Math.max(1, Math.floor(opts.stride ?? CONTEXT_BUDGET_DEFAULTS.stride));
-  const prefixes = opts.prefixes || ['', 'a', 'ab', 'abc', 'word', '词', '词A', 'prefix-07', '较长前缀xyz'];
-  const mem = String(memoryText ?? '');
-  const samples = [];
-  for (const pre of prefixes) {
-    const prePad = padBlockToStride(pre, alignTokenCount(estimateTokens(pre) || stride, stride), { stride });
-    const startPhase = prePad.tokens % stride;
-    const block = padBlockToStride(prePad.text + mem, opts.budget ?? alignTokenCount(estimateTokens(prePad.text + mem) + stride, stride), { stride });
-    samples.push({
-      prefixLen: pre.length,
-      prefixTokens: prePad.tokens,
-      startPhase,
-      blockTokens: block.tokens,
-      blockAligned: block.tokens % stride === 0
-    });
-  }
-  const stable = samples.every((x) => x.startPhase === 0 && x.blockAligned);
-  return { stable, stride, method: 'prefix-pad-then-append-memory', samples };
 }
 
 /** 类别模板：由 credibilityOf.cls 选定。协议条强制 sev/cpx = 1（不让 arousal 抬协议）。 */

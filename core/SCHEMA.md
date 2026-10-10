@@ -312,7 +312,7 @@ rank  = (词法分[+ frontier 状态][+ 负价 tip]) × factor   // 孤案：ran
 
 ## A2 上下文预算分配（wave4 · DeepSeek-V4.1-Flash / CSA2 S=2）
 
-默认 **关**（`CONTEXT_BUDGET_DEFAULTS.enabled === false`）。`kit({ contextBudget:true })` / CLI `budget --enable` 才计算。只分配各注入来源的 **token 额度**，**不改**排序、strong/weak、存储与修订链。
+默认 **关**（`CONTEXT_BUDGET_DEFAULTS.enabled === false`）。`kit({ contextBudget:true })` / CLI `budget --enable` 才计算。只分配各注入来源的 **token 额度**，**不改**排序、strong/weak、存储与修订链。`self`/`usage` 豁免敌对缩额（同 A1）。
 
 **来源**（`CONTEXT_BUDGET_SOURCES`）：`self` / `usage`（协议用法条）/ `kit` / `session` / `retrieval`。
 
@@ -322,17 +322,22 @@ rank  = (词法分[+ frontier 状态][+ 负价 tip]) × factor   // 孤案：ran
 rescueNorm = min(2, rescues / rescueScale)
 idleNorm   = min(2, idle / idleScale)
 rawΔ       = kRescue·rescueNorm − kIdle·idleNorm
-若 |rawΔ| < nearEps → rawΔ *= kNear          // 近平衡小更新
+若 |rawΔ| < nearEps → rawΔ *= kNear
 若 idleSlope > slopeThresh 且 idleNorm>0 且 rawΔ≤0
-           → rawΔ -= kD·(idleSlope−slopeThresh)/slopeThresh   // 恶化-only D
-若来源 ∈ exemptShrink（self/usage）且 rawΔ<0 → rawΔ = 0      // 禁敌对缩额（同 A1 精神）
+           → rawΔ -= kD·(idleSlope−slopeThresh)/slopeThresh
+若来源 ∈ exemptShrink（self/usage）且 rawΔ<0 → rawΔ = 0
 share'     = clamp(baseShare·(1+rawΔ), minShare, maxShare)
-归一化后 tokens = alignTokenCount(round(share·totalTokens), stride=2)
+归一化后 tokens = round(share·totalTokens)   // 不再强制偶数对齐
 ```
 
-**相位对齐（S=2）**：DeepSeek-V4.1-Flash encoder CSA2 两 token 打成一条 KV。`alignTokenCount` 上取整到偶数；`padBlockToStride` 先截断再空格垫齐。每段注入独立对齐，宿主拼接勿插奇数 token 胶水。验收：`phaseStabilityCheck(memory)`——同一段记忆在不同前缀下 `startPhase===0`（非平均）。
+**相位稳健（生产主策略＝冗余，不是 padding）**：
 
-**信号**：`budgetSignalsFromRecords` 读 `kind:"budget-rescue"|"budget-idle"`（带 `source`），兼认 gate-self/usage、召回工具等。审计字段：`sources[s].{share,tokens,rawDelta,reasons,rescues,idle,exempt}`。
+- V4.1-Flash CSA2 **S=2** 存在 stride-周期：偶 residue 组准确率系统高于奇组（论文 Δres≈6.09pp @128K 极端；日常短上下文更弱）。相位由 **provider 内压缩边界 + 整段 prompt 分词** 决定——**客户端无法对齐**。
+- 论文里的 padding / 取齐 stride 是**实验对照**，不是修复。`alignTokenCount` / `padBlockToStride` 仍导出，标为 `experimentalControl`。
+- **冗余放置**（`placeWithRedundancy`）：关键事实/片段至少两份，中间奇数 token 偏移以翻转 residue，使至少一份落在较好相位；先 `nearestFetch`（按 distance↑ / priority↓）缩短暴露距离。
+- **验收**（`phaseResidueSample`）：多长度前缀扰动（预算变化会改相位）→ 按 residue∈{0..S−1} 采样 → **主指标 best−worst gap**（不是只报平均）；附 `residueMeans` / `residueGap` 对照论文 Δres。CLI：`budget --phase-check <文本>`。
+
+**信号**：`budgetSignalsFromRecords` 读 `kind:"budget-rescue"|"budget-idle"`（带 `source`），兼认 gate-self/usage、召回工具等。审计：`sources[s].{share,tokens,rawDelta,reasons,…}` + `phase.method=redundancy+nearest-fetch`。
 
 
 ## 情绪字段（valence / arousal，2026-10-07 起）

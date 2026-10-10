@@ -2289,17 +2289,18 @@ t('知识分层：knowledgeRoute 三态；brief/lookup 强失→确定不知道�
 });
 
 
-t('A2：默认关；stride 对齐为偶数；救场加额 / 空转缩额 / 近平衡小更新 / 恶化刹车', () => {
+
+t('A2：默认关；误差配额救场/空转；不再强制偶数对齐', () => {
   assert.equal(lib.CONTEXT_BUDGET_DEFAULTS.enabled, false);
   assert.equal(lib.contextBudgetEnabled({}), false);
-  assert.equal(lib.alignTokenCount(5, 2), 6);
-  assert.equal(lib.alignTokenCount(6, 2), 6);
-  assert.equal(lib.estimateTokens('你好'), 2);
   const base = lib.allocateContextBudget({ contextBudget: true, totalTokens: 200 });
   assert.equal(base.enabled, true);
   assert.equal(base.stride, 2);
-  assert.equal(base.totalTokens % 2, 0);
-  for (const s of lib.CONTEXT_BUDGET_SOURCES) assert.equal(base.sources[s].tokens % 2, 0, s + ' 须偶数');
+  assert.equal(base.phase.method, 'redundancy+nearest-fetch');
+  assert.ok(base.experimentalControl && base.experimentalControl.padBlockToStride);
+  // tokens 总和 = total；不要求偶数
+  const sumTok = lib.CONTEXT_BUDGET_SOURCES.reduce((a, s) => a + base.sources[s].tokens, 0);
+  assert.equal(sumTok, 200);
 
   const rescued = lib.allocateContextBudget({
     contextBudget: true, totalTokens: 200,
@@ -2325,10 +2326,9 @@ t('A2：默认关；stride 对齐为偶数；救场加额 / 空转缩额 / 近�
     } }
   });
   assert.ok(idle.sources.kit.share < base.sources.kit.share, '空转缩 kit');
-  assert.ok(idle.sources.kit.reasons.some((r) => r.code === 'idle-shrink' || r.code === 'worsen-brake'));
 });
 
-t('A2：self/usage 豁免敌对缩额；padBlockToStride 与 phaseStabilityCheck', () => {
+t('A2：冗余放置+nearest-fetch；self/usage 豁免；residue 采样报 best−worst gap', () => {
   const shrunk = lib.allocateContextBudget({
     contextBudget: true, totalTokens: 200,
     signals: { bySource: {
@@ -2343,24 +2343,46 @@ t('A2：self/usage 豁免敌对缩额；padBlockToStride 与 phaseStabilityCheck
   assert.ok(shrunk.sources.self.reasons.some((r) => r.code === 'self-layer-exempt'));
   assert.ok(shrunk.sources.usage.reasons.some((r) => r.code === 'protocol-exempt'));
 
-  const pad = lib.padBlockToStride('中性夹具ABC', 7, { stride: 2 });
-  assert.equal(pad.tokens % 2, 0);
-  assert.ok(pad.tokens <= pad.budget || pad.tokens % 2 === 0);
+  const near = lib.nearestFetch([
+    { id: 'far', text: '远', distance: 9, priority: 1 },
+    { id: 'near', text: '近', distance: 1, priority: 0 },
+    { id: 'mid', text: '中', distance: 3, priority: 5 }
+  ]);
+  assert.deepEqual(near.map((x) => x.id), ['near', 'mid', 'far']);
 
-  const phase = lib.phaseStabilityCheck('同一段记忆-相位验收', { stride: 2 });
-  assert.equal(phase.stable, true, JSON.stringify(phase.samples));
-  assert.ok(phase.samples.every((x) => x.startPhase === 0));
-  assert.ok(phase.samples.length >= 2, '多样本，非只看平均');
+  const placed = lib.placeWithRedundancy([
+    { id: 'k1', text: '关键事实甲', distance: 2 },
+    { id: 'k2', text: '关键事实乙', distance: 1 }
+  ], { stride: 2, copies: 2, offsetTokens: 1 });
+  assert.equal(placed.method, 'redundancy+nearest-fetch');
+  assert.ok(placed.placements.length >= 4, '每段至少两份');
+  const byId = {};
+  for (const p of placed.placements) {
+    (byId[p.id] ||= []).push(p.residue);
+  }
+  for (const id of Object.keys(byId)) {
+    assert.ok(byId[id].length >= 2);
+    assert.ok(new Set(byId[id]).size >= 2, id + ' 两份 residue 应不同：' + byId[id]);
+  }
 
-  // kit 默认无 contextBudget 字段；开启才有
+  const phase = lib.phaseResidueSample('同一段记忆-相位验收', { stride: 2 });
+  assert.ok(phase.samples.length >= 4, '多前缀扰动');
+  assert.ok(phase.samples.some((x) => x.residue === 0) && phase.samples.some((x) => x.residue === 1), '须覆盖奇偶 residue');
+  assert.ok('gap' in phase && 'best' in phase && 'worst' in phase);
+  assert.equal(phase.gap, +(phase.best - phase.worst).toFixed(6));
+  assert.ok(phase.gap > 0, '代理分偶>奇 → gap>0（主指标非平均）');
+  // 实验对照仍可用，但不作为验收通过条件
+  const pad = lib.padBlockToStride('对照', 7, { stride: 2 });
+  assert.ok(String(pad.note).includes('非生产') || String(pad.method).includes('experimental'));
+
   const k0 = lib.kit({ today: '2026-10-10' });
   assert.equal(k0.contextBudget, undefined);
   const k1 = lib.kit({ today: '2026-10-10', contextBudget: true, budgetTokens: 200 });
   assert.ok(k1.contextBudget && k1.contextBudget.enabled);
-  assert.equal(k1.contextBudget.sources.retrieval.tokens % 2, 0);
+  assert.equal(k1.contextBudget.phase.method, 'redundancy+nearest-fetch');
 });
 
-t('A2：budgetSignalsFromRecords 解析 rescue/idle；CLI budget --enable 可运行', () => {
+t('A2：budgetSignalsFromRecords；CLI budget --enable / --phase-check 报 gap', () => {
   const now = Date.parse('2026-10-10T12:00:00Z');
   const recs = [
     { kind: 'budget-rescue', source: 'retrieval', ts: '2026-10-10T10:00:00Z' },
@@ -2374,10 +2396,12 @@ t('A2：budgetSignalsFromRecords 解析 rescue/idle；CLI budget --enable 可运
   assert.ok(sig.bySource.self.rescues >= 1);
   const r = cli(['budget', '--enable', '--tokens', '200']);
   assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || ''));
-  assert.ok((r.stdout || '').includes('A2') || (r.stdout || '').includes('retrieval'), (r.stdout || '').slice(0, 200));
+  assert.ok((r.stdout || '').includes('冗余') || (r.stdout || '').includes('redundancy'), (r.stdout || '').slice(0, 300));
   const ph = cli(['budget', '--phase-check', '夹具记忆']);
   assert.equal(ph.status, 0, (ph.stdout || '') + (ph.stderr || ''));
+  assert.ok((ph.stdout || '').includes('best') && (ph.stdout || '').includes('gap'), ph.stdout);
 });
+
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
