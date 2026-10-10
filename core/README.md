@@ -7,11 +7,12 @@
 
 ```bash
 node init-example.mjs      # 初始化示例库（六库中性示例 + frontier 文献基石；--reset 可重来）
-node test.mjs              # 自检（123 项，示例库口径；全绿 = 可交付）
+node test.mjs              # 自检（126 项，示例库口径；全绿 = 可交付）
 node akasha.mjs check      # 校验全部数据（exit 非 0 = 有错）
 node akasha.mjs stats      # 计数与来源分布
 node akasha.mjs brief 修订  # 主题简报（跨六库取料，带来源态与时间坐标）
 node akasha.mjs lookup 信任 --since 2026-01-01   # 检索（可加时间过滤）
+node akasha.mjs lookup 信任 --load-balance         # A1 检索负载均衡（默认关；只动排序）
 node akasha.mjs mirror match 虚构 危险            # 镜像结构匹配
 node akasha.mjs cross 示例                        # 对位比较（同题词六库并排）
 node akasha.mjs sleep --dry                       # 睡眠蒸馏预演（dry-run，无副作用）

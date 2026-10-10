@@ -384,6 +384,7 @@ export function cross(query, opts = {}) {
   if (!q) return { query: '', groups: [], total: 0, hint: '请给一个主题词（如：重启 / 记忆 / 来源态）。' };
   const tokens = tokenize(q);
   const groups = [];
+  const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
   for (const name of STORES) {
     const records = recordsOf(name, opts);
     const creds = credibilityMap(name, records, opts);
@@ -398,10 +399,11 @@ export function cross(query, opts = {}) {
       const hayL = hay.toLowerCase();
       const sc = scoreTokens(hayL, tokens);
       if (sc.score > 0) {
-        const rf = applyRank(sc.score, name, r, cred, opts);
+        const strong = name !== 'orphan' && sc.whole >= 1;
+        const rf = applyRank(sc.score, name, r, cred, { ...rankOpts, strong });
         hits.push({
-          id: r.id, score: sc.score, zeroWeight: name === 'orphan', line: PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay,
-          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity,
+          id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan', line: PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay,
+          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, balance: rf.balance,
           tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
         });
       }
@@ -518,7 +520,16 @@ export function credibilityOf(store, chain, opts = {}) {
 // —— 排序补齐（wave3 · 严重度 × 可信度 × 复杂度）——
 // 只进排序 / 展示，不改存储。不新增字段：用已有 severity / severity_default / valence / arousal。
 // strong / weak 仍只看 scoreTokens 整词命中；孤案仍 zeroWeight。时间仍只做 --since/--until 门与有效期门。
-// A1 负载均衡校正：观察期默认关闭（RANK_DEFAULTS.loadBalance = false）；本批不启用。
+// A1 检索负载均衡（research/weight-internalization-pid）：默认关闭；开启后只乘校正项，不改语义/不删条。
+export const LOAD_BALANCE_DEFAULTS = Object.freeze({
+  windowMs: 7 * 24 * 3600 * 1000, // 近期窗口（缺省 7 天）
+  kP: 1,            // 超配额衰减强度（防垄断）
+  kExplore: 0.25,   // 长期零引用 + 弱命中的探索加成上限
+  kD: 0.5,          // 集中度恶化斜率的刹车强度
+  slopeThresh: 0.05,// HHI 斜率超过此值才激活 D 项
+  minCorrection: 0.25,
+  maxCorrection: 1.5
+});
 export const RANK_DEFAULTS = Object.freeze({ loadBalance: false });
 /** 类别模板：由 credibilityOf.cls 选定。协议条强制 sev/cpx = 1（不让 arousal 抬协议）。 */
 export const RANK_TEMPLATES = Object.freeze({
@@ -565,7 +576,7 @@ export function severityComplexityOf(store, r) {
 /**
  * 排序因子：factor = credibility × severity' × complexity'（模板缩放后）。
  * cred 缺省按 weight=1、cls=evergreen。refuted → factor 0。
- * loadBalance 钩子保留但默认关闭：打开也不改本批结果（恒等）。
+ * A1 负载均衡不在这里乘——见 applyRank / loadBalanceCorrection（正交、可关）。
  */
 export function rankFactors(store, r, cred = null, opts = {}) {
   const c = cred && typeof cred === 'object' ? cred : { weight: 1, cls: 'evergreen', refuted: false, tier: null };
@@ -574,24 +585,153 @@ export function rankFactors(store, r, cred = null, opts = {}) {
   const severity = tpl.severityScale === 0 ? 1 : +(1 + (sc.severity - 1) * tpl.severityScale).toFixed(4);
   const complexity = tpl.complexityScale === 0 ? 1 : +(1 + (sc.complexity - 1) * tpl.complexityScale).toFixed(4);
   const credibility = c.refuted ? 0 : (typeof c.weight === 'number' ? c.weight : 1);
-  let factor = +(credibility * severity * complexity).toFixed(6);
-  const loadBalance = opts.loadBalance === true || RANK_DEFAULTS.loadBalance === true;
-  if (loadBalance) {
-    // 观察期占位：恒等。将来若启用，只乘排序，永不改 strong / score。
-    factor = +factor.toFixed(6);
-  }
+  const factor = +(credibility * severity * complexity).toFixed(6);
   return {
     credibility, severity, complexity, factor,
     severityFrom: sc.severityFrom, complexityFrom: sc.complexityFrom,
-    template: tpl.label, loadBalance, tier: c.tier ?? null, cls: c.cls ?? null
+    template: tpl.label, tier: c.tier ?? null, cls: c.cls ?? null
   };
 }
 
-/** 词法分（及 brief 的 status/tip）× 排序因子。孤案 / zeroWeight → 只用词法分（零权重约定）。 */
+const hhiOf = (counts) => {
+  const vals = [...counts.values()].filter((n) => n > 0);
+  const total = vals.reduce((a, b) => a + b, 0);
+  if (!total) return 0;
+  return vals.reduce((s, n) => s + (n / total) ** 2, 0);
+};
+
+/**
+ * 从 hooks 记录建用量窗口（纯函数可测）。
+ * 只统计 kind:"usage" 的 ids（与 metrics 同源）。opts.windowMs / nowMs。
+ * 返回 { byId, total, distinct, quota, hhi, hhiOld, hhiNew, slope, windowMs, missing }。
+ */
+export function usageWindowFromRecords(records, opts = {}) {
+  const windowMs = Number.isFinite(opts.windowMs) ? opts.windowMs : LOAD_BALANCE_DEFAULTS.windowMs;
+  const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+  const start = nowMs - windowMs;
+  const mid = start + windowMs / 2;
+  const byId = new Map();
+  const old = new Map();
+  const neu = new Map();
+  let total = 0;
+  for (const rec of records ?? []) {
+    if (!rec || rec.kind !== 'usage' || !Array.isArray(rec.ids)) continue;
+    const ts = rec.ts ? Date.parse(rec.ts) : NaN;
+    const t = Number.isFinite(ts) ? ts : nowMs; // 无戳 → 算进窗口（宽口径，不夸大饿死）
+    if (t < start || t > nowMs) continue;
+    for (const raw of rec.ids) {
+      const id = String(raw ?? '');
+      if (!id) continue;
+      byId.set(id, (byId.get(id) ?? 0) + 1);
+      total += 1;
+      if (t < mid) old.set(id, (old.get(id) ?? 0) + 1);
+      else neu.set(id, (neu.get(id) ?? 0) + 1);
+    }
+  }
+  const distinct = byId.size;
+  const quota = total / Math.max(1, distinct);
+  const hhiOld = hhiOf(old);
+  const hhiNew = hhiOf(neu);
+  return {
+    byId, total, distinct, quota: +quota.toFixed(4),
+    hhi: +hhiOf(byId).toFixed(6),
+    hhiOld: +hhiOld.toFixed(6), hhiNew: +hhiNew.toFixed(6),
+    slope: +(hhiNew - hhiOld).toFixed(6),
+    windowMs, missing: false
+  };
+}
+
+/** 读 hooks 日志建窗口；文件缺失 → missing:true、空窗口（不假装有引用）。 */
+export function usageWindowFromLog(logPath, opts = {}) {
+  const file = logPath || join(ROOT, 'logs', 'hooks.jsonl');
+  if (!existsSync(file)) {
+    return { byId: new Map(), total: 0, distinct: 0, quota: 0, hhi: 0, hhiOld: 0, hhiNew: 0, slope: 0, windowMs: opts.windowMs ?? LOAD_BALANCE_DEFAULTS.windowMs, missing: true };
+  }
+  const records = [];
+  for (const raw of readFileSync(file, 'utf8').split(/\r?\n/)) {
+    if (!raw.trim()) continue;
+    try { records.push(JSON.parse(raw)); } catch { /* 坏行跳过 */ }
+  }
+  return usageWindowFromRecords(records, opts);
+}
+
+/** 解析本轮要用的用量窗口（可注入 usageWindow / usage Map / balanceLog）。 */
+export function resolveUsageWindow(opts = {}) {
+  if (opts.usageWindow && typeof opts.usageWindow === 'object') return opts.usageWindow;
+  if (opts.usage instanceof Map) {
+    const byId = opts.usage;
+    let total = 0; for (const n of byId.values()) total += n;
+    const distinct = [...byId.values()].filter((n) => n > 0).length;
+    return {
+      byId, total, distinct, quota: total / Math.max(1, distinct || 1),
+      hhi: +hhiOf(byId).toFixed(6), hhiOld: 0, hhiNew: +hhiOf(byId).toFixed(6), slope: 0,
+      windowMs: opts.windowMs ?? LOAD_BALANCE_DEFAULTS.windowMs, missing: false
+    };
+  }
+  return usageWindowFromLog(opts.balanceLog || opts.log, opts);
+}
+
+/**
+ * A1 校正（纯函数）：correction 乘在已有 rank 上。
+ * - 超软配额（count > quota）→ 降（防垄断，P）
+ * - 窗口内零引用且本命中为弱命中 → 探索加成（防饿死）
+ * - 集中度斜率上升超阈 → 对超配额项再刹车（D；改善时不抖）
+ * 不隐藏、不删条；与 credibility/pricing 正交。
+ */
+export function loadBalanceCorrection(id, opts = {}) {
+  const p = { ...LOAD_BALANCE_DEFAULTS, ...(opts.params || {}) };
+  const win = opts.window || { byId: new Map(), total: 0, distinct: 0, quota: 0, slope: 0 };
+  const count = Number(opts.count ?? win.byId?.get?.(id) ?? 0) || 0;
+  const quota = Math.max(win.quota || 0, 0);
+  const strong = opts.strong === true;
+  const reasons = [];
+  let correction = 1;
+  const error = count - quota;
+  if (error > 0 && quota > 0) {
+    const damp = 1 / (1 + p.kP * (error / quota));
+    correction *= damp;
+    reasons.push({ code: 'over-quota', count, quota, error: +error.toFixed(4), damp: +damp.toFixed(4) });
+  }
+  if (count === 0 && !strong) {
+    const boost = 1 + p.kExplore;
+    correction *= boost;
+    reasons.push({ code: 'explore-zero-weak', boost });
+  }
+  const slope = Number(win.slope) || 0;
+  if (slope > p.slopeThresh && error > 0) {
+    const brake = 1 / (1 + p.kD * ((slope - p.slopeThresh) / p.slopeThresh));
+    correction *= brake;
+    reasons.push({ code: 'slope-brake', slope, thresh: p.slopeThresh, brake: +brake.toFixed(4) });
+  }
+  correction = Math.max(p.minCorrection, Math.min(p.maxCorrection, correction));
+  return {
+    enabled: true,
+    id: String(id ?? ''),
+    correction: +correction.toFixed(4),
+    count, quota: +quota.toFixed(4), error: +error.toFixed(4),
+    slope, reasons,
+    params: { kP: p.kP, kExplore: p.kExplore, kD: p.kD, slopeThresh: p.slopeThresh, windowMs: win.windowMs ?? p.windowMs }
+  };
+}
+
+export function loadBalanceEnabled(opts = {}) {
+  return opts.loadBalance === true || RANK_DEFAULTS.loadBalance === true;
+}
+
+/** 词法分（及 brief 的 status/tip）× 排序因子 [× A1 校正]。孤案 / zeroWeight → 只用词法分。 */
 export function applyRank(score, store, r, cred, opts = {}) {
   const f = rankFactors(store, r, cred, opts);
-  if (store === 'orphan' || opts.zeroWeight) return { rank: +Number(score).toFixed(4), ...f };
-  return { rank: +(Number(score) * f.factor).toFixed(4), ...f };
+  const enabled = loadBalanceEnabled(opts);
+  const base = { ...f, loadBalance: enabled, balance: { enabled: false, correction: 1 } };
+  if (store === 'orphan' || opts.zeroWeight) return { rank: +Number(score).toFixed(4), ...base };
+  let rank = Number(score) * f.factor;
+  if (enabled) {
+    const win = opts.usageWindow || resolveUsageWindow(opts);
+    const bal = loadBalanceCorrection(r?.id, { window: win, strong: opts.strong === true, params: opts.balance });
+    rank *= bal.correction;
+    base.balance = bal;
+  }
+  return { rank: +rank.toFixed(4), ...base };
 }
 
 function recordsOf(name, opts = {}) {
@@ -661,6 +801,7 @@ export function lookupDetailed(query, opts = {}) {
   if (!q) return { hits: [], stats };
   const tokens = tokenize(q);
   const hits = [];
+  const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
   for (const name of STORES) {
     const records = recordsOf(name, opts);
     const creds = credibilityMap(name, records, opts);
@@ -686,10 +827,10 @@ export function lookupDetailed(query, opts = {}) {
       if (b.bucket === 'in') stats.dated += 1;
       // strong 只看整词命中；严重度×可信度×复杂度只进 rank，不进 score。
       const strong = name !== 'orphan' && sc.whole >= 1;
-      const rf = applyRank(sc.score, name, r, cred, opts);
+      const rf = applyRank(sc.score, name, r, cred, { ...rankOpts, strong });
       const hit = {
         store: name, id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan', snippet: redact(hay.slice(0, 120)),
-        rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity,
+        rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, balance: rf.balance,
         tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
       };
       if (b.bucket === 'undated') hit.undated = true;
@@ -723,6 +864,7 @@ export function brief(query, opts = {}) {
   const tokens = tokenize(q);
   const perStore = Number.isInteger(opts.perStore) && opts.perStore > 0 ? opts.perStore : 3;
   const groups = [];
+  const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
   for (const name of STORES) {
     const records = recordsOf(name, opts);
     const creds = credibilityMap(name, records, opts);
@@ -744,16 +886,16 @@ export function brief(query, opts = {}) {
     const weight = (x) => {
       if (x.zeroWeight || (x.cred && x.cred.refuted)) return 0;
       const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + valenceTip(x.r);
-      return applyRank(base, name, x.r, x.cred, opts).rank;
+      return applyRank(base, name, x.r, x.cred, { ...rankOpts, strong: x.strong }).rank;
     };
     scored.sort((a, b) => weight(b) - weight(a) || Number(b.strong) - Number(a.strong));
     if (scored.length) {
       groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => {
         const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + valenceTip(x.r);
-        const rf = applyRank(base, name, x.r, x.cred, opts);
+        const rf = applyRank(base, name, x.r, x.cred, { ...rankOpts, strong: x.strong });
         return {
           ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight,
-          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity,
+          rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, balance: rf.balance,
           tier: x.cred ? x.cred.tier : null, displayTier: x.cred ? x.cred.displayTier : null,
           stale: !!(x.cred && x.cred.stale), refuted: !!(x.cred && x.cred.refuted)
         };

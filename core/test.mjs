@@ -1973,9 +1973,11 @@ t('排序：factor = 可信度 × 严重度 × 复杂度；协议模板忽略 se
     const orphan = hits.find((h) => h.id === 'orphan-fx-sev');
     assert.ok(orphan); assert.equal(orphan.zeroWeight, true); assert.equal(orphan.strong, false);
     assert.equal(orphan.rank, orphan.score, '孤案零权重：rank=score，不乘因子');
-    const on = lib.rankFactors('canon', { arousal: 1 }, { weight: 1, cls: 'evergreen' }, { loadBalance: true });
-    assert.equal(on.factor, hi.factor, 'loadBalance 打开仍恒等（观察期占位）');
-    assert.equal(on.loadBalance, true);
+    // A1 默认关：不开 loadBalance 时 applyRank 不含校正
+    const off = lib.applyRank(2, 'canon', { id: 'x', arousal: 1 }, { weight: 1, cls: 'evergreen' }, {});
+    assert.equal(off.balance.enabled, false);
+    assert.equal(off.balance.correction, 1);
+    assert.equal(lib.RANK_DEFAULTS.loadBalance, false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 t('排序：brief 用 valence tip + 因子；emotionBoost 仍可调用但不进 brief base', () => {
@@ -1997,6 +1999,83 @@ t('排序：brief 用 valence tip + 因子；emotionBoost 仍可调用但不进 
     assert.equal(g.hits[0].score, g.hits[1].score);
     assert.ok(g.hits[0].rank > g.hits[1].rank);
     assert.equal(lib.emotionBoost({ arousal: 1, valence: -1 }), 0.75, 'emotionBoost API 保留');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+// —— A1 检索负载均衡（默认关；开启后只乘校正）——
+t('A1：usageWindow 软配额与 HHI 斜率；缺日志 missing', () => {
+  const now = Date.parse('2026-10-10T12:00:00Z');
+  const recs = [
+    { ts: '2026-10-10T10:00:00Z', kind: 'usage', ids: ['canon-hot', 'canon-hot', 'canon-hot', 'canon-hot'] },
+    { ts: '2026-10-10T11:00:00Z', kind: 'usage', ids: ['canon-hot', 'canon-hot', 'canon-warm'] },
+    { ts: '2026-10-01T00:00:00Z', kind: 'usage', ids: ['canon-old'] }, // 窗外
+    { ts: '2026-10-10T11:30:00Z', kind: 'tool', tool: 'bash', ok: true }
+  ];
+  const w = lib.usageWindowFromRecords(recs, { nowMs: now, windowMs: 24 * 3600 * 1000 });
+  assert.equal(w.byId.get('canon-hot'), 6);
+  assert.equal(w.byId.get('canon-warm'), 1);
+  assert.equal(w.byId.has('canon-old'), false, '窗外不计');
+  assert.equal(w.total, 7);
+  assert.equal(w.distinct, 2);
+  assert.equal(w.quota, 3.5);
+  assert.ok(w.slope !== 0 || w.hhiNew >= 0);
+  const miss = lib.usageWindowFromLog(join(SCRATCH, 'no-such-hooks-' + Date.now() + '.jsonl'));
+  assert.equal(miss.missing, true);
+  assert.equal(miss.total, 0);
+});
+t('A1：超配额降权、零引用弱命中探索、恶化斜率刹车；强命中不探索', () => {
+  const win = {
+    byId: new Map([['canon-hot', 10], ['canon-warm', 1]]),
+    total: 11, distinct: 2, quota: 5.5, slope: 0.2, windowMs: 86400000
+  };
+  const hot = lib.loadBalanceCorrection('canon-hot', { window: win, strong: true });
+  assert.equal(hot.enabled, true);
+  assert.ok(hot.correction < 1, '超配额应降：' + hot.correction);
+  assert.ok(hot.reasons.some((r) => r.code === 'over-quota'));
+  assert.ok(hot.reasons.some((r) => r.code === 'slope-brake'), '斜率恶化应对超配额再刹车');
+  const cold = lib.loadBalanceCorrection('canon-cold', { window: win, strong: false });
+  assert.ok(cold.correction > 1, '零引用弱命中应探索：' + cold.correction);
+  assert.ok(cold.reasons.some((r) => r.code === 'explore-zero-weak'));
+  const coldStrong = lib.loadBalanceCorrection('canon-cold', { window: win, strong: true });
+  assert.equal(coldStrong.correction, 1, '强命中不给探索加成');
+  const improving = lib.loadBalanceCorrection('canon-hot', { window: { ...win, slope: -0.1 }, strong: true });
+  assert.ok(!improving.reasons.some((r) => r.code === 'slope-brake'), '斜率改善不刹车');
+});
+t('A1：默认关不改序；开启后热条退后且 score/strong 不变；可审计', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-a1-'));
+  try {
+    const J = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+    const claim = 'a1-balance fixture gamma';
+    writeFileSync(files.canon, J([
+      { id: 'canon-a1-hot', claim, source: { type: '官方', ref: 'f' }, last_reviewed: '2026-09-01' },
+      { id: 'canon-a1-cold', claim, source: { type: '官方', ref: 'f' }, last_reviewed: '2026-09-01' }
+    ]));
+    for (const n of lib.STORES) if (n !== 'canon') writeFileSync(files[n], '');
+    const usage = new Map([['canon-a1-hot', 20], ['canon-a1-other', 1]]);
+    const baseOpts = { files, today: '2026-10-08', usage };
+    const off = lib.lookup('a1-balance fixture', baseOpts);
+    assert.ok(off.every((h) => !h.balance || h.balance.enabled === false));
+    const on = lib.lookup('a1-balance fixture', { ...baseOpts, loadBalance: true });
+    const hot = on.find((h) => h.id === 'canon-a1-hot');
+    const cold = on.find((h) => h.id === 'canon-a1-cold');
+    assert.ok(hot && cold);
+    assert.equal(hot.score, cold.score);
+    assert.equal(hot.strong, cold.strong);
+    assert.equal(hot.balance.enabled, true);
+    assert.ok(hot.balance.correction < 1, '热条超配额应降');
+    assert.equal(cold.balance.correction, 1, '强命中零引用不探索（只靠热条被压）');
+    assert.ok(cold.rank > hot.rank, '开启后冷条应排到热条前');
+    const offHot = off.find((h) => h.id === 'canon-a1-hot');
+    const offCold = off.find((h) => h.id === 'canon-a1-cold');
+    assert.equal(offHot.rank, offCold.rank, '默认关：同学段同学级同序权重');
+    // CLI 默认关
+    const cliOff = cli(['lookup', '阿卡夏', '--json']);
+    assert.equal(cliOff.status, 0, cliOff.stderr);
+    const hits = JSON.parse(cliOff.stdout);
+    assert.ok(Array.isArray(hits));
+    if (hits[0]) assert.ok(!hits[0].balance || hits[0].balance.enabled === false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

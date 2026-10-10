@@ -7,16 +7,16 @@ import { sleepPlan } from './sleep.mjs';
 
 const TOOLS = [
   { name: 'akasha_check', description: '校验阿卡夏之书（akasha）全部数据文件（含段升格标记三向核对；不读会话原档）', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'akasha_lookup', description: '在六库中机械检索；since / until 可选（YYYY-MM-DD，按事件时间/记录时间过滤）。**有日期过滤时建议 report:true**——返回 { hits, stats }（含「日期未知 N 条」与样本、范围外计数、timeSource）；undated:true 把日期未知并入 hits（标 undated）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, report: { type: 'boolean' }, undated: { type: 'boolean' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' } }, required: ['query'] } },
+  { name: 'akasha_lookup', description: '在六库中机械检索；since / until 可选（YYYY-MM-DD，按事件时间/记录时间过滤）。**有日期过滤时建议 report:true**——返回 { hits, stats }（含「日期未知 N 条」与样本、范围外计数、timeSource）；undated:true 把日期未知并入 hits（标 undated）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, report: { type: 'boolean' }, undated: { type: 'boolean' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' }, loadBalance: { type: 'boolean' } }, required: ['query'] } },
   { name: 'akasha_price', description: '按 严重度 × 不可逆性 × 代价 计算情绪定价标签（valence / arousal）；applyStore/applyId 可选=计算后回写该条目（修订链）', inputSchema: { type: 'object', properties: { severity: { type: 'number' }, irreversibility: { type: 'number' }, cost: { type: 'number' }, good: { type: 'boolean' }, applyStore: { type: 'string' }, applyId: { type: 'string' } }, required: ['severity', 'irreversibility', 'cost'] } },
   { name: 'akasha_stats', description: '结果计数器：各存储计数与来源分布', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'akasha_frontier_due', description: '列出到期需复审的前沿层（frontier）条目', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'akasha_audit', description: '机械审计：到期复审 / 陈旧复核 / 重复链接 / 孤案积压（可传 today 模拟）', inputSchema: { type: 'object', properties: { today: { type: 'string' } }, additionalProperties: false } },
-  { name: 'akasha_brief', description: '主题简报：跨六库按主题取料（带来源态与基石映射与时间坐标，替代多次 lookup）；since / until 可选（YYYY-MM-DD）', inputSchema: { type: 'object', properties: { query: { type: 'string' }, perStore: { type: 'number' }, since: { type: 'string' }, until: { type: 'string' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' } }, required: ['query'] } },
+  { name: 'akasha_brief', description: '主题简报：跨六库按主题取料（带来源态与基石映射与时间坐标，替代多次 lookup）；since / until 可选（YYYY-MM-DD）', inputSchema: { type: 'object', properties: { query: { type: 'string' }, perStore: { type: 'number' }, since: { type: 'string' }, until: { type: 'string' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' }, loadBalance: { type: 'boolean' } }, required: ['query'] } },
   { name: 'akasha_kit', description: '起床包：开工前一次装配（睡眠摘要 + 待办 inbox + 当前审计 + 库况 + 提示）', inputSchema: { type: 'object', properties: { today: { type: 'string' } }, additionalProperties: false } },
   { name: 'akasha_promote', description: '候选转正：把 inbox 里的孤案候选（失败回查素材）机械落成孤案条目（零权重留档；dry 只报不写）', inputSchema: { type: 'object', properties: { dry: { type: 'boolean' } }, additionalProperties: false } },
   { name: 'akasha_revise', description: '修订链：为记录追加新版本（supersedes 旧版，追加不改原文）；patch 打补丁，未列字段自动保留', inputSchema: { type: 'object', properties: { store: { type: 'string' }, id: { type: 'string' }, patch: { type: 'object' } }, required: ['store', 'id'] } },
-  { name: 'akasha_cross', description: '对位比较：同一主题词在六库的全部命中按库并排（当前版本、主行不截断），并提示同题多源；since / until 可选（YYYY-MM-DD）', inputSchema: { type: 'object', properties: { query: { type: 'string' }, perStore: { type: 'number' }, since: { type: 'string' }, until: { type: 'string' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' } }, required: ['query'] } },
+  { name: 'akasha_cross', description: '对位比较：同一主题词在六库的全部命中按库并排（当前版本、主行不截断），并提示同题多源；since / until 可选（YYYY-MM-DD）', inputSchema: { type: 'object', properties: { query: { type: 'string' }, perStore: { type: 'number' }, since: { type: 'string' }, until: { type: 'string' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' }, loadBalance: { type: 'boolean' } }, required: ['query'] } },
   { name: 'akasha_summary', description: '全库摘要：六库计数 + 各库最近条目 + frontier 状态分布 + 审计概要 + 最近写入（不带问题看一眼全库）', inputSchema: { type: 'object', properties: { per: { type: 'number' } }, additionalProperties: false } },
   { name: 'akasha_orphan_add', description: '追加一条孤案（零权重留档，带钩子的问号）；event_time 可选=事件时间（YYYY-MM-DD）', inputSchema: { type: 'object', properties: { summary: { type: 'string' }, observed: { type: 'string' }, severity: { type: 'string', enum: ['高', '中', '低'] }, event_time: { type: 'string' } }, required: ['summary'] } },
   { name: 'akasha_show', description: '按 id 跨六库直读（命中旧版本时返回所查版本全文 + 附注当前版本 id，不自动跳转）', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
@@ -46,7 +46,7 @@ function handle(msg) {
         const until = a.until ? normalizeDateArg(a.until) : { ok: true, day: null };
         if (!since.ok || !until.ok) { value = { error: since.error || until.error }; }
         else {
-          const detailed = lookupDetailed(a.query, { since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today });
+          const detailed = lookupDetailed(a.query, { since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true });
           value = a.report === true ? detailed : detailed.hits;
         }
       }
@@ -62,11 +62,11 @@ function handle(msg) {
       // 2026-10-08 复查修复：与 CLI `frontier due` 口径对齐——统一走 frontierDue()（只看当前版本；退役条目不再出现在到期清单）。
       else if (name === 'akasha_frontier_due') value = frontierDue();
       else if (name === 'akasha_audit') value = audit(a);
-      else if (name === 'akasha_brief') value = brief(String(a.query ?? ''), { perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today });
+      else if (name === 'akasha_brief') value = brief(String(a.query ?? ''), { perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true });
       else if (name === 'akasha_kit') value = kit(a);
       else if (name === 'akasha_promote') value = promoteInbox({ dry: a.dry === true });
       else if (name === 'akasha_revise') value = revise(a.store, a.id, a.patch || {});
-      else if (name === 'akasha_cross') value = cross(String(a.query ?? ''), { perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today });
+      else if (name === 'akasha_cross') value = cross(String(a.query ?? ''), { perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true });
       else if (name === 'akasha_summary') value = summary({ per: a.per });
       else if (name === 'akasha_show') value = show(String(a.id ?? ''));
       else if (name === 'akasha_mirror_match') value = mirrorMatch(String(a.text ?? ''), { limit: a.limit, mode: a.mode, role: a.role });
