@@ -10,7 +10,6 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 export const inject = ['systemPrompt', 'timer'];
 
@@ -21,8 +20,8 @@ const DEFAULTS = {
   akashaDir: DEFAULT_AKASHA,
   stateFile: join(DEFAULT_AKASHA, 'logs', 'sleep-state.json'),
   inboxFile: join(DEFAULT_AKASHA, 'logs', 'inbox.jsonl'),
-  // 宿主应用模块目录（唤醒条用的 createUserMessage 从这里加载）；留空 = 唤醒条注入跳过（其余功能不受影响）。
-  appModulesDir: '',
+  // 唤醒条：消息由插件**本地构造**（语义同宿主 createUserMessage；不动态加载宿主包——DSH-Store 静态扫描口径）。
+  wakeNote: true,
   minIntervalHours: 6,
   timerCheckMs: 3600000,
   contextOrder: 130,
@@ -88,17 +87,19 @@ export function apply(ctx, config = {}) {
 
   // 唤醒条（M6b）：新会话（agent/created）自动把「起床包」摘要递进 next-step inbox（不唤醒、不打断）。
   // 仅当有内容（无睡眠记录 / 有待办 / 审计警告）才说话；子代理与 compact 不打扰；一切异常只留痕。
-  let createUserMessage = null;
-  let llmReady = Promise.resolve();
-  let llmSkipNote = null;
-  if (cfg.appModulesDir) {
-    llmReady = import(pathToFileURL(join(cfg.appModulesDir, '@deepseek-ai', 'dsh-llm', 'lib', 'index.js')).href)
-      .then((mod) => { if (typeof mod.createUserMessage === 'function') createUserMessage = mod.createUserMessage; })
-      .catch((error) => log({ kind: 'wake-note-llm-error', message: String(error?.message ?? error).slice(0, 200) }));
-  } else {
-    // 延迟到 armed 之后留痕：不让观测线提前污染 hooks 水位线（boot 首跑的 processedLines）
-    llmSkipNote = 'appModulesDir 未配置：唤醒条注入跳过（其余功能不受影响）';
-  }
+  // 唤醒条消息：**本地构造**（语义等价于宿主 @deepseek-ai/dsh-llm 的 createUserMessage——
+  // structuredClone + 深冻结 + 新鲜 id + role='user'）。刻意**不**动态加载宿主包：
+  // ① DSH-Store 静态扫描把「动态模块加载」判为扫描面不完整；② 本地构造耦合更少、静态可审计。
+  const newMessageId = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `akasha-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const deepFreeze = (value) => {
+    if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+      for (const item of Object.values(value)) deepFreeze(item);
+      Object.freeze(value);
+    }
+    return value;
+  };
+  const createUserMessage = (input) => deepFreeze({ ...structuredClone(input), role: 'user', id: newMessageId() });
+  const llmSkipNote = cfg.wakeNote === false ? 'wakeNote=false：唤醒条注入跳过（其余功能不受影响）' : null;
 
   const injectWakeNote = (agent) => {
     try {
@@ -122,8 +123,8 @@ export function apply(ctx, config = {}) {
       const agent = payload?.agent;
       const header = agent?.session?.header;
       if (header?.origin === 'subagent' || (header?.delegationDepth ?? 0) > 0) return;
-      if (createUserMessage) { injectWakeNote(agent); return; }
-      void llmReady.then(() => injectWakeNote(agent));
+      if (cfg.wakeNote === false) return;
+      injectWakeNote(agent);
     } catch (error) {
       log({ kind: 'wake-note-error', message: String(error?.message ?? error).slice(0, 200) });
     }

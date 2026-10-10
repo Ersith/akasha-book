@@ -159,7 +159,7 @@ const logText = readFileSync(logPath, 'utf8');
 assert.ok(logText.includes('"kind":"sleep-skip"') && logText.includes('"trigger":"timer"'), '定时回调走去抖留痕');
 assert.ok(logText.includes('"kind":"sleep-done"'), 'sleep-done 落观测线');
 assert.ok(logText.includes('"kind":"sleep-armed"'), 'sleep-armed 落观测线');
-assert.ok(logText.includes('"kind":"wake-note-llm-skip"'), '唤醒条跳过留痕（appModulesDir 未配置）');
+assert.ok(!logText.includes('"kind":"wake-note-llm-skip"'), '默认（wakeNote 开、消息本地构造）不应出现跳过留痕');
 assert.ok(logText.includes('"todo":3'), 'sleep-done 带待办数（含 recall-miss）');
 
 // 注意：不在此处删 dir——§6 的 ctxLive 要读到本目录的桩 state（桩 state 缺失会让它 boot 触发
