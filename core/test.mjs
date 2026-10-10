@@ -2094,6 +2094,28 @@ t('排序：孤案命中带 factorApplied:false；其它库 true', () => {
   assert.equal(c.rank, +(3 * c.factor).toFixed(4));
 });
 
+
+t('A1：协议类豁免——超配额也不降，reasons 含 protocol-exempt；默认仍关', () => {
+  const win = {
+    byId: new Map([['canon-akasha-usage', 50], ['canon-other', 1]]),
+    total: 51, distinct: 2, quota: 25.5, slope: 0.3, windowMs: 86400000
+  };
+  const proto = lib.loadBalanceCorrection('canon-akasha-usage', { window: win, strong: true, cls: 'protocol' });
+  assert.equal(proto.correction, 1);
+  assert.deepEqual(proto.reasons.map((r) => r.code), ['protocol-exempt']);
+  const normal = lib.loadBalanceCorrection('canon-akasha-usage', { window: win, strong: true, cls: 'evergreen' });
+  assert.ok(normal.correction < 1, '非协议类仍降：' + normal.correction);
+  // 端到端：协议条经 applyRank + loadBalance 仍 correction=1
+  const rf = lib.applyRank(2, 'canon', { id: 'canon-akasha-usage' }, { weight: 1, cls: 'protocol', tier: 'T1' }, {
+    loadBalance: true,
+    usage: new Map([['canon-akasha-usage', 50], ['canon-other', 1]])
+  });
+  assert.equal(rf.balance.correction, 1);
+  assert.ok(rf.balance.reasons.some((r) => r.code === 'protocol-exempt'));
+  assert.equal(rf.rank, 2, '协议模板 sev/cpx=1 且 A1 豁免 → rank=score×1');
+  assert.equal(lib.RANK_DEFAULTS.loadBalance, false);
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

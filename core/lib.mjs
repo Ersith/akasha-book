@@ -677,6 +677,7 @@ export function resolveUsageWindow(opts = {}) {
  * - 窗口内零引用且本命中为弱命中 → 探索加成（防饿死）
  * - 集中度斜率上升超阈 → 对超配额项再刹车（D；改善时不抖）
  * 不隐藏、不删条；与 credibility/pricing 正交。
+ * 协议类（credibilityOf.cls === "protocol"）豁免：correction 恒 1，reasons 含 protocol-exempt。
  */
 export function loadBalanceCorrection(id, opts = {}) {
   const p = { ...LOAD_BALANCE_DEFAULTS, ...(opts.params || {}) };
@@ -684,6 +685,20 @@ export function loadBalanceCorrection(id, opts = {}) {
   const count = Number(opts.count ?? win.byId?.get?.(id) ?? 0) || 0;
   const quota = Math.max(win.quota || 0, 0);
   const strong = opts.strong === true;
+  const cls = opts.cls || null;
+  // 协议类豁免：不参与垄断/探索/D 校正（常驻提示条不应被 usage 漂移）。
+  if (cls === 'protocol') {
+    return {
+      enabled: true,
+      id: String(id ?? ''),
+      correction: 1,
+      count, quota: +quota.toFixed(4), error: +(count - quota).toFixed(4),
+      slope: Number(win.slope) || 0,
+      reasons: [{ code: 'protocol-exempt' }],
+      cls: 'protocol',
+      params: { kP: p.kP, kExplore: p.kExplore, kD: p.kD, slopeThresh: p.slopeThresh, windowMs: win.windowMs ?? p.windowMs }
+    };
+  }
   const reasons = [];
   let correction = 1;
   const error = count - quota;
@@ -730,7 +745,7 @@ export function applyRank(score, store, r, cred, opts = {}) {
   let rank = Number(score) * f.factor;
   if (enabled) {
     const win = opts.usageWindow || resolveUsageWindow(opts);
-    const bal = loadBalanceCorrection(r?.id, { window: win, strong: opts.strong === true, params: opts.balance });
+    const bal = loadBalanceCorrection(r?.id, { window: win, strong: opts.strong === true, params: opts.balance, cls: f.cls || cred?.cls || null });
     rank *= bal.correction;
     base.balance = bal;
   }
