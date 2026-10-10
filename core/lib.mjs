@@ -601,6 +601,43 @@ const hhiOf = (counts) => {
 };
 
 /**
+ * 修订链根 id：剥掉尾部 `-rN`（N 为正整数）。usage 日志与当前版 id 混用时，两侧都归一到根再计数/查表。
+ * 例：`canon-foo-r3` → `canon-foo`；无后缀原样返回。
+ */
+export function rootIdOf(id) {
+  const s = String(id ?? '');
+  const m = /^(.*)-r(\d+)$/.exec(s);
+  return m ? m[1] : s;
+}
+
+/** 自我层（gate akasha:self 永久注入）：id 前缀或 tag『自我』。与协议条同属常驻提示。 */
+export function isSelfLayerRecord(r) {
+  if (!r || typeof r !== 'object') return false;
+  const id = rootIdOf(r.id);
+  if (/^canon-(self-concept|address-layers|memory-auto-record)/.test(id)) return true;
+  return Array.isArray(r.tags) && r.tags.includes('自我');
+}
+
+/**
+ * A1 豁免：协议类 ∪ 自我层。返回 { exempt, code }；非豁免 code=null。
+ * 协议：cls==="protocol"，或根 id 为 canon-akasha-usage（与 isProtocolId 同口径）。
+ * 自我层：record/tags/id 前缀 self-concept|address-layers|memory-auto-record。
+ */
+export function isLoadBalanceExempt(opts = {}) {
+  const cls = opts.cls || null;
+  const id = opts.id != null ? String(opts.id) : (opts.record && opts.record.id != null ? String(opts.record.id) : '');
+  const root = id ? rootIdOf(id) : '';
+  if (cls === 'protocol' || root === 'canon-akasha-usage') {
+    return { exempt: true, code: 'protocol-exempt' };
+  }
+  if (opts.selfLayer === true || isSelfLayerRecord(opts.record) ||
+      /^canon-(self-concept|address-layers|memory-auto-record)/.test(root)) {
+    return { exempt: true, code: 'self-layer-exempt' };
+  }
+  return { exempt: false, code: null };
+}
+
+/**
  * 从 hooks 记录建用量窗口（纯函数可测）。
  * 只统计 kind:"usage" 的 ids（与 metrics 同源）。opts.windowMs / nowMs。
  * 返回 { byId, total, distinct, quota, hhi, hhiOld, hhiNew, slope, windowMs, missing }。
@@ -620,7 +657,7 @@ export function usageWindowFromRecords(records, opts = {}) {
     const t = Number.isFinite(ts) ? ts : nowMs; // 无戳 → 算进窗口（宽口径，不夸大饿死）
     if (t < start || t > nowMs) continue;
     for (const raw of rec.ids) {
-      const id = String(raw ?? '');
+      const id = rootIdOf(raw);
       if (!id) continue;
       byId.set(id, (byId.get(id) ?? 0) + 1);
       total += 1;
@@ -659,7 +696,12 @@ export function usageWindowFromLog(logPath, opts = {}) {
 export function resolveUsageWindow(opts = {}) {
   if (opts.usageWindow && typeof opts.usageWindow === 'object') return opts.usageWindow;
   if (opts.usage instanceof Map) {
-    const byId = opts.usage;
+    const byId = new Map();
+    for (const [k, v] of opts.usage) {
+      const id = rootIdOf(k);
+      if (!id) continue;
+      byId.set(id, (byId.get(id) ?? 0) + (Number(v) || 0));
+    }
     let total = 0; for (const n of byId.values()) total += n;
     const distinct = [...byId.values()].filter((n) => n > 0).length;
     return {
@@ -677,25 +719,29 @@ export function resolveUsageWindow(opts = {}) {
  * - 窗口内零引用且本命中为弱命中 → 探索加成（防饿死）
  * - 集中度斜率上升超阈 → 对超配额项再刹车（D；改善时不抖）
  * 不隐藏、不删条；与 credibility/pricing 正交。
- * 协议类（credibilityOf.cls === "protocol"）豁免：correction 恒 1，reasons 含 protocol-exempt。
+ * 协议类 ∪ 自我层豁免：correction 恒 1，reasons 含 protocol-exempt / self-layer-exempt。
+ * 计数两侧均按 rootIdOf 归一（剥 -rN），修订版仍累积用量。
  */
 export function loadBalanceCorrection(id, opts = {}) {
   const p = { ...LOAD_BALANCE_DEFAULTS, ...(opts.params || {}) };
   const win = opts.window || { byId: new Map(), total: 0, distinct: 0, quota: 0, slope: 0 };
-  const count = Number(opts.count ?? win.byId?.get?.(id) ?? 0) || 0;
+  const root = rootIdOf(id);
+  const count = Number(opts.count ?? win.byId?.get?.(root) ?? 0) || 0;
   const quota = Math.max(win.quota || 0, 0);
   const strong = opts.strong === true;
   const cls = opts.cls || null;
-  // 协议类豁免：不参与垄断/探索/D 校正（常驻提示条不应被 usage 漂移）。
-  if (cls === 'protocol') {
+  // 协议 ∪ 自我层豁免：常驻提示条不参与垄断/探索/D（否则每会话必引会被当成垄断）。
+  const ex = isLoadBalanceExempt({ cls, id, record: opts.record, selfLayer: opts.selfLayer });
+  if (ex.exempt) {
     return {
       enabled: true,
       id: String(id ?? ''),
+      root,
       correction: 1,
       count, quota: +quota.toFixed(4), error: +(count - quota).toFixed(4),
       slope: Number(win.slope) || 0,
-      reasons: [{ code: 'protocol-exempt' }],
-      cls: 'protocol',
+      reasons: [{ code: ex.code }],
+      cls: cls || null,
       params: { kP: p.kP, kExplore: p.kExplore, kD: p.kD, slopeThresh: p.slopeThresh, windowMs: win.windowMs ?? p.windowMs }
     };
   }
@@ -745,7 +791,7 @@ export function applyRank(score, store, r, cred, opts = {}) {
   let rank = Number(score) * f.factor;
   if (enabled) {
     const win = opts.usageWindow || resolveUsageWindow(opts);
-    const bal = loadBalanceCorrection(r?.id, { window: win, strong: opts.strong === true, params: opts.balance, cls: f.cls || cred?.cls || null });
+    const bal = loadBalanceCorrection(r?.id, { window: win, strong: opts.strong === true, params: opts.balance, cls: f.cls || cred?.cls || null, record: r });
     rank *= bal.correction;
     base.balance = bal;
   }

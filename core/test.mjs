@@ -2103,8 +2103,17 @@ t('A1：协议类豁免——超配额也不降，reasons 含 protocol-exempt；
   const proto = lib.loadBalanceCorrection('canon-akasha-usage', { window: win, strong: true, cls: 'protocol' });
   assert.equal(proto.correction, 1);
   assert.deepEqual(proto.reasons.map((r) => r.code), ['protocol-exempt']);
-  const normal = lib.loadBalanceCorrection('canon-akasha-usage', { window: win, strong: true, cls: 'evergreen' });
-  assert.ok(normal.correction < 1, '非协议类仍降：' + normal.correction);
+  // 无 cls 但根 id 仍是协议条 → 同样豁免（与 isProtocolId 对齐）
+  const byId = lib.loadBalanceCorrection('canon-akasha-usage-r20', { window: win, strong: true, cls: 'evergreen' });
+  assert.equal(byId.correction, 1);
+  assert.ok(byId.reasons.some((r) => r.code === 'protocol-exempt'));
+  const normal = lib.loadBalanceCorrection('canon-other', { window: win, strong: true, cls: 'evergreen' });
+  // canon-other 计数仅 1 < quota → 不降；抬到超配额再验
+  const hot = lib.loadBalanceCorrection('canon-other', {
+    window: { ...win, byId: new Map([['canon-other', 50]]), quota: 25.5 },
+    strong: true, cls: 'evergreen'
+  });
+  assert.ok(hot.correction < 1, '非协议类仍降：' + hot.correction);
   // 端到端：协议条经 applyRank + loadBalance 仍 correction=1
   const rf = lib.applyRank(2, 'canon', { id: 'canon-akasha-usage' }, { weight: 1, cls: 'protocol', tier: 'T1' }, {
     loadBalance: true,
@@ -2114,6 +2123,64 @@ t('A1：协议类豁免——超配额也不降，reasons 含 protocol-exempt；
   assert.ok(rf.balance.reasons.some((r) => r.code === 'protocol-exempt'));
   assert.equal(rf.rank, 2, '协议模板 sev/cpx=1 且 A1 豁免 → rank=score×1');
   assert.equal(lib.RANK_DEFAULTS.loadBalance, false);
+});
+
+
+t('A1：根 id 归一——usage 混用根/-rN 时修订版仍累积计数', () => {
+  const now = Date.parse('2026-10-08T12:00:00Z');
+  const recs = [
+    { kind: 'usage', ts: '2026-10-08T10:00:00Z', ids: ['canon-topic', 'canon-topic-r1'] },
+    { kind: 'usage', ts: '2026-10-08T11:00:00Z', ids: ['canon-topic-r2', 'canon-other'] },
+    { kind: 'usage', ts: '2026-10-08T11:30:00Z', ids: ['canon-topic'] }
+  ];
+  const w = lib.usageWindowFromRecords(recs, { nowMs: now, windowMs: 24 * 3600 * 1000 });
+  assert.equal(w.byId.get('canon-topic'), 4, '根+三版合计 4');
+  assert.equal(w.byId.has('canon-topic-r1'), false, '窗口键只有根 id');
+  assert.equal(w.byId.get('canon-other'), 1);
+  assert.equal(w.distinct, 2);
+  // 查当前版 -r3 仍拿到累积
+  const bal = lib.loadBalanceCorrection('canon-topic-r3', {
+    window: w, strong: true
+  });
+  assert.equal(bal.count, 4);
+  assert.equal(lib.rootIdOf('canon-topic-r20'), 'canon-topic');
+  assert.equal(lib.rootIdOf('canon-topic'), 'canon-topic');
+  // Map 注入路径同样归一
+  const w2 = lib.resolveUsageWindow({ usage: new Map([['canon-topic', 2], ['canon-topic-r1', 3]]) });
+  assert.equal(w2.byId.get('canon-topic'), 5);
+  assert.equal(w2.distinct, 1);
+});
+
+t('A1：自我层豁免——self-concept/address-layers/memory-auto-record 与 tag 自我；默认仍关', () => {
+  const win = {
+    byId: new Map([['canon-self-concept-20261008', 40], ['canon-address-layers-20261008', 30], ['canon-other', 1]]),
+    total: 71, distinct: 3, quota: 71 / 3, slope: 0.2, windowMs: 86400000
+  };
+  for (const id of ['canon-self-concept-20261008', 'canon-self-concept-20261008-r2', 'canon-address-layers-20261008', 'canon-memory-auto-record']) {
+    const bal = lib.loadBalanceCorrection(id, { window: win, strong: true, cls: 'evergreen' });
+    assert.equal(bal.correction, 1, id + ' 应豁免');
+    assert.deepEqual(bal.reasons.map((r) => r.code), ['self-layer-exempt']);
+  }
+  // tag『自我』经 record
+  const tagged = lib.loadBalanceCorrection('canon-custom-who', {
+    window: win, strong: true, cls: 'evergreen',
+    record: { id: 'canon-custom-who', tags: ['自我'] }
+  });
+  assert.equal(tagged.correction, 1);
+  assert.ok(tagged.reasons.some((r) => r.code === 'self-layer-exempt'));
+  // 非自我仍降
+  const normal = lib.loadBalanceCorrection('canon-other', { window: { ...win, byId: new Map([['canon-other', 40]]) }, strong: true, cls: 'evergreen' });
+  assert.ok(normal.correction < 1);
+  // applyRank 端到端
+  const rf = lib.applyRank(2, 'canon', { id: 'canon-address-layers-20261008-r1', tags: ['自我'] }, { weight: 1, cls: 'evergreen', tier: 'T2' }, {
+    loadBalance: true,
+    usage: new Map([['canon-address-layers-20261008', 50]])
+  });
+  assert.equal(rf.balance.correction, 1);
+  assert.ok(rf.balance.reasons.some((r) => r.code === 'self-layer-exempt'));
+  assert.equal(lib.RANK_DEFAULTS.loadBalance, false);
+  assert.equal(lib.isLoadBalanceExempt({ cls: 'protocol' }).code, 'protocol-exempt');
+  assert.equal(lib.isSelfLayerRecord({ id: 'canon-self-concept-x' }), true);
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);

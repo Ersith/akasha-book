@@ -276,7 +276,8 @@ rank  = (词法分[+ frontier 状态][+ 负价 tip]) × factor   // 孤案：ran
 - **A1 检索负载均衡**（`research/weight-internalization-pid`）：默认 **关**（`RANK_DEFAULTS.loadBalance === false`）。CLI `--load-balance` / MCP `loadBalance:true` 才启用。只乘校正项，**不改** score/strong、不隐藏、不删条，与 credibility/pricing 正交。
   - 误差：条目近期 `usage` 次数 vs 软配额（窗口内 total/distinct）。
   - 超配额 → 降（P，防垄断）；窗口零引用且本命中为弱命中 → 探索加成（防饿死）；集中度 HHI 斜率上升超阈 → 对超配额项再刹车（D；改善不抖）。
-  - **协议类豁免**：`credibilityOf.cls === "protocol"`（如 `canon-akasha-usage*`）不参与上述校正，`correction` 恒为 1，`reasons: [{ code: "protocol-exempt" }]`——常驻提示条不被 usage 漂移。
+  - **常驻提示豁免**：协议类（`cls === "protocol"` / `canon-akasha-usage*`）∪ 自我层（id 前缀 `canon-self-concept` / `canon-address-layers` / `canon-memory-auto-record`，或 tag『自我』）不参与上述校正，`correction` 恒为 1，`reasons` 含 `protocol-exempt` 或 `self-layer-exempt`——每会话必引的条目不被当成垄断。
+  - **根 id 归一**：usage 日志与检索命中可能混用根 id / `-rN` 版 id；`usageWindowFromRecords` 与 `loadBalanceCorrection` 两侧均经 `rootIdOf`（剥尾部 `-rN`）再计数/查表，修订链用量可累积。
   - 参数：`LOAD_BALANCE_DEFAULTS`（windowMs=7d，kP/kExplore/kD，slopeThresh，min/maxCorrection）。命中行带 `balance: { correction, count, quota, reasons, params }` 可审计。
 - **emotionBoost**：API 保留；`brief` 的 base 不再加 arousal（改走严重度乘子），负价只留 +0.25 tip。
 
