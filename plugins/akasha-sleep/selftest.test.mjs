@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { apply, buildWakeNote, isWakeNoteworthy } from './lib/index.js';
 import { buildTodos, distillHooks, renderContextLine, renderPulseLine, renderRecallLine, shouldSleep } from '../../core/sleep.mjs';
 
+// 活树布局：插件在 <LOCAL_PATH> <AKASHA_DIR>/（仓布局则是 ../../core）
 const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');
 /** 把核心（sleep.mjs + lib.mjs）拷进桩目录——插件通过 akashaDir 动态加载它们。 */
 const seedCore = (dir) => {
@@ -268,7 +269,7 @@ rmSync(dirC, { recursive: true, force: true });
   assert.ok(Object.isFrozen(mine.content), '本地构造：嵌套冻结');
   assert.ok(deepFreeze({ a: { b: 1 } }).a && Object.isFrozen(deepFreeze({ a: { b: 1 } }).a), 'deepFreeze 递归');
 
-  const hostModules = process.env.AKASHA_DSH_MODULES ?? 'D:\\DSHHarness\\resources\\app\\dsh\\node_modules';
+  const hostModules = process.env.AKASHA_DSH_MODULES ?? '';
   const hostPath = join(hostModules, '@deepseek-ai', 'dsh-llm', 'lib', 'index.js');
   if (existsSync(hostPath)) {
     const { pathToFileURL } = await import('node:url');

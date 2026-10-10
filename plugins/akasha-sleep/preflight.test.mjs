@@ -3,18 +3,32 @@
 import { apply } from './lib/index.js';
 import { mkdirSync, writeFileSync, copyFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 
-const REAL = 'H:\\Harness\\akasha';
-const FIX = 'H:\\Harness\\_ab\\preflight-fixture';
+const REAL = '<AKASHA_DIR>';
+const FIXBASE = 'H:\\Harness\\_ab\\preflight-fixture';
+// ⚠ 每轮夹具必须**换独立目录**：插件用 createRequire 加载 `lib.mjs`，而目标是 .mjs ⇒ Node 走 **ESM 加载器缓存**，
+//   `require.cache` 里没有它（清理无效）⇒ 只能换 specifier 才能拿到新桩。
+//   2026-10-11 实测：不换目录时 ⑥–⑨ 全挂（拿到上一轮没有 loadStore 的桩）。
+let FIX = FIXBASE;
+let FIXN = 0;
 
-function makeFixture(hooksLines) {
+function makeFixture(hooksLines, canonRecords = null) {
+  FIX = FIXBASE + '-c' + (++FIXN);
   rmSync(FIX, { recursive: true, force: true });
   mkdirSync(join(FIX, 'data'), { recursive: true });
   mkdirSync(join(FIX, 'logs'), { recursive: true });
-  // 夹具用**桩 lib.mjs**：只导出 RECALL_TRAP_MAP（专测"行逻辑"，不依赖真实库能不能加载）
-  writeFileSync(join(FIX, 'lib.mjs'),
-    'export const RECALL_TRAP_MAP = { edit: ["canon-trap-edit-context-mismatch"], read: ["canon-trap-read-offset-range"], grep: ["canon-trap-grep-exit2-path"] };\n',
-    'utf8');
+  // 夹具用**桩 lib.mjs**：导出 RECALL_TRAP_MAP（默认测"行逻辑"）；
+  // 传了 canonRecords 时再导出 loadStore/currentRecords（测"反射文本随条目走"的 ⑥–⑨）。
+  const stub = [
+    'export const RECALL_TRAP_MAP = { edit: ["canon-trap-edit-context-mismatch"], read: ["canon-trap-read-offset-range"], grep: ["canon-trap-grep-exit2-path"] };',
+  ];
+  if (canonRecords) {
+    stub.push('const RECORDS = ' + JSON.stringify(canonRecords) + ';');
+    stub.push('export const loadStore = () => ({ records: RECORDS });');
+    stub.push('export const currentRecords = (recs) => recs;');
+  }
+  writeFileSync(join(FIX, 'lib.mjs'), stub.join('\n') + '\n', 'utf8');
   writeFileSync(join(FIX, 'logs', 'hooks.jsonl'), hooksLines.join('\n') + '\n', 'utf8');
   for (const f of ['session.mjs', 'sleep.mjs']) { try { copyFileSync(join(REAL, f), join(FIX, f)); } catch { /* 可选 */ } }
 }
@@ -78,6 +92,43 @@ makeFixture([mk('edit', 60_000)]);
 captureRows({ akashaDir: FIX, preflightHints: false }, ["edit"]);
 const offLater = readFileSync(join(FIX, 'logs', 'hooks.jsonl'), 'utf8');
 T('⑤ 关闭时无 preflight 事件（双停）', !offLater.includes('"kind":"preflight"'));
+
+// ⑥–⑨ 反射文本随条目走（2026-10-11 修复）：条目优先 / 退役不执行 / 有效期过期不执行 / 条目缺失不执行
+const REC = (id, extra = {}) => Object.assign({ id, claim: 'c', source: { type: '复现', ref: 't' }, tags: ['陷阱'] }, extra);
+
+// ⑥ 条目带 hint ⇒ 用条目文本（而不是内置兜底），事件里标 hintSource=entry
+makeFixture([mk('edit', 60_000)], [REC('canon-trap-edit-context-mismatch', { hint: '条目里的反射文本（应被采用）' })]);
+({ rows } = captureRows({ akashaDir: FIX, preflightHints: true }, ['edit']));
+row = rows.find((r) => r.name === 'akasha:preflight');
+let line6 = row && row.text();
+T('⑥ 条目 hint 被采用', typeof line6 === 'string' && line6.includes('条目里的反射文本'), String(line6));
+T('⑥ 事件标 hintSource=entry', readFileSync(join(FIX, 'logs', 'hooks.jsonl'), 'utf8').includes('"hintSource":"entry"'));
+
+// ⑦ 条目已退役 ⇒ 不执行过期反射（null）
+makeFixture([mk('edit', 60_000)], [REC('canon-trap-edit-context-mismatch', { claim: '此条目已退役（墓碑）', hint: '不该出现的反射' })]);
+({ rows } = captureRows({ akashaDir: FIX, preflightHints: true }, ['edit']));
+row = rows.find((r) => r.name === 'akasha:preflight');
+T('⑦ 已退役 ⇒ 不渲染', row && row.text() === null, String(row && row.text()));
+
+// ⑧ hint_until 过期 ⇒ 不执行（要求复核）
+makeFixture([mk('edit', 60_000)], [REC('canon-trap-edit-context-mismatch', { hint: '过期反射', hint_until: '2020-01-01' })]);
+({ rows } = captureRows({ akashaDir: FIX, preflightHints: true }, ['edit']));
+row = rows.find((r) => r.name === 'akasha:preflight');
+T('⑧ hint_until 过期 ⇒ 不渲染', row && row.text() === null, String(row && row.text()));
+
+// ⑨ 库可读但条目在链上不存在 ⇒ **fail closed：不打**（库是唯一来源，缺条目不回落兜底）
+makeFixture([mk('read', 60_000)], [REC('canon-trap-edit-context-mismatch')]);
+({ rows } = captureRows({ akashaDir: FIX, preflightHints: true }, ['read']));
+row = rows.find((r) => r.name === 'akasha:preflight');
+T('⑨ 条目缺失 ⇒ fail closed（不打）', row && row.text() === null, String(row && row.text()));
+
+// ⑩ 库不可读（无 loadStore 的桩）⇒ 走内置兜底（过渡期兼容）
+makeFixture([mk('edit', 60_000)]);
+({ rows } = captureRows({ akashaDir: FIX, preflightHints: true }, ['edit']));
+row = rows.find((r) => r.name === 'akasha:preflight');
+const line10 = row && row.text();
+T('⑩ 库不可读 ⇒ 内置兜底仍可用', typeof line10 === 'string' && line10.includes('[坑前提示]'), String(line10));
+T('⑩ 事件标 hintSource=fallback', readFileSync(join(FIX, 'logs', 'hooks.jsonl'), 'utf8').includes('"hintSource":"fallback"'));
 
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

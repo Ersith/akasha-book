@@ -2,6 +2,10 @@
     - id: akasha-session
       name: '@akasha-book/session'
       config:
-        # sessionsRoot 指向你的宿主会话档案目录（默认 ~/.dsh/sessions）
+        log: '<AKASHA_DIR>/logs\hooks.jsonl'
+        akashaDir: '<AKASHA_DIR>'
+        sessionsRoot: '<LOCAL_PATH>'
+        storeFile: '<AKASHA_DIR>/data\session.jsonl'
+        metaFile: '<AKASHA_DIR>/data\session-meta.json'
         contextOrder: 134
         minIndexIntervalMs: 30000

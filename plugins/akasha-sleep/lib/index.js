@@ -273,20 +273,41 @@ export function apply(ctx, config = {}) {
           const ids = map[tool];
           if (!ids || !ids.length) return null;                       // 不在映射表 ⇒ 不提示
           if (preflightState.tool === tool && now - preflightState.at < WINDOW) return null;  // 同工具 30 分钟去重
-          const ACTIONS = {
+          // 2026-10-11 修复（用户裁定：反射要能随工程知识纠错与优化）：
+          //   **反射文本随条目走** —— 不再只认写死的表。
+          //   ① 链感知解析（id 或 id-rN 取链尾）；② 条目缺失/已退役 ⇒ **不打**（fail closed，不执行过期反射）；
+          //   ③ 优先用条目自带 `hint`（≤80 字反射文本：**改条目＝改反射**）；④ `hint_until` 过期 ⇒ 跳过；
+          //   ⑤ 内置表降级为**过渡兜底**；⑥ 都取不到 ⇒ 不打（宁缺勿滥）。
+          // 该表仅作过渡：条目补上 hint 后即成为唯一来源。
+          const FALLBACK_ACTIONS = {
             'canon-trap-edit-context-mismatch': '先 read 原文再改、改完复核',
             'canon-trap-read-offset-range': '先用 grep 拿真实行号再读',
             'canon-trap-grep-exit2-path': '换浅范围/排除 node_modules 再 grep',
             'canon-trap-unknown-tool-name': '只从本会话可见工具面选名字',
             'canon-trap-provider-method-list': '先列方法清单再调用',
           };
-          const id = ids.find((x) => ACTIONS[x]) || ids[0];
-          const act = ACTIONS[id] || '先查库再动手';
+          let canonRecs = [];
+          try { canonRecs = lib.currentRecords(lib.loadStore('canon').records); } catch { /* 读不到 ⇒ 只走兜底 */ }
+          const resolveEntry = (cid) => canonRecs.filter((r) => String(r.id) === cid || String(r.id).startsWith(cid + '-r')).pop() || null;
+          const isRetired = (rec) => !!rec && (/已退役|retired/i.test(String(rec.claim ?? '')) || String(rec.id).endsWith('-retired'));
+          const today = new Date().toISOString().slice(0, 10);
+          let id = null, act = null, hintSource = null;
+          for (const cand of ids) {
+            if (canonRecs.length) {
+              const rec = resolveEntry(cand);
+              if (!rec) continue;                                       // 链上已无此条 ⇒ 跳过
+              if (isRetired(rec)) continue;                              // 已退役 ⇒ 不执行过期反射
+              if (rec.hint_until && String(rec.hint_until) < today) continue;  // 反射有效期已过 ⇒ 跳过
+              if (typeof rec.hint === 'string' && rec.hint.trim()) { id = cand; act = rec.hint.trim(); hintSource = 'entry'; break; }
+            }
+            if (FALLBACK_ACTIONS[cand]) { id = cand; act = FALLBACK_ACTIONS[cand]; hintSource = 'fallback'; break; }
+          }
+          if (!id || !act) return null;                                 // fail closed：没有现行条目/没有反射文本 ⇒ 不打
           const line = '[坑前提示] ' + tool + ' 前：' + act + ' —— 条目 ' + id;
           preflightState.tool = tool; preflightState.at = now;
           try {                                                        // 事件：关闭时走不到这里（双停）
             appendFileSync(join(cfg.akashaDir, 'logs', 'hooks.jsonl'),   // 用文件顶部已导入的 appendFileSync
-              JSON.stringify({ ts: new Date().toISOString(), kind: 'preflight', tool, entry: id }) + '\n', 'utf8');
+              JSON.stringify({ ts: new Date().toISOString(), kind: 'preflight', tool, entry: id, hintSource }) + '\n', 'utf8');
           } catch { /* 事件失败不影响提示 */ }
           return line.length <= 80 ? line : line.slice(0, 79) + '…';
         } catch { return null; }

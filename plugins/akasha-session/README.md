@@ -1,41 +1,31 @@
-# @akasha-book/session（小阿卡夏）
+# @akasha-book/session
 
-阿卡夏之书**会话层**插件 —— **自动增量索引 + 压缩事件行 + 节奏条 + 循环观测 P0（dry 干跑）**。
-核心逻辑归 `core/session.mjs` 与 `core/loop-detect.mjs`（本插件只做调度与注入；降级只留痕，不炸宿主）。
+阿卡夏之书会话层插件 v0.2.3 —— **自动增量索引 + 压缩事件行 + 节奏条 + 循环观测 P0（dry 干跑）**（核心逻辑归 `<AKASHA_DIR>/session.mjs` 与 `akasha\loop-detect.mjs`；手动用法 `node akasha.mjs session …` 与 `node akasha.mjs session loopwatch`）。
 
-- **触发**：`session/event → turn/end`（按会话去抖 `minIndexIntervalMs`，默认 30s）→ 增量索引（水位 + 指纹双幂等）；`agent/status → idle` 追平；`ctx.interval` 兜底。
-- **压缩事件行**：`session/event → compaction/end`（成功压缩）→ 先强制补索引（绕过去抖/背压）→ 观测线（带 `indexed`/`reason`）+ 节奏条点名。**只有补索引确认成功才说「已收入」**；失败时改说「可能未进会话层」并给回退（原始会话档案 / `session index`），同会话后续索引成功即改口（wave1 · B1）。
-- **循环观测 P0**：**dry 干跑——只观测、只写观测线；绝不干预**。流环＝`agent/assistant-stream` 帧按 attemptId 累积（每 480 字符对尾 8K 跑 `detectLoops`）；turn 环＝事件流缓存全文兜底；命中与帧类型探针写 `logs/hooks.jsonl`。汇总 CLI：`node akasha.mjs session loopwatch`。
-- **节奏条**：`systemPrompt.context`（`akasha:session`，order 134）——段数 / 会话数 + 回看提示；无数据静默。
-- **索引观测线**：`session-index`（added / skipped / parseFails / ms / **lagMs**＝事件循环延迟采样）/ `session-index-skip` / `session-index-error` / **`session-index-slow`**（单次索引 >1.5s 告警，含 lagMs）。
-- 配置：`akashaDir`（核心库位置）/ `sessionsRoot`（宿主会话档案目录）/ `storeFile` / `metaFile` / `log`；默认见 `lib/index.js` 的 DEFAULTS。
-- 自测：`node selftest.mjs`（桩 ctx 端到端；临时目录，不碰真实数据；需与本包 `core/` 并列）。
+- **触发**：`session/event → turn/end`（按会话去抖 `minIndexIntervalMs`，默认 30s）→ `indexSession` 增量（水位 + 指纹双幂等）；`agent/status → idle` 追平；`ctx.interval` 兜底（`timerCheckMs`，默认 4 分钟——timer 属混入服务，必须 `inject:['timer']`，否则 apply 整段失败且零日志）。
+- **压缩事件行**：`session/event → compaction/end`（**成功**压缩，`data.error` 空才记；2026-10-07 复查：旧写法 `agent/created source==='compact'` 是错的——该事件的 source 只有 startup/resume）→ `session-compact` 线 + 节奏条点名（「被折叠历史的细节优先查会话层」）。
+- **循环观测 P0（2026-10-07 起，受控解冻第十六次）**：**dry 干跑——只观测、只写观测线；绝不 steer / cancel / 注入**。流环：**现役格式＝`agent/assistant-stream` 帧**（`{type:'start'|'chunk'|'end', attemptId, revision, index, chunk}`——真值对 `dsh-agent-loop` 的 `AssistantStreamAttempt` 与 `dsh-headless` 消费口径三方核实；**chunk 帧不带 turn/step，由 start 帧缓存补全**；`assistant/chunk` 为 **V0 遗物**，仅兼容保留），按 `${sid}:{attemptId}:{index}:{stream}` 累积 delta（`reasoning-delta`/`text-delta`），每 `watchCheckEvery`（480）字符对尾 8K 跑 `loop-detect.detectLoops`；turn 环：`agent/turn-stopping` + `turn/end` 兜底，取数＝**事件流缓存的最新 assistant/message**（2026-10-07 复查：官方 Session 无 `.events` 属性、同步读者已被弃用——插件不得伸手进日志）。命中 → `loop-watch{phase:'stream'|'turn', hit:{type:exact|variant|punct, excerpt≤60}}`；每会话前 8 个新帧/chunk 类型记 `loop-watch-probe`（防真值漂移；**满 8 即停为设计上限**）。汇总：`node akasha.mjs session loopwatch`。
+- **节奏条**：`systemPrompt.context`（`akasha:session`，order 134）——段数 / 会话数 + 回看提示；无数据静默（`null`，不说话）。
+- **降级**：核心库不可用 / 日志不可写 / 档案缺失 / 空会话 id（静默跳过）→ 只留痕（`session-index-error`），不炸、不失活（sleep v1.5 同款范式）。背压：**统一失败窗口 5 分钟**（未命中 / 链接 / 执行失败均静默退避；链接类错误附加「疑似宿主模块代缓存」提示——重启桌面端恢复）；stat 快照只在**成功**索引后记账（失败可重试）。
+- **性能边界（诚实注记）**：正常触发为全量重读（重解压 + 重解析 + 扫 `sessionsRoot`），基线约 0.32s / 4.7MB；两道减负：档案 size+mtime 未变 → stat 快路跳过；>16MB → 节流 ×4。30s 去抖 + 空闲 / 定时触发下当前规模可接受，再大（>40MB 常态）需改成增量帧读取。循环观测的流式检测为节流检查（每 480 字符一次 8K 尾窗），实测开销可忽略。
+- 观测线：`session-armed` / `session-index`（added / skipped / parseFails / ms / lagMs）/ `session-index-skip` / `session-index-error` / `session-index-slow`（>1.5s 告警，含事件循环延迟）/ `session-compact` / `loop-watch` / `loop-watch-probe`，全部写 `akasha\logs\hooks.jsonl`。
+- 自测：`node selftest.mjs`（桩 ctx 端到端；临时目录，不碰真库；当前 **18/18**）。节流以**单调 seen 计数**（缓冲 20K 截尾不影响——复核 F1 修复：饱和后尾段仍继续检查）。
 
-- **索引 worker 化（2026-10-10 · 计划队列 v0.4 项）**：宿主回调只投递（`postMessage`，µs 级返回），索引在**常驻 worker 线程**（`lib/index-worker.mjs`，插件加载即预热）串行执行、同会话排队去重；`indexSession` 以 `metaFile` 为锁对象串行化整段「读水位 → 追加 → 记账」（`core/lib.mjs` 的 `withFileLock`；**锁 meta 而非 store**——`appendSegments` 内部已持 store 锁，嵌套会死等）。退出协议：dispose → `{"type":"quit"}` → drain → 关闭（5s 兜底强杀）。降级链：`indexMode: 'worker' | 'inline'`（默认 worker；**连续** 3 次失败自动降级，任何成功回零）。
-- **观测语义（worker 化后）**：`session-index` 新增 `via`（worker/inline）与 `hostMs`（宿主投递耗时）；**`session-index-slow` 的含义变为「后台耗时 >1.5s」**——宿主卡顿请看 `hostMs` / `lagMs`。
+## 打包 / 安装
 
-<!-- store-status -->
-## 兼容与状态（DSH STORE 口径 · 2026-10-10）
+```powershell
+cd <LOCAL_PATH>
+npm pack
+# 然后：plugin_manager install_bundle <tgz 绝对路径>（本 profile 为启动型：装载/替换以重启生效，以安装返回为准）
+```
 
-**固定源（immutable source）**：本版本的源码冻结于 Commit `d311ad54d1dc2cd2697c7b9eeac57eaa6466fc04`（对应 `plugins/akasha-session/package.json` 的 version）。
-兼容声明见 manifest 的 `dsh.compatibility.dshReleases`：**0.2.0-rc.2 = compatible**（本机实测运行），
-`0.2.1-alpha.1` / `0.2.1-alpha.2` 尚未实测 ⇒ 按契约如实写 `unknown`（不猜、不吹）。
+## v0.3.0（2026-10-10）—— 索引 worker 化（会话层计划里的 v0.4 队列项）
 
-| 证据层 | 状态 | 依据 |
-|---|---|---|
-| 静态契约（manifest / Bundle Patch / 许可证 / 入口 ID） | **verified** | 官方 `build-dsh-plugin` 审计：静态分见本包审计输出；入口 ID 为插件自有，不 disable/replace 任何 `@deepseek-ai/*` |
-| 单元与边界测试（`npm test`） | **verified** | `node selftest.test.mjs` 全绿；覆盖 malformed 输入、并发/节流、replay 一致性（见该文件断言） |
-| 一次性 Profile 安装·启动·卸载（E3） | **verified** | 2026-10-10 一次性 DSH_HOME 实跑：install → cold start（HTTP 就绪）→ stop → uninstall → `--dump-config` 逐字回到基线；dsh 0.2.0-rc.2；证据见同目录 `EVIDENCE.json` |
-| 真实 Profile 运行 | **verified（本机）** | 桌面端 0.2.0-rc.2 实跑；**他人机器 unverified**（未做外部验收） |
-| 独立安全审计 / 公开分发（E5） | **unverified** | 未做独立审计；分发前应重评 |
-
-**下一道门（next gate）**：① 在 0.2.1-alpha.x 上按同一套用例复测（一次性 DSH_HOME），把 `unknown` 改为精确结论（`compatible` 或 `incompatible`）；
-② 提交 DSH STORE 上架申请（monorepo 子路径：`tree/main/plugins/<name>`）并跟进机器人预检。
-若任一版本复测失败，该版本标注为 `blocked`（不兼容）并保持其余版本声明不动。
-
-**权限 / 非目标 / 边界（permissions · non-goals · boundaries）**
-- 读取：会话档案目录（默认 `~/.dsh/sessions`，可配置）；写入：只向 `data/session.jsonl` / `session-meta.json`（本插件自有索引）追加段记录；
-  索引在 **worker 线程**内跑（`lib/index-worker.mjs`），带单飞与最小间隔节流；**不修改会话档案原文**。
-- **统一非目标（non-goals）**：不修改 DSH 核心与官方包；不替换、禁用或遮蔽任何官方组件；不写真实 Profile（测试一律用系统临时目录）；
-  不在日志/输出里暴露凭据、完整用户文件或注入上下文。
-- **测试隔离**：所有自测只使用 `os.tmpdir()` 下的临时目录；不读写真实库（`~/.akasha`）与真实会话档案。
+- **架构**：宿主回调只投递（`postMessage`，µs 级返回）；常驻 worker 线程 `lib/index-worker.mjs`（apply 即预热）串行执行索引、同会话排队去重；重活不再占用宿主事件循环。
+- **观测语义**：`session-index` 新增 `via`（worker/inline）与 `hostMs`（宿主投递耗时）；**`session-index-slow` 此后表示「后台耗时 >1.5s」——宿主卡顿请看 `hostMs` / `lagMs`**。
+- **降级链**：`indexMode: 'worker' | 'inline'`（默认 worker）；worker **连续** 3 次失败（任何成功即回零）自动降级 inline，落 `session-worker degraded-inline` 线。
+- **跨进程锁**：`indexSession` 以 `session-meta.json.lock` 串行化「读水位 → 追加 → 记账」（复用 `lib.withFileLock`；陈锁 30s 夺取、等待上限 5s）——worker 与 CLI `session index` 互斥。
+- **退出协议**：dispose → `{type:'quit'}` → drain → 关闭；5s 未退强杀。
+- **实测**：热路径 `hostMs=0`；2.1MB 档案 inline 宿主阻塞 161ms → 投递 0.06ms；真实 17.53MB 档案 1267ms → 0.37ms；部署后首个真活 `via=worker ms=840 hostMs=0 lagMs=10`。
+- **测试**：`node selftest.mjs` **22/22**（含 2 条 worker 用例）；OSS 版同套 22/22。
+- 回滚：备份 `_rollback-20261010-session-v04\`；或 `indexMode: 'inline'` 即回旧路径。

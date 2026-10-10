@@ -1,56 +1,29 @@
 # @akasha-book/sleep
 
-> 1.5.5 起新增**称呼行**（`akasha:address`，order 133）：每回合 runtime context 注入「对用户称 Master；用户对你是『大肥鱼』」+ 执行点要求——
-> 成因见 `docs/observation-ledger.md` 与 `canon-address-drift-fix-20261010`：**规则躺在会话开头的注入里、执行点看不到 ⇒ 长会话中期必漂移**；
-> 修法＝接进每回合必然经过的面。
+阿卡夏之书睡眠器 v1.5.5 —— **调度与注入**（蒸馏逻辑归核心库 `<AKASHA_DIR>/sleep.mjs`；手动触发 `node akasha.mjs sleep [--dry]` 与之共用同一水位线）。
 
-> 阿卡夏之书（Akasha Book）· 睡眠器插件
+- **v1.5.5（2026-10-07 复查修复）**：移除死代码 `source==='compact'` 早退（官方 `agent/created` 的 source 只有 startup/resume；压缩信号是 session 事件 `compaction/*`）；子代理守卫沿用官方 `header.origin/delegationDepth`（已核真实字段）。
 
-阿卡夏之书睡眠器 v1.5.5 —— **调度与注入**（蒸馏逻辑归核心库 `../../core/sleep.mjs`；手动触发 `node akasha.mjs sleep [--dry]` 与之共用同一水位线）。
+- **触发**：`agent/status → idle`，去抖 `minIntervalHours`（默认 6）；另一路定时兜底 `ctx.interval`（`timerCheckMs`，默认 1h——timer 属混入服务，必须 `inject:['timer']` 才能访问 `ctx.interval`）。跳过也留痕（`sleep-skip`）；首次激活即跑一次（`activate`）。
+- **蒸馏（v1.4 起在核心库 `akasha\sleep.mjs`）**：`akasha\logs\hooks.jsonl` 增量（水位线 `processedLines`）→ turns / tools / errors / denials 统计 + 失败备注 + 待办（`buildTodos`：审计警告 → review；工具失败 / 门控拦截 / agent 错误 → 孤案候选）；报告 `sleep-<date>.json`（**同日重复跑加时间戳后缀，不覆盖**）；有待办时追加 `akasha\logs\inbox.jsonl`。
+- **条子一（每回合）**：`systemPrompt.context`（`akasha:sleep`，order 130）——每个新回合的 runtime context 自动带上「最近一次睡眠」一行（含待办数；渲染自核心库）。
+- **条子二（新会话·唤醒条）**：`agent/created` → 经 `agent.inject()` 把「起床包」摘要递进 next-step inbox（**不唤醒、不打断**；仅当 无睡眠记录 / 有待办 / 审计警告 才发；子代理与 compact 不打扰；消息 `source.kind = "akasha-wake"`）。
+- **条子三（每回合·库脉搏 + 回查）**：`akasha:pulse`（order 132）——六库当前计数 + 最近写入（**写→可见通道**：任何会话 / 脚本写入库后，活跃会话下一回合即见）；**v1.5 起**，窗口内（默认 30 分钟）有工具 / agent 失败时，追一行「回查提示」（错误钩子的注入级动作——只提示、不拦截；渲染幂等，同窗口重复渲染结果一致）。
+- **降级（v1.4 切分）**：核心库不可用 → `sleep-error` 观测线 + 条子提示文案；不炸、不失活（插件不再内置蒸馏逻辑，拒绝双份实现）。
+- 观测线：`sleep-armed` / `sleep-done` / `sleep-skip` / `sleep-error` / `wake-note` / `wake-note-error` / `wake-note-llm-error` / `sleep-report-error` / `sleep-state-error` / `sleep-inbox-error` 全部写进 `hooks.jsonl`（报告 / 状态 / inbox 三条由核心库发出）。
+- 自测：`node selftest.mjs`（纯函数直测 `../../core/sleep.mjs`——含 v1.5 `renderRecallLine`；桩 ctx 端到端（含失败→回查行）+ 写失败线 + 无核心降级；临时目录，不碰真库水位线）。
 
-- **触发**：`agent/status → idle`，去抖 `minIntervalHours`（默认 6）；另一路定时兜底 `ctx.interval`（默认 1h——timer 属混入服务，需 `inject:['timer']`）。跳过也留痕（`sleep-skip`）；首次激活即跑一次（`activate`）。
-- **蒸馏**：`hooks.jsonl` 增量（水位线 `processedLines`）→ 统计 + 失败备注 + 待办（审计警告 → review；工具失败 / 拦截 / agent 错误 → 孤案候选；**失败前未查库的回合 → review `recall-miss`（召回复盘，带会话样本；不自动转孤案），wave1.1**）；报告 `sleep-<date>.json`（**同日重复跑加时间戳后缀，不覆盖**）；有待办时追加 `logs/inbox.jsonl`。
-- **条子一（每回合）**：`akasha:sleep`（order 130）——最近一次睡眠摘要（含待办数）。
-- **条子二（新会话·唤醒条）**：`agent/created` → 经 `agent.inject()` 递「起床包」摘要（不唤醒、不打断；仅当 无睡眠记录 / 有待办 / 审计警告 才发）。
-- **条子三（每回合·库脉搏 + 回查）**：`akasha:pulse`（order 132）——六库计数 + 最近写入（**写→可见通道**）；窗口内（默认 30 分钟）有失败时追一行**回查提示**（注入级，不拦截）。
-- **配置**：`akashaDir` / `log` / `stateFile` / `inboxFile` / `appModulesDir`（唤醒条用的宿主模块目录；**留空则跳过并留痕 `wake-note-llm-skip`**）/ `minIntervalHours` / `timerCheckMs` / `contextOrder` / `pulseOrder`。
-- 观测线：`sleep-armed` / `sleep-done` / `sleep-skip` / `sleep-error` / `wake-note` / `wake-note-error` / `wake-note-llm-error` / `wake-note-llm-skip` / `sleep-report-error` / `sleep-state-error` / `sleep-inbox-error`。
-- 自测：`node selftest.mjs`（纯函数 + 桩 ctx 端到端 + 写失败线 + 无核心降级；不碰真实水位线）。
+## 版本与重启
 
-## ⚠️ 版本纪律
-替换已安装包的 JS **无法进程内热更**（模块代缓存）——升级后需重启宿主载入。
+- v1.1.0 事故：访问 `ctx.setInterval` 未 `inject` → 属性访问本身抛错、**apply 整段失败且零日志**（诊断靠 `plugin_manager` 的返回或 `*-armed` 观测线）。v1.1.2 修复 + 入口改 `lib/index.js`。
+- **替换已装包的 JS 无法进程内热更**（toggle / remove+reinstall 都无效）——v1.1.2 / v1.1.1 / v1.2.0 / v1.3.0 / v1.3.1 / v1.4.0 / **v1.5.0** 均需**重启**载入。
+- v1.3.0：库脉搏（写→可见通道）；v1.3.1：写路径静默失败补观测线；v1.4.0：逻辑归库（`akasha\sleep.mjs`）+ 手动触发；**v1.5.0：回查提示（失败窗口 → 脉搏条追一行）**。
+- ⚠️ 注意：`ctx.on('tools/result')` 与 `ctx.on('agent/error')` 的监听是 v1.5 新增——宿主 Event 名以 `cordis_inspect_query`（host Event 目录）为准，两个事件均为 emit 语义（失败不打断宿主）。
 
-## 打包 / 安装（DSH 宿主）
+## 打包 / 安装
 
-```bash
+```powershell
+cd <LOCAL_PATH>
 npm pack
-# 然后：plugin_manager install_bundle <tgz 绝对路径>（新 bundle 热生效；替换已装包需重启宿主）
+# 然后：plugin_manager install_bundle <tgz 绝对路径>（首次安装会 HMR 热生效；替换需重启）
 ```
-
-依赖：DSH 宿主（`systemPrompt` / `timer` 服务与事件面）；核心库 `../../core/sleep.mjs` + `lib.mjs`（经 `akashaDir` 动态加载）。
-
-<!-- store-status -->
-## 兼容与状态（DSH STORE 口径 · 2026-10-10）
-
-**固定源（immutable source）**：本版本的源码冻结于 Commit `d311ad54d1dc2cd2697c7b9eeac57eaa6466fc04`（对应 `plugins/akasha-sleep/package.json` 的 version）。
-兼容声明见 manifest 的 `dsh.compatibility.dshReleases`：**0.2.0-rc.2 = compatible**（本机实测运行），
-`0.2.1-alpha.1` / `0.2.1-alpha.2` 尚未实测 ⇒ 按契约如实写 `unknown`（不猜、不吹）。
-
-| 证据层 | 状态 | 依据 |
-|---|---|---|
-| 静态契约（manifest / Bundle Patch / 许可证 / 入口 ID） | **verified** | 官方 `build-dsh-plugin` 审计：静态分见本包审计输出；入口 ID 为插件自有，不 disable/replace 任何 `@deepseek-ai/*` |
-| 单元与边界测试（`npm test`） | **verified** | `node selftest.test.mjs` 全绿；覆盖 malformed 输入、并发/节流、replay 一致性；**含"用户消息形状"契约测试**（与宿主 `createUserMessage` 逐字段比对，见 [`docs/upstream-contracts.md`](../../docs/upstream-contracts.md) C1） |
-| 一次性 Profile 安装·启动·卸载（E3） | **verified** | 2026-10-10 一次性 DSH_HOME 实跑：install → cold start（HTTP 就绪）→ stop → uninstall → `--dump-config` 逐字回到基线；dsh 0.2.0-rc.2；证据见同目录 `EVIDENCE.json` |
-| 真实 Profile 运行 | **verified（本机）** | 桌面端 0.2.0-rc.2 实跑；**他人机器 unverified**（未做外部验收）；**称呼行 `akasha:address`（1.5.5，order 133）已活体可见**——每回合 runtime context 带「对用户称 Master / 用户称你大肥鱼」并写明执行点（交付 / 验收 / 复盘开口句） |
-| 独立安全审计 / 公开分发（E5） | **unverified** | 未做独立审计；分发前应重评 |
-
-**下一道门（next gate）**：① 在 0.2.1-alpha.x 上按同一套用例复测（一次性 DSH_HOME），把 `unknown` 改为精确结论（`compatible` 或 `incompatible`）；
-② 提交 DSH STORE 上架申请（monorepo 子路径：`tree/main/plugins/<name>`）并跟进机器人预检。
-若任一版本复测失败，该版本标注为 `blocked`（不兼容）并保持其余版本声明不动。
-
-**权限 / 非目标 / 边界（permissions · non-goals · boundaries）**
-- 读取：`logs/hooks.jsonl`（蒸馏输入）；写入：**仅在触发时**写睡眠报告、`logs/inbox.jsonl`（候选待办）与水位线 `sleep-state.json`；
-  失败路径**不推进水位线**（回滚语义，见测试断言）；注入失败只降级显示，不抛。
-- **统一非目标（non-goals）**：不修改 DSH 核心与官方包；不替换、禁用或遮蔽任何官方组件；不写真实 Profile（测试一律用系统临时目录）；
-  不在日志/输出里暴露凭据、完整用户文件或注入上下文。
-- **测试隔离**：所有自测只使用 `os.tmpdir()` 下的临时目录；不读写真实库（`~/.akasha`）与真实会话档案。

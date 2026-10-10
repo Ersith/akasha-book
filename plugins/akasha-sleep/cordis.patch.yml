@@ -2,7 +2,11 @@
     - id: akasha-sleep
       name: '@akasha-book/sleep'
       config:
-        # 路径默认 ~/.akasha（见 lib/index.js 的 DEFAULTS）；调度参数如下
+        akashaDir: '<AKASHA_DIR>'
+        log: '<AKASHA_DIR>/logs\hooks.jsonl'
+        stateFile: '<AKASHA_DIR>/logs\sleep-state.json'
+        inboxFile: '<AKASHA_DIR>/logs\inbox.jsonl'
+        reportDir: '<AKASHA_DIR>/reports'
         minIntervalHours: 6
         timerCheckMs: 3600000
         contextOrder: 130

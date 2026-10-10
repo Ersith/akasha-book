@@ -45,9 +45,130 @@ const AGENT_TOOLS = new Set(['codex_exec', 'codex_thread_start', 'codex_thread_r
 const WRITE_CMD = /(>>|(?<![=\-])>(?![&=])|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Item|\bdel\b|\brm\b|tee\b|sed -i)/i;
 const WRITE_IDIOM = /(>>|(?<![=\-])>(?![&=])\s*[^\s|]|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Item|tee\b|sed -i|drop\b|delete\b|\bdel\b|追加|写入|改写|覆盖|替换|清空|删除|修改|编辑|append\b|overwrite\b|modify\b)/i;
 
-// ⚠ 已知边界（2026-10-10）：WSL 里同一物理文件可能以 `/mnt/<盘>/…` 出现，而本守卫只认配置里的 dataDir 形态
-//   （盘符路径）。⇒ WSL 侧用挂载路径写入**拦不住**；这是"劝告层"的边界，不是漏洞补丁的替代品。
-//   要覆盖它，需在配置里另给一个 POSIX 形态的 dataDir（或新增 dataDirPosix 配置项）。
+// ── 规则层（2026-10-11，借鉴 CyberStrikeAI 的"有序规则 + 首命中 + 可试匹配"；本改动**不改变**任何拒绝文案与判定条件）──
+// 设计要点：① 规则**有序**，**首命中决定**；② 每条带 ruleId（进 gate-denied 日志，便于审计/复盘/回归）；
+//          ③ 判定面扩展（B2）：**参数里的所有字符串（含键名与嵌套）** + **百分号解码 ≤3 轮**；
+//          ④ 与 CLI `akasha/tools/gate-dry.mjs` **共用本工厂** ⇒ "试匹配"与"真拦截"永远同源。
+export const RULES_VERSION = 'gate-rules/2026-10-11.1';
+
+/** B2：递归收集值里的**所有字符串**（值 + 键名），限深限宽防药丸。 */
+export function collectStrings(value, out = [], depth = 0) {
+  if (depth > 6 || out === null || out.length > 256) return out;
+  if (typeof value === 'string') { out.push(value); return out; }
+  if (Array.isArray(value)) { for (const v of value) collectStrings(v, out, depth + 1); return out; }
+  if (value && typeof value === 'object') {
+    for (const k of Object.keys(value)) { collectStrings(k, out, depth + 1); collectStrings(value[k], out, depth + 1); }
+  }
+  return out;
+}
+
+/** B2：百分号解码 ≤3 轮（无变化或解码失败即停）——挡 `%2e%2e%2f` 这类编码绕行。 */
+export function decodeLayers(text, rounds = 3) {
+  let s = String(text ?? '');
+  for (let i = 0; i < rounds; i++) {
+    let d;
+    try { d = decodeURIComponent(s); } catch { break; }
+    if (d === s) break;
+    s = d;
+  }
+  return s;
+}
+
+/**
+ * B2（**收窄**）：只收集「路径类字段」的字符串值 —— 供写工具判定使用。
+ * 为什么不全量扫描：`edit` 的 new_string / 正文里**提到**数据路径，是合法写作（本机大量文档与脚本如此），
+ * 若按"出现即拦"会造成假阳性（2026-10-11 设计时自查发现，并已加对应用例）。
+ */
+const PATH_KEYS = /^(file_?paths?|paths?|target|destination|dest|files?|source|src)$/i;
+export function collectPathArgs(value, key = '', out = [], depth = 0) {
+  if (depth > 6 || out.length > 64) return out;
+  if (typeof value === 'string') { if (PATH_KEYS.test(String(key))) out.push(value); return out; }
+  if (Array.isArray(value)) { for (const v of value) collectPathArgs(v, key, out, depth + 1); return out; }
+  if (value && typeof value === 'object') {
+    for (const k of Object.keys(value)) collectPathArgs(value[k], k, out, depth + 1);
+  }
+  return out;
+}
+
+/**
+ * 规则工厂：给定 dataDir 生成 `verdict(exec) → {deny, ruleId, tool, target, message}`。
+ * 纯函数式（不写日志、不碰宿主），保证 CLI 与门控判据一致。
+ */
+export function createGateRules({ dataDir }) {
+  const normPath = (p) => {
+    const r = resolve(String(p ?? ''));
+    return process.platform === 'win32' ? r.toLowerCase() : r;
+  };
+  const dataRoot = () => normPath(dataDir);
+  const isDataPath = (p) => {
+    const s = normPath(expandHome(String(p ?? '')));
+    const d = dataRoot();
+    return s === d || s.startsWith(d + sep);
+  };
+  const HOME_TOKENS = /(^|[\s'"=(:;|&])(?:~(?=[\\/])|\$HOME\b|\$\{HOME\}|\$env:USERPROFILE\b|%USERPROFILE%)/gi;
+  const mentionsDataDir = (text) => {
+    const expanded = decodeLayers(text).replace(HOME_TOKENS, (_m, pre) => pre + homedir());
+    const flat = expanded.replace(/[\\/]+/g, sep);
+    const d = dataRoot();
+    const probe = process.platform === 'win32' ? flat.toLowerCase() : flat;
+    return probe.includes(d + sep) || probe.includes(d);
+  };
+
+  const DENY_SUFFIX = '确需绕过请先停用 @akasha-book/gate。';
+  const rules = [
+    {
+      id: 'write-tool-data-path',
+      tools: WRITE_TOOLS,
+      check: (args) => {
+        for (const s of collectPathArgs(args)) {
+          if (s && isDataPath(s)) return { target: String(s) };
+        }
+        return null;
+      },
+      message: (tool, hit) => `阿卡夏门控：拒绝 ${tool} 直接写 ${hit.target}——数据必须经校验写入（akasha CLI / mcp__akasha__*），直改 JSONL 会污染 append-only 库。${DENY_SUFFIX}`,
+    },
+    {
+      id: 'shell-write-into-data',
+      tools: SHELL_TOOLS,
+      check: (args) => {
+        const command = String(args.command ?? args.script ?? '');
+        if (command && mentionsDataDir(command) && WRITE_CMD.test(decodeLayers(command))) return { target: 'akasha\\data（命令）' };
+        return null;
+      },
+      message: (tool) => `阿卡夏门控：拒绝 ${tool} 命令里对 akasha\\data 的写操作——请改走 akasha CLI / mcp__akasha__*。${DENY_SUFFIX}`,
+    },
+    {
+      id: 'agent-prompt-write-into-data',
+      tools: AGENT_TOOLS,
+      check: (args) => {
+        const prompt = String(args.prompt ?? '');
+        if (prompt && mentionsDataDir(prompt) && WRITE_IDIOM.test(decodeLayers(prompt))) return { target: 'akasha\\data（委派 prompt）' };
+        return null;
+      },
+      message: (tool) => `阿卡夏门控：拒绝 ${tool} 的 prompt 里对 akasha\\data 的写操作——委派出去的子代理同样不得直改库；请改走 akasha CLI / mcp__akasha__*。`,
+    },
+  ];
+
+  const verdict = (exec) => {
+    const name = String(exec?.name ?? '');
+    const args = exec?.arguments ?? {};
+    for (const r of rules) {
+      if (!r.tools.has(name)) continue;
+      const hit = r.check(args);
+      if (hit) return { deny: true, ruleId: r.id, tool: name, target: hit.target, message: r.message(name, hit) };
+      break; // 该工具的规则命中判空 ⇒ 放行（工具只归属一条规则）
+    }
+    return { deny: false };
+  };
+
+  return { verdict, rules, isDataPath, mentionsDataDir, RULES_VERSION };
+}
+
+// 已知边界（2026-10-10 立；2026-10-11 补充 B2 后的剩余面）：
+//   · WSL 里同一物理文件可能以 `/mnt/<盘>/…` 出现，而本守卫只认配置里的 dataDir 形态（盘符路径）⇒ WSL 侧用挂载路径写入**拦不住**；
+//   · 编码绕行已部分收窄（百分号 ≤3 轮），但 base64/十六进制/环境变量拼接等**任意编码**仍可能绕过；
+//   · 只看"工具参数文本"，**子进程内部**（脚本文件里再写数据）不在覆盖范围；
+//   · 这是**劝告层**，不是安全边界——完整清单见 docs/gate-boundaries.md。
 
 // 读库失败时的兜底文本（与 canon-akasha-usage 初始版本同文；改兜底 = 升级本插件）。
 const FALLBACK_SECTION = [
@@ -191,52 +312,15 @@ export function apply(ctx, config = {}) {
     }
   };
 
-  const normPath = (p) => {
-    const r = resolve(String(p ?? ''));
-    return process.platform === 'win32' ? r.toLowerCase() : r;
-  };
-  const dataRoot = () => normPath(dataDir);
-  const isDataPath = (p) => {
-    const s = normPath(expandHome(String(p ?? '')));
-    const d = dataRoot();
-    return s === d || s.startsWith(d + sep);
-  };
-  // 命令文本：把正反斜杠都折成当前平台再比前缀（命令不等于路径）。
-  // 家目录简写（`~/`、`$HOME`、`${HOME}`、`$env:USERPROFILE`、`%USERPROFILE%`）先展开再比——
-  // 否则 `echo x >> ~/.akasha/data/canon.jsonl` 这类最常见写法比不中。
-  const HOME_TOKENS = /(^|[\s'"=(:;|&])(?:~(?=[\\/])|\$HOME\b|\$\{HOME\}|\$env:USERPROFILE\b|%USERPROFILE%)/gi;
-  const mentionsDataDir = (text) => {
-    const expanded = String(text ?? '').replace(HOME_TOKENS, (_m, pre) => pre + homedir());
-    const flat = expanded.replace(/[\\/]+/g, sep);
-    const d = dataRoot();
-    const probe = process.platform === 'win32' ? flat.toLowerCase() : flat;
-    return probe.includes(d + sep) || probe.includes(d);
-  };
-
-  // ① 数据目录写入守卫（同步、与注册顺序无关）。
+  // ① 数据目录写入守卫（同步、与注册顺序无关）——判据来自 createGateRules（**与 CLI `gate-dry` 同源**：
+  //   试匹配说"会拦"就一定拦、说"会放"就一定放；规则表与 ruleId 见模块顶部的 createGateRules）。
+  const gateRules = createGateRules({ dataDir });
   ctx.tools.guard((exec) => {
     try {
-      const name = String(exec?.name ?? '');
-      const args = exec?.arguments ?? {};
-      if (WRITE_TOOLS.has(name)) {
-        const target = String(args.file_path ?? args.path ?? '');
-        if (target && isDataPath(target)) {
-          write({ kind: 'gate-denied', tool: name, target });
-          return `阿卡夏门控：拒绝 ${name} 直接写 ${target}——数据必须经校验写入（akasha CLI / mcp__akasha__*），直改 JSONL 会污染 append-only 库。确需绕过请先停用 @akasha-book/gate。`;
-        }
-      } else if (SHELL_TOOLS.has(name)) {
-        const command = String(args.command ?? args.script ?? '');
-        if (command && mentionsDataDir(command) && WRITE_CMD.test(command)) {
-          write({ kind: 'gate-denied', tool: name, target: 'akasha\\data（命令）' });
-          return `阿卡夏门控：拒绝 ${name} 命令里对 akasha\\data 的写操作——请改走 akasha CLI / mcp__akasha__*。确需绕过请先停用 @akasha-book/gate。`;
-        }
-      } else if (AGENT_TOOLS.has(name)) {
-        // 委派型工具：自然语言 prompt 里若同时出现数据目录与写动作词，同样按"写操作"拒绝（2026-10-10 补）
-        const prompt = String(args.prompt ?? '');
-        if (prompt && mentionsDataDir(prompt) && WRITE_IDIOM.test(prompt)) {
-          write({ kind: 'gate-denied', tool: name, target: 'akasha\\data（委派 prompt）' });
-          return `阿卡夏门控：拒绝 ${name} 的 prompt 里对 akasha\\data 的写操作——委派出去的子代理同样不得直改库；请改走 akasha CLI / mcp__akasha__*。`;
-        }
+      const v = gateRules.verdict(exec);
+      if (v.deny) {
+        write({ kind: 'gate-denied', tool: v.tool, target: v.target, ruleId: v.ruleId });
+        return v.message;
       }
     } catch { /* 守卫异常 → 放行 */ }
     return undefined;
@@ -263,5 +347,5 @@ export function apply(ctx, config = {}) {
 
   usageText(); // 播种 usageSource（首调不落切换线）
   selfText();  // 播种 selfSource
-  write({ kind: 'gate-armed', pid: process.pid, dataDir, sectionOrder, selfOrder, akashaDir, usageSource: lastUsageSource, selfSource: lastSelfSource });
+  write({ kind: 'gate-armed', pid: process.pid, dataDir, sectionOrder, selfOrder, akashaDir, usageSource: lastUsageSource, selfSource: lastSelfSource, rulesVersion: RULES_VERSION });
 }

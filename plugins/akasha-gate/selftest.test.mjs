@@ -1,14 +1,29 @@
 // akasha-gate 自测：用桩 ctx 捕获 guard / section，验证判定逻辑（不需要宿主）。
 // 运行：node selftest.mjs（退出码 0 = 全过）；全部路径用系统临时目录，无绝对机器路径。
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { apply } from './index.js';
+import { apply, createGateRules, RULES_VERSION, decodeLayers, collectStrings, collectPathArgs } from './index.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CORE = join(HERE, '..', '..', 'core'); // 包结构：plugins/akasha-gate → ../../core
+// 定位 akasha 核心库（含 lib.mjs）：支持多布局，避免"测试只认仓库树"这种假设。
+//   · 环境变量 AKASHA_CORE 优先；
+//   · 仓库布局：plugins/akasha-gate → ../../core；
+//   · 插件与 core 平级；本机开发树：插件与 akasha 包同级（<LOCAL_PATH> akasha}）。
+const CORE_CANDIDATES = [
+  process.env.AKASHA_CORE,
+  join(HERE, '..', '..', 'core'),
+  join(HERE, '..', 'core'),
+  join(HERE, '..', 'akasha'),
+  join(HERE, '..', 'akasha', 'core')
+].filter(Boolean);
+const CORE = CORE_CANDIDATES.find((d) => existsSync(join(d, 'lib.mjs')));
+if (!CORE) {
+  console.error('找不到 akasha 核心 lib.mjs；候选：' + CORE_CANDIDATES.join(' | '));
+  process.exit(2);
+}
 const TMP = join(tmpdir(), 'akasha-gate-selftest');
 const PROJ = join(TMP, 'proj');
 const DATA = join(PROJ, 'data'); // 模拟被测数据目录
@@ -192,5 +207,30 @@ const rep2 = g('edit', { file_path: F('canon.jsonl') });
 assert.equal(rep1, rep2, 'replay：同一输入两次判定必须逐字一致（无隐藏状态、可重放）');
 g('write', { file_path: F('a.jsonl') });
 assert.equal(g('write', { file_path: N('ok.md') }), undefined, '并发/顺序无关：一次被拒不影响后续非数据区放行');
+
+// —— 2026-10-11 借鉴批（源自 CyberStrikeAI 的门控设计）：B2 判定面扩展 + ruleId + 工厂与门控同源 ——
+assert.equal(typeof RULES_VERSION, 'string', 'RULES_VERSION 已导出（审计线要用）');
+// ① 路径类字段的**嵌套/数组**（旧实现只看顶层 file_path/path ⇒ 嵌套会漏）
+assert.equal(typeof g('edit', { meta: { file_path: F('canon.jsonl') } }), 'string', '嵌套路径字段必须拦');
+assert.equal(typeof g('write', { paths: [N('ok.md'), F('canon.jsonl')] }), 'string', '数组里的路径字段必须拦');
+// ② **假阳性护栏**：正文里"提到"数据路径 ≠ 写目标（设计时自查发现，必须永不被拦）
+assert.equal(g('edit', { file_path: N('notes.md'), new_string: `文档里提到 ${F('canon.jsonl')} 这个路径` }), undefined, '正文提及数据路径不得误拦');
+// ③ 百分号编码绕行（命令类：全文扫描 + 解码 ≤3 轮）
+const encPath = F('canon.jsonl').replace(/\\/g, '/').split('/').map((s) => encodeURIComponent(s)).join('/');
+assert.equal(typeof g('pwsh', { command: `echo x >> "${encPath}"` }), 'string', '百分号编码路径 + 追加重定向必须拦');
+// ④ 只读命令（含同样路径）仍必须放行
+assert.equal(g('pwsh', { command: `type "${encPath}"` }), undefined, '只读命令含数据路径应放行');
+// ⑤ 纯函数行为
+assert.equal(decodeLayers('%41%42%43'), 'ABC', 'decodeLayers 单轮');
+assert.equal(decodeLayers('%2541'), 'A', 'decodeLayers 多轮解码');
+assert.deepEqual(collectPathArgs({ a: 'x', file_path: 'y' }), ['y'], 'collectPathArgs 只收路径类键');
+assert.ok(collectStrings({ a: 'x', b: { c: 'y' } }).includes('y'), 'collectStrings 递归收值');
+// ⑥ 工厂与门控同源（CLI `gate-dry` 试匹配的依据）
+const rulesMod = createGateRules({ dataDir: DATA });
+const vDeny = rulesMod.verdict({ name: 'edit', arguments: { file_path: F('canon.jsonl') } });
+assert.equal(vDeny.deny, true, '工厂判决：拦');
+assert.equal(vDeny.ruleId, 'write-tool-data-path', 'ruleId 正确（写工具）');
+assert.equal(rulesMod.verdict({ name: 'read', arguments: { file_path: F('canon.jsonl') } }).deny, false, '工厂判决：read 放行');
+assert.equal(rulesMod.verdict({ name: 'pwsh', arguments: { command: `echo x >> "${encPath}"` } }).ruleId, 'shell-write-into-data', 'ruleId 正确（命令类）');
 
 console.log('selftest: all assertions passed');

@@ -4,7 +4,6 @@
       config:
         serverName: akasha
         transport: stdio
-        # node 可执行文件 + 本仓 core/mcp.mjs 的绝对路径（或用 PATH 中的 node）
         command: 'node'
         args: ['<AKASHA_DIR>/mcp.mjs']
         toolCallTimeoutMs: 600000

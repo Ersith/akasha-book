@@ -1,17 +1,11 @@
 {
   "name": "@akasha-book/hooks",
   "version": "1.2.4",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Ersith/akasha-book.git",
-    "directory": "plugins/akasha-hooks"
-  },
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT",
   "type": "module",
-  "description": "阿卡夏之书钩子 v1.1：回合结束 / 工具结果 / agent 错误 / 空闲 / assistant 输出审计 → append-only 记录（默认 ~/.akasha/logs/hooks.jsonl）",
+  "description": "阿卡夏之书钩子 v1.1：回合结束 / 工具结果 / agent 错误 / 空闲 / assistant 输出审计 → append-only 记录（<AKASHA_DIR>/logs\\hooks.jsonl）",
   "exports": {
     ".": "./index.js"
   },
@@ -20,19 +14,12 @@
     "cordis.patch.yml",
     "README.md"
   ],
-  "scripts": {
-    "test": "node selftest.test.mjs"
-  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "compatibility": {
-      "dshReleases": {
-        "0.2.0-rc.2": "compatible",
-        "0.2.1-alpha.1": "compatible",
-        "0.2.1-alpha.2": "compatible"
-      }
     }
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
