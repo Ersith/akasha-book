@@ -147,3 +147,11 @@
 **环境事实（本轮查得，可复用）**：会话层存储＝`akasha/data/session.jsonl`，记录形如 `{store, session, seq, time, kind:"intent", gist}`；**`gist` 里也会出现注入的 runtime context** ⇒ 任何按「用户消息」判定的逻辑都必须先排掉这类段。
 
 **待办**：① 重启后端到端验证（用一个状态性提问试）；② 基线期改口径后复测（Claude：前 5–7 天同口径）；③ v2 候选（「上次结论 + 出处」需按主题检索库；回复侧钩子待确认宿主能力）。
+
+### C3 过滤修正（2026-10-10，生产核对发现）
+
+- **发现**：重启后核对 C3 实际读到的最近 intent 段，看到的是 `<openviking-context> Relevant memory from OpenViking…` ⇒ **除 runtime context 外，还有更多注入块被记成 intent**（OpenViking / Hindsight 等），原来的两字面量跳过规则**不够**，有误触发风险。
+- **修法（规则化）**：跳过 `以 < 开头` 或 `长度 > 800` 或 命中 `Current runtime context | Relevant memory from | Hindsight | openviking-context | 阿卡夏·` 的段。
+- **自测同步**：夹具换成**生产实际见过的注入形态**（XML 式块 + 900 字长块）——**用真实样本，不用自造样本**。
+- **验证**：C3 自测 **11/11**、C1 回归 **10/10**、语法 0 错、版本 `1.6.3-h1` 已打包并装入（restart-required）。
+- **教训**：这一处与 C1 的字段 bug 同类——**只有在真实数据上核对才发现得了**；自造夹具会一直放行。

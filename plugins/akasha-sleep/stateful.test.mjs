@@ -45,7 +45,13 @@ T("① ≤80 字", !!line && line.length <= 80, String(line && line.length));
 T("② 同类 30 分钟去重（二次 null）", typeof line === "string" && c3.text() === null);
 
 // ③ 只有注入样式段 ⇒ 不触发
-makeFixture(["Current runtime context. 阿卡夏·库脉搏：canon 124", "阿卡夏·称呼：① Master"]);
+makeFixture([
+  "Current runtime context. 阿卡夏·库脉搏：canon 124",
+  "<openviking-context> Relevant memory from OpenViking. Use the search/read MCP tools to expand URIs.",
+  "<hindsight_knowledge> This repository has a Hindsight memory + knowledge base.",
+  "阿卡夏·称呼：① Master——用户要求模型对其使用的称呼；",
+  "x".repeat(900),
+]);
 ({ rows, row } = run({ akashaDir: FIX, statefulGate: true }));
 c3 = row("akasha:stateful");
 T("③ 注入样式段不触发", !!c3 && c3.text() === null, String(c3 && c3.text()));

@@ -226,8 +226,10 @@ export function apply(ctx, config = {}) {
             let r; try { r = JSON.parse(lines[i]); } catch { continue; }
             const g = String(r.gist || "");
             if (!g) continue;
-            if (g.startsWith("Current runtime context")) continue;   // 跳过注入上下文（否则必误触发）
-            if (g.includes("阿卡夏·")) continue;
+            // 规则化跳过注入段（2026-10-10 生产核对发现：除 runtime context 外还有 openviking / hindsight 等注入块被记成 intent）
+            const injected = g.startsWith("<") || g.length > 800
+              || /Current runtime context|Relevant memory from|Hindsight|openviking-context|阿卡夏·/.test(g);
+            if (injected) continue;
             gist = g; break;
           }
           if (!gist) return null;
