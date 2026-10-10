@@ -2,7 +2,7 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue } from './lib.mjs';
+import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseStabilityCheck, padBlockToStride, CONTEXT_BUDGET_DEFAULTS } from './lib.mjs';
 import { replayHistory, sleepPlan, sleepRun } from './sleep.mjs';
 import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
@@ -90,8 +90,35 @@ switch (cmd) {
     print(b, lines.join('\n'));
     break;
   }
+  case 'budget': {
+    // A2 上下文预算（默认关；--enable 才按误差分配）。不写库。
+    const enabled = !!flags.enable || !!flags['context-budget'];
+    if (!enabled && !flags.demo) {
+      print({ enabled: false, defaults: CONTEXT_BUDGET_DEFAULTS }, 'A2 上下文预算默认关。加 --enable 查看分配；--phase-check <文本> 做奇偶相位验收。');
+      break;
+    }
+    if (flags['phase-check'] != null) {
+      const mem = flags['phase-check'] === true ? '中性夹具记忆短语' : String(flags['phase-check']);
+      const r = phaseStabilityCheck(mem, { stride: Number(flags.stride) || 2 });
+      print(r, `相位验收 S=${r.stride}：` + (r.stable ? '稳定（各样本 startPhase=0）' : '不稳定') + ` · ${r.samples.length} 个前缀样本`);
+      code = r.stable ? 0 : 1;
+      break;
+    }
+    const alloc = allocateContextBudget({
+      contextBudget: true,
+      totalTokens: flags.tokens ? Number(flags.tokens) : undefined,
+      params: flags.stride ? { stride: Number(flags.stride) } : undefined
+    });
+    const lines = [`A2 预算（${alloc.model} · S=${alloc.stride} · total=${alloc.totalTokens}）`];
+    for (const [name, src] of Object.entries(alloc.sources)) {
+      lines.push(`  ${name}: tokens=${src.tokens} share=${src.share} Δ=${src.rawDelta}` + (src.exempt ? ' [exempt]' : '') + (src.reasons.length ? ' ' + src.reasons.map((x) => x.code).join(',') : ''));
+    }
+    lines.push('· 相位：' + alloc.phase.method);
+    print(alloc, lines.join('\n'));
+    break;
+  }
   case 'kit': {
-    const k = kit({ today: flags.today });
+    const k = kit({ today: flags.today, contextBudget: !!flags['context-budget'] || !!flags.enable });
     const lines = [`起床包（${k.at}）`];
     lines.push('· 协议：' + k.protocol);
     lines.push(k.sleep
@@ -524,7 +551,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|lookup <词> [--since D --until D] [--include-refuted] [--today D] [--load-balance] [--balance-log F]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]|sleep [--dry]|sleep --replay [--log F] [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
+    console.log('用法：node akasha.mjs <check|stats|budget [--enable] [--phase-check 文本]|lookup <词> [--since D --until D] [--include-refuted] [--today D] [--load-balance] [--balance-log F]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]|sleep [--dry]|sleep --replay [--log F] [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
     code = cmd ? 1 : 0;
 }
 process.exit(code);

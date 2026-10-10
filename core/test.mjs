@@ -2288,6 +2288,97 @@ t('知识分层：knowledgeRoute 三态；brief/lookup 强失→确定不知道�
   assert.equal(hit.knowledge.stance, 'known');
 });
 
+
+t('A2：默认关；stride 对齐为偶数；救场加额 / 空转缩额 / 近平衡小更新 / 恶化刹车', () => {
+  assert.equal(lib.CONTEXT_BUDGET_DEFAULTS.enabled, false);
+  assert.equal(lib.contextBudgetEnabled({}), false);
+  assert.equal(lib.alignTokenCount(5, 2), 6);
+  assert.equal(lib.alignTokenCount(6, 2), 6);
+  assert.equal(lib.estimateTokens('你好'), 2);
+  const base = lib.allocateContextBudget({ contextBudget: true, totalTokens: 200 });
+  assert.equal(base.enabled, true);
+  assert.equal(base.stride, 2);
+  assert.equal(base.totalTokens % 2, 0);
+  for (const s of lib.CONTEXT_BUDGET_SOURCES) assert.equal(base.sources[s].tokens % 2, 0, s + ' 须偶数');
+
+  const rescued = lib.allocateContextBudget({
+    contextBudget: true, totalTokens: 200,
+    signals: { bySource: {
+      self: { rescues: 0, idle: 0, idleSlope: 0 },
+      usage: { rescues: 0, idle: 0, idleSlope: 0 },
+      kit: { rescues: 0, idle: 0, idleSlope: 0 },
+      session: { rescues: 0, idle: 0, idleSlope: 0 },
+      retrieval: { rescues: 9, idle: 0, idleSlope: 0 }
+    } }
+  });
+  assert.ok(rescued.sources.retrieval.share > base.sources.retrieval.share, '救场抬 retrieval');
+  assert.ok(rescued.sources.retrieval.reasons.some((r) => r.code === 'rescue-bump'));
+
+  const idle = lib.allocateContextBudget({
+    contextBudget: true, totalTokens: 200,
+    signals: { bySource: {
+      self: { rescues: 0, idle: 0, idleSlope: 0 },
+      usage: { rescues: 0, idle: 0, idleSlope: 0 },
+      kit: { rescues: 0, idle: 6, idleSlope: 0.2 },
+      session: { rescues: 0, idle: 0, idleSlope: 0 },
+      retrieval: { rescues: 0, idle: 0, idleSlope: 0 }
+    } }
+  });
+  assert.ok(idle.sources.kit.share < base.sources.kit.share, '空转缩 kit');
+  assert.ok(idle.sources.kit.reasons.some((r) => r.code === 'idle-shrink' || r.code === 'worsen-brake'));
+});
+
+t('A2：self/usage 豁免敌对缩额；padBlockToStride 与 phaseStabilityCheck', () => {
+  const shrunk = lib.allocateContextBudget({
+    contextBudget: true, totalTokens: 200,
+    signals: { bySource: {
+      self: { rescues: 0, idle: 8, idleSlope: 0.3 },
+      usage: { rescues: 0, idle: 8, idleSlope: 0.3 },
+      kit: { rescues: 0, idle: 0, idleSlope: 0 },
+      session: { rescues: 0, idle: 0, idleSlope: 0 },
+      retrieval: { rescues: 0, idle: 0, idleSlope: 0 }
+    } }
+  });
+  assert.equal(shrunk.sources.self.rawDelta, 0);
+  assert.ok(shrunk.sources.self.reasons.some((r) => r.code === 'self-layer-exempt'));
+  assert.ok(shrunk.sources.usage.reasons.some((r) => r.code === 'protocol-exempt'));
+
+  const pad = lib.padBlockToStride('中性夹具ABC', 7, { stride: 2 });
+  assert.equal(pad.tokens % 2, 0);
+  assert.ok(pad.tokens <= pad.budget || pad.tokens % 2 === 0);
+
+  const phase = lib.phaseStabilityCheck('同一段记忆-相位验收', { stride: 2 });
+  assert.equal(phase.stable, true, JSON.stringify(phase.samples));
+  assert.ok(phase.samples.every((x) => x.startPhase === 0));
+  assert.ok(phase.samples.length >= 2, '多样本，非只看平均');
+
+  // kit 默认无 contextBudget 字段；开启才有
+  const k0 = lib.kit({ today: '2026-10-10' });
+  assert.equal(k0.contextBudget, undefined);
+  const k1 = lib.kit({ today: '2026-10-10', contextBudget: true, budgetTokens: 200 });
+  assert.ok(k1.contextBudget && k1.contextBudget.enabled);
+  assert.equal(k1.contextBudget.sources.retrieval.tokens % 2, 0);
+});
+
+t('A2：budgetSignalsFromRecords 解析 rescue/idle；CLI budget --enable 可运行', () => {
+  const now = Date.parse('2026-10-10T12:00:00Z');
+  const recs = [
+    { kind: 'budget-rescue', source: 'retrieval', ts: '2026-10-10T10:00:00Z' },
+    { kind: 'budget-rescue', source: 'retrieval', ts: '2026-10-10T11:00:00Z' },
+    { kind: 'budget-idle', source: 'kit', ts: '2026-10-10T11:30:00Z' },
+    { kind: 'gate-self-recovered', ts: '2026-10-10T11:40:00Z' }
+  ];
+  const sig = lib.budgetSignalsFromRecords(recs, { nowMs: now, windowMs: 24 * 3600 * 1000 });
+  assert.equal(sig.bySource.retrieval.rescues, 2);
+  assert.equal(sig.bySource.kit.idle, 1);
+  assert.ok(sig.bySource.self.rescues >= 1);
+  const r = cli(['budget', '--enable', '--tokens', '200']);
+  assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || ''));
+  assert.ok((r.stdout || '').includes('A2') || (r.stdout || '').includes('retrieval'), (r.stdout || '').slice(0, 200));
+  const ph = cli(['budget', '--phase-check', '夹具记忆']);
+  assert.equal(ph.status, 0, (ph.stdout || '') + (ph.stderr || ''));
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

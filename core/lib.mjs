@@ -596,6 +596,250 @@ export function knowledgeRoute({ query = '', strongHits = 0, cites = [], orphanO
   };
 }
 
+
+// —— A2 上下文预算分配（wave4 · DeepSeek-V4.1-Flash CSA2 stride S=2）——
+// 误差驱动：救场→加额；长期空转→减额；近平衡小更新；恶化才刹车（D）。
+// 只分配注入额度，不改排序/存储语义。默认关。协议(usage)+自我(self)豁免敌对缩额。
+export const CONTEXT_BUDGET_SOURCES = Object.freeze(['self', 'usage', 'kit', 'session', 'retrieval']);
+export const CONTEXT_BUDGET_DEFAULTS = Object.freeze({
+  enabled: false,
+  stride: 2,                 // DeepSeek-V4.1-Flash encoder CSA2：两 token 打成一条 KV
+  totalTokens: 2048,
+  baseShare: Object.freeze({ self: 0.15, usage: 0.15, kit: 0.15, session: 0.25, retrieval: 0.30 }),
+  kRescue: 0.15,             // 救场加成强度
+  kIdle: 0.12,               // 空转缩额强度
+  kNear: 0.35,               // 近平衡时把 |Δ| 压到此比例
+  nearEps: 0.08,             // |rawΔ| 低于此视为近平衡
+  kD: 0.4,                   // 空转恶化斜率刹车（只缩不抬）
+  slopeThresh: 0.05,
+  minShare: 0.05,
+  maxShare: 0.50,
+  rescueScale: 3,            // rescues / scale → 归一
+  idleScale: 3,
+  windowMs: 7 * 24 * 3600 * 1000,
+  /** 不可被敌对缩额的来源（与 A1 常驻提示同精神） */
+  exemptShrink: Object.freeze(['self', 'usage'])
+});
+
+export function contextBudgetEnabled(opts = {}) {
+  return opts.contextBudget === true || CONTEXT_BUDGET_DEFAULTS.enabled === true;
+}
+
+/** 轻量 token 估计（无分词器）：CJK 码点各 1；其余按 ceil(n/4)。供预算/相位对齐，宿主可用真分词器替换。 */
+export function estimateTokens(text) {
+  const s = String(text ?? '');
+  let cjk = 0, other = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if ((c >= 0x4e00 && c <= 0x9fff) || (c >= 0x3400 && c <= 0x4dbf) || (c >= 0xf900 && c <= 0xfaff)) cjk += 1;
+    else other += 1;
+  }
+  return cjk + Math.ceil(other / 4);
+}
+
+/** 将 token 数上取整到 stride 的倍数（S=2 → 偶数），避免配额微调翻转后续内容奇偶相位。 */
+export function alignTokenCount(n, stride = CONTEXT_BUDGET_DEFAULTS.stride) {
+  const x = Math.max(0, Math.floor(Number(n) || 0));
+  const s = Math.max(1, Math.floor(Number(stride) || 1));
+  if (s <= 1) return x;
+  const rem = x % s;
+  return rem === 0 ? x : x + (s - rem);
+}
+
+/**
+ * 截断到 ≤tokenBudget 后，用空格垫到 stride 对齐的 token 数（默认不超 budget 的对齐值）。
+ * 返回 { text, tokens, budget, padded, padUnits, stride, method }。
+ */
+export function padBlockToStride(text, tokenBudget, opts = {}) {
+  const stride = Math.max(1, Math.floor(opts.stride ?? CONTEXT_BUDGET_DEFAULTS.stride));
+  const budget = alignTokenCount(tokenBudget, stride);
+  let body = String(text ?? '');
+  // 粗截断：按估计 token 收缩（CJK 逐字；ASCII 按 4 字符≈1 token）
+  while (body && estimateTokens(body) > budget) {
+    if (/[\u4e00-\u9fff]$/.test(body)) body = body.slice(0, -1);
+    else body = body.replace(/\s+\S*$/, '') || body.slice(0, Math.max(0, body.length - 4));
+    if (body.length === 0) break;
+  }
+  let tokens = estimateTokens(body);
+  let padUnits = 0;
+  // 垫到对齐且不超过 budget
+  const target = Math.min(budget, alignTokenCount(tokens, stride));
+  while (tokens < target) {
+    body += ' ';
+    padUnits += 1;
+    tokens = estimateTokens(body);
+    if (padUnits > stride * 4) break; // 安全阀
+  }
+  // 若仍不对齐（极端），再垫到下一对齐，哪怕略超——调用方应以 alignTokenCount(budget) 为准
+  while (tokens % stride !== 0 && padUnits < stride * 4) {
+    body += ' ';
+    padUnits += 1;
+    tokens = estimateTokens(body);
+  }
+  return {
+    text: body, tokens, budget, padded: padUnits > 0, padUnits, stride,
+    method: 'truncate-then-space-pad-to-stride'
+  };
+}
+
+/**
+ * 从 hooks 记录提取各来源救场/空转信号（纯函数可测）。
+ * 认 kind:"budget-rescue"| "budget-idle"（须带 source∈SOURCES）；
+ * 亦认 gate-self-* → self 活动、gate-usage-* → usage、成功召回工具名 → retrieval、kit → kit、session-* → session。
+ * 窗口前后半对比 idle 得 idleSlope（恶化为正）。
+ */
+export function budgetSignalsFromRecords(records, opts = {}) {
+  const windowMs = Number.isFinite(opts.windowMs) ? opts.windowMs : CONTEXT_BUDGET_DEFAULTS.windowMs;
+  const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+  const start = nowMs - windowMs;
+  const mid = start + windowMs / 2;
+  const blank = () => ({ rescues: 0, idle: 0, rescuesOld: 0, idleOld: 0, rescuesNew: 0, idleNew: 0 });
+  const by = Object.fromEntries(CONTEXT_BUDGET_SOURCES.map((s) => [s, blank()]));
+  const bump = (src, field, t) => {
+    if (!by[src]) return;
+    by[src][field] += 1;
+    if (t < mid) by[src][field + 'Old'] += 1;
+    else by[src][field + 'New'] += 1;
+  };
+  const mapKind = (kind) => {
+    const k = String(kind || '');
+    if (k.startsWith('gate-self')) return 'self';
+    if (k.startsWith('gate-usage')) return 'usage';
+    if (k === 'kit' || k.startsWith('kit-')) return 'kit';
+    if (k.startsWith('session-')) return 'session';
+    if (RECALL_TOOLS.includes(k) || RECALL_CLI.includes(k) || k.startsWith('akasha_')) return 'retrieval';
+    return null;
+  };
+  for (const rec of records ?? []) {
+    if (!rec || typeof rec !== 'object') continue;
+    const ts = rec.ts ? Date.parse(rec.ts) : NaN;
+    const t = Number.isFinite(ts) ? ts : nowMs;
+    if (t < start || t > nowMs) continue;
+    const src = CONTEXT_BUDGET_SOURCES.includes(rec.source) ? rec.source : null;
+    if (rec.kind === 'budget-rescue' && src) bump(src, 'rescues', t);
+    else if (rec.kind === 'budget-idle' && src) bump(src, 'idle', t);
+    else {
+      const mapped = mapKind(rec.kind);
+      if (mapped && (rec.ok === true || rec.rescue === true || rec.kind.startsWith('gate-self-recovered') || rec.kind.startsWith('gate-usage-recovered'))) {
+        bump(mapped, 'rescues', t);
+      } else if (mapped && (rec.ok === false || rec.idle === true || String(rec.kind).includes('fallback') || String(rec.kind).includes('skip'))) {
+        bump(mapped, 'idle', t);
+      }
+    }
+  }
+  const out = {};
+  for (const s of CONTEXT_BUDGET_SOURCES) {
+    const b = by[s];
+    const idleOldRate = b.idleOld / Math.max(1, b.idleOld + b.rescuesOld);
+    const idleNewRate = b.idleNew / Math.max(1, b.idleNew + b.rescuesNew);
+    out[s] = {
+      rescues: b.rescues, idle: b.idle,
+      idleSlope: +(idleNewRate - idleOldRate).toFixed(6)
+    };
+  }
+  return { bySource: out, windowMs, missing: false };
+}
+
+/**
+ * A2 分配（纯函数）：返回各来源 share / tokens（已 stride 对齐）与审计 reasons。
+ * opts.signals | opts.records | opts.budgetSignals；opts.totalTokens / params 可覆盖。
+ */
+export function allocateContextBudget(opts = {}) {
+  const p = { ...CONTEXT_BUDGET_DEFAULTS, ...(opts.params || {}) };
+  const enabled = contextBudgetEnabled(opts);
+  const stride = Math.max(1, Math.floor(p.stride));
+  const totalTokens = alignTokenCount(opts.totalTokens ?? p.totalTokens, stride);
+  let signals = opts.signals || opts.budgetSignals || null;
+  if (!signals && opts.records) signals = budgetSignalsFromRecords(opts.records, { windowMs: p.windowMs, nowMs: opts.nowMs });
+  if (!signals) signals = { bySource: Object.fromEntries(CONTEXT_BUDGET_SOURCES.map((s) => [s, { rescues: 0, idle: 0, idleSlope: 0 }])), missing: true, windowMs: p.windowMs };
+
+  const rawShares = {};
+  const details = {};
+  for (const s of CONTEXT_BUDGET_SOURCES) {
+    const base = p.baseShare[s] ?? (1 / CONTEXT_BUDGET_SOURCES.length);
+    const sig = (signals.bySource && signals.bySource[s]) || { rescues: 0, idle: 0, idleSlope: 0 };
+    const rescueNorm = Math.min(2, (sig.rescues || 0) / Math.max(1, p.rescueScale));
+    const idleNorm = Math.min(2, (sig.idle || 0) / Math.max(1, p.idleScale));
+    let rawDelta = p.kRescue * rescueNorm - p.kIdle * idleNorm;
+    const reasons = [];
+    if (Math.abs(rawDelta) < p.nearEps) {
+      rawDelta *= p.kNear;
+      reasons.push({ code: 'near-balance', rawDelta: +rawDelta.toFixed(4) });
+    }
+    const slope = Number(sig.idleSlope) || 0;
+    if (slope > p.slopeThresh && idleNorm > 0 && rawDelta <= 0) {
+      const brake = p.kD * ((slope - p.slopeThresh) / p.slopeThresh);
+      rawDelta -= brake;
+      reasons.push({ code: 'worsen-brake', slope, brake: +brake.toFixed(4) });
+    }
+    const exempt = (p.exemptShrink || []).includes(s);
+    if (exempt && rawDelta < 0) {
+      reasons.push({ code: s === 'self' ? 'self-layer-exempt' : 'protocol-exempt', blockedDelta: +rawDelta.toFixed(4) });
+      rawDelta = 0;
+    }
+    if (rescueNorm > 0 && rawDelta > 0) reasons.push({ code: 'rescue-bump', rescueNorm: +rescueNorm.toFixed(4) });
+    if (idleNorm > 0 && rawDelta < 0) reasons.push({ code: 'idle-shrink', idleNorm: +idleNorm.toFixed(4) });
+    let share = base * (1 + rawDelta);
+    share = Math.max(p.minShare, Math.min(p.maxShare, share));
+    rawShares[s] = share;
+    details[s] = { base, rawDelta: +rawDelta.toFixed(4), reasons, rescues: sig.rescues || 0, idle: sig.idle || 0, idleSlope: slope, exempt };
+  }
+  const sum = CONTEXT_BUDGET_SOURCES.reduce((a, s) => a + rawShares[s], 0) || 1;
+  const sources = {};
+  let allocated = 0;
+  for (const s of CONTEXT_BUDGET_SOURCES) {
+    const share = rawShares[s] / sum;
+    const tokens = alignTokenCount(Math.round(share * totalTokens), stride);
+    allocated += tokens;
+    sources[s] = {
+      share: +share.toFixed(4),
+      tokens,
+      ...details[s]
+    };
+  }
+  // 若对齐导致总额略超/不足，把差额（stride 步长）摊到 retrieval（非豁免）
+  let diff = totalTokens - allocated;
+  if (diff !== 0 && sources.retrieval) {
+    const adj = alignTokenCount(Math.max(p.minShare * totalTokens, sources.retrieval.tokens + diff), stride);
+    sources.retrieval = { ...sources.retrieval, tokens: adj, reasons: [...sources.retrieval.reasons, { code: 'align-remainder', diff }] };
+  }
+  return {
+    enabled,
+    stride,
+    totalTokens,
+    model: 'DeepSeek-V4.1-Flash',
+    phase: { stride, method: 'per-block-align-token-count', note: '每段注入独立截断后上取整到 S 的倍数；宿主拼接时勿插入奇数 token 胶水' },
+    sources,
+    signals: { missing: !!signals.missing, windowMs: signals.windowMs ?? p.windowMs },
+    params: { kRescue: p.kRescue, kIdle: p.kIdle, kNear: p.kNear, nearEps: p.nearEps, kD: p.kD, slopeThresh: p.slopeThresh, exemptShrink: [...(p.exemptShrink || [])] }
+  };
+}
+
+/**
+ * 验收：同一段记忆在不同前缀长度下，经 stride 对齐后起始相位应稳定为 0（不做平均）。
+ * 返回 { stable, stride, samples:[{prefixLen, startPhase, prefixTokens, blockTokens}] }。
+ */
+export function phaseStabilityCheck(memoryText, opts = {}) {
+  const stride = Math.max(1, Math.floor(opts.stride ?? CONTEXT_BUDGET_DEFAULTS.stride));
+  const prefixes = opts.prefixes || ['', 'a', 'ab', 'abc', 'word', '词', '词A', 'prefix-07', '较长前缀xyz'];
+  const mem = String(memoryText ?? '');
+  const samples = [];
+  for (const pre of prefixes) {
+    const prePad = padBlockToStride(pre, alignTokenCount(estimateTokens(pre) || stride, stride), { stride });
+    const startPhase = prePad.tokens % stride;
+    const block = padBlockToStride(prePad.text + mem, opts.budget ?? alignTokenCount(estimateTokens(prePad.text + mem) + stride, stride), { stride });
+    samples.push({
+      prefixLen: pre.length,
+      prefixTokens: prePad.tokens,
+      startPhase,
+      blockTokens: block.tokens,
+      blockAligned: block.tokens % stride === 0
+    });
+  }
+  const stable = samples.every((x) => x.startPhase === 0 && x.blockAligned);
+  return { stable, stride, method: 'prefix-pad-then-append-memory', samples };
+}
+
 /** 类别模板：由 credibilityOf.cls 选定。协议条强制 sev/cpx = 1（不让 arousal 抬协议）。 */
 export const RANK_TEMPLATES = Object.freeze({
   protocol: Object.freeze({ severityScale: 0, complexityScale: 0, label: 'protocol' }),
@@ -1530,11 +1774,23 @@ export function kit(opts = {}) {
   historyItems.sort((a, b) => b.arousal - a.arousal || a.valence - b.valence);
   const history = historyItems.slice(0, 3);
 
-  return {
+  const out = {
     at: new Date().toISOString(),
     protocol: '来源态四标签（学过 / 接触过 / 记得·库内 / 搜到）；无据的确定 ≪ 有据的不确定；编造比承认不知道更糟。',
     sleep, inbox, review, library, hints, history
   };
+  // A2：可选上下文预算（默认关；不改 library/排序语义）
+  if (contextBudgetEnabled(opts)) {
+    out.contextBudget = allocateContextBudget({
+      contextBudget: true,
+      totalTokens: opts.budgetTokens,
+      signals: opts.budgetSignals,
+      records: opts.budgetRecords,
+      params: opts.budgetParams,
+      nowMs: opts.nowMs
+    });
+  }
+  return out;
 }
 
 // 候选转正：把 sleep/inbox 的孤案候选（失败回查素材）机械落成孤案条目（零权重留档）。

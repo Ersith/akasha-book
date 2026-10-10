@@ -310,6 +310,31 @@ rank  = (词法分[+ frontier 状态][+ 负价 tip]) × factor   // 孤案：ran
   - 参数：`LOAD_BALANCE_DEFAULTS`（windowMs=7d，kP/kExplore/kD，slopeThresh，min/maxCorrection）。命中行带 `balance: { correction, count, quota, reasons, params }` 可审计。
 - **emotionBoost**：API 保留；`brief` 的 base 不再加 arousal（改走严重度乘子），负价只留 +0.25 tip。
 
+## A2 上下文预算分配（wave4 · DeepSeek-V4.1-Flash / CSA2 S=2）
+
+默认 **关**（`CONTEXT_BUDGET_DEFAULTS.enabled === false`）。`kit({ contextBudget:true })` / CLI `budget --enable` 才计算。只分配各注入来源的 **token 额度**，**不改**排序、strong/weak、存储与修订链。
+
+**来源**（`CONTEXT_BUDGET_SOURCES`）：`self` / `usage`（协议用法条）/ `kit` / `session` / `retrieval`。
+
+**公式（误差驱动，小步近平衡，恶化才刹车）**：
+
+```
+rescueNorm = min(2, rescues / rescueScale)
+idleNorm   = min(2, idle / idleScale)
+rawΔ       = kRescue·rescueNorm − kIdle·idleNorm
+若 |rawΔ| < nearEps → rawΔ *= kNear          // 近平衡小更新
+若 idleSlope > slopeThresh 且 idleNorm>0 且 rawΔ≤0
+           → rawΔ -= kD·(idleSlope−slopeThresh)/slopeThresh   // 恶化-only D
+若来源 ∈ exemptShrink（self/usage）且 rawΔ<0 → rawΔ = 0      // 禁敌对缩额（同 A1 精神）
+share'     = clamp(baseShare·(1+rawΔ), minShare, maxShare)
+归一化后 tokens = alignTokenCount(round(share·totalTokens), stride=2)
+```
+
+**相位对齐（S=2）**：DeepSeek-V4.1-Flash encoder CSA2 两 token 打成一条 KV。`alignTokenCount` 上取整到偶数；`padBlockToStride` 先截断再空格垫齐。每段注入独立对齐，宿主拼接勿插奇数 token 胶水。验收：`phaseStabilityCheck(memory)`——同一段记忆在不同前缀下 `startPhase===0`（非平均）。
+
+**信号**：`budgetSignalsFromRecords` 读 `kind:"budget-rescue"|"budget-idle"`（带 `source`），兼认 gate-self/usage、召回工具等。审计字段：`sources[s].{share,tokens,rawDelta,reasons,rescues,idle,exempt}`。
+
+
 ## 情绪字段（valence / arousal，2026-10-07 起）
 
 - 任意库记录可带**可选** `valence`（[-1,1]）与 `arousal`（[0,1]）；越界拒绝（pricing 库的 `valence` 仍为必填）。
