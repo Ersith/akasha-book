@@ -1665,7 +1665,7 @@ export const RECALL_TRAP_MAP = Object.freeze({
   write: ['canon-trap-quoting-escapes', 'canon-review-manual-20261010'],
   read: ['canon-trap-read-offset-range', 'canon-review-manual-20261010'],
   grep: ['canon-trap-grep-exit2-path', 'canon-review-manual-20261010'],
-  dsh_wsl: ['canon-review-manual-20261010', 'canon-installability-20261010'],
+  dsh_wsl: ['canon-trap-dsh-wsl-channel', 'canon-review-manual-20261010', 'canon-installability-20261010'],
   codex_exec: ['canon-trap-quoting-escapes', 'canon-review-manual-20261010'],
   apply_patch: ['canon-trap-quoting-escapes', 'canon-review-manual-20261010'],
   'multi_tool_use.parallel': ['canon-trap-unknown-tool-name'],

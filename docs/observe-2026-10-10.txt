@@ -1,0 +1,144 @@
+=== 阿卡夏观察期周报 ===
+  生成时间 : 2026-10-10T20:30:56.528Z
+  基线窗口 : 2026-10-06:2026-10-09（C1/C3 上线前）
+  观察窗口 : 2026-10-10:2026-10-10（最近 7 天）
+  口径文档 : dist/akasha-oss/docs/observation-metrics.md（先注册判据，再读数据）
+基线 vs 观察（同口径）
+  窗口 2026-10-06 → 2026-10-09：hooks 10808 | C1 触发 0（其中提示后同工具再失败 0） | C3 触发 0 | 同坑失败 回合级 48 / 会话级 3 | 失败回合 46 漏 38（82.6%） | 可预防 33 漏 30（90.9%） | H5 候选 31
+  窗口 2026-10-10 → 2026-10-10：hooks 7943 | C1 触发 11（其中提示后同工具再失败 1） | C3 触发 3 | 同坑失败 回合级 20 / 会话级 3 | 失败回合 16 漏 15（93.8%） | 可预防 11 漏 10（90.9%） | H5 候选 15
+  差值：C1 0 · C3 0 · 同坑回合级 -28 · 同坑会话级 0 · 漏召率 82.6→93.8 · 可预防漏召率 90.9→90.9
+
+JSON:
+{
+ "base": {
+  "window": "2026-10-06 → 2026-10-09",
+  "hooksInWindow": 10808,
+  "preflight": 0,
+  "preflightIneffective": 0,
+  "stateful": 0,
+  "mappedToolFails_turn": 48,
+  "mappedToolFails_session": 3,
+  "failureTurns": 46,
+  "misses": 38,
+  "missRate": 82.6,
+  "preventable": {
+   "fails": 33,
+   "missed": 30,
+   "rate": 90.9
+  },
+  "h5Candidates": 31,
+  "byTool": {
+   "edit": {
+    "fails": 20,
+    "missed": 18,
+    "late": 1,
+    "preventableMisses": 18
+   },
+   "web_fetch": {
+    "fails": 12,
+    "missed": 7,
+    "late": 1,
+    "preventableMisses": 0
+   },
+   "cordis_inspect_query": {
+    "fails": 1,
+    "missed": 1,
+    "late": 0,
+    "preventableMisses": 1
+   },
+   "grep": {
+    "fails": 5,
+    "missed": 4,
+    "late": 3,
+    "preventableMisses": 4
+   },
+   "multi_tool_use.parallel": {
+    "fails": 1,
+    "missed": 1,
+    "late": 1,
+    "preventableMisses": 1
+   },
+   "read": {
+    "fails": 4,
+    "missed": 4,
+    "late": 0,
+    "preventableMisses": 4
+   },
+   "agent-error": {
+    "fails": 1,
+    "missed": 1,
+    "late": 0,
+    "preventableMisses": 0
+   },
+   "dsh_wsl": {
+    "fails": 1,
+    "missed": 1,
+    "late": 0,
+    "preventableMisses": 1
+   },
+   "pwsh": {
+    "fails": 1,
+    "missed": 1,
+    "late": 0,
+    "preventableMisses": 1
+   }
+  }
+ },
+ "obs": {
+  "window": "2026-10-10 → 2026-10-10",
+  "hooksInWindow": 7943,
+  "preflight": 11,
+  "preflightIneffective": 1,
+  "stateful": 3,
+  "mappedToolFails_turn": 20,
+  "mappedToolFails_session": 3,
+  "failureTurns": 16,
+  "misses": 15,
+  "missRate": 93.8,
+  "preventable": {
+   "fails": 11,
+   "missed": 10,
+   "rate": 90.9
+  },
+  "h5Candidates": 15,
+  "byTool": {
+   "edit": {
+    "fails": 6,
+    "missed": 6,
+    "late": 0,
+    "preventableMisses": 6
+   },
+   "read": {
+    "fails": 4,
+    "missed": 3,
+    "late": 1,
+    "preventableMisses": 3
+   },
+   "list_mcp_resources": {
+    "fails": 2,
+    "missed": 2,
+    "late": 0,
+    "preventableMisses": 0
+   },
+   "dsh_wsl": {
+    "fails": 1,
+    "missed": 1,
+    "late": 0,
+    "preventableMisses": 1
+   },
+   "send_message": {
+    "fails": 2,
+    "missed": 2,
+    "late": 0,
+    "preventableMisses": 0
+   },
+   "agent-error": {
+    "fails": 1,
+    "missed": 1,
+    "late": 0,
+    "preventableMisses": 0
+   }
+  }
+ }
+}
+
