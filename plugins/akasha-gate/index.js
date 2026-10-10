@@ -30,10 +30,18 @@ export function expandHome(p) {
   return p;
 }
 const WRITE_TOOLS = new Set(['edit', 'write', 'apply_patch']);
-const SHELL_TOOLS = new Set(['pwsh', 'bash']);
+// 命令类工具：能间接写盘的**全部**入口（2026-10-10 人读复查补 dsh_wsl 与 codex 系——
+// 它们绕过 pwsh/bash 那条守卫，是真实盲区）。新增写盘工具时**必须**同步这里与 selftest 的覆盖清单。
+const SHELL_TOOLS = new Set(['pwsh', 'bash', 'dsh_wsl']);
+const AGENT_TOOLS = new Set(['codex_exec', 'codex_thread_start', 'codex_thread_resume']);
 // 2026-10-07 复查：重定向判定排除 JS 箭头（`=>`）与 `2>&1`——`(?<![=\-])` 挡 `=>`/`->`，`(?![&=])` 挡 `>&`；
 // 曾因旧规则 `>\s*[^\s|]` 误拦只读探针命令（node -e 的 `=>{`）。`>>` 保留（真追加重定向）。
-const WRITE_IDIOM = /(>>|(?<![=\-])>(?![&=])\s*[^\s|]|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Item|tee\b|sed -i|drop\b|delete\b|\bdel\b)/i;
+// 2026-10-10 人读复查补：**中文写动词**（委派型 prompt 常用"删掉/追加/写入/改写"），原先只认英文与 cmdlet。
+const WRITE_IDIOM = /(>>|(?<![=\-])>(?![&=])\s*[^\s|]|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Item|tee\b|sed -i|drop\b|delete\b|\bdel\b|追加|写入|改写|覆盖|替换|清空|删除|修改|编辑|append\b|overwrite\b|modify\b)/i;
+
+// ⚠ 已知边界（2026-10-10）：WSL 里同一物理文件可能以 `/mnt/<盘>/…` 出现，而本守卫只认配置里的 dataDir 形态
+//   （盘符路径）。⇒ WSL 侧用挂载路径写入**拦不住**；这是"劝告层"的边界，不是漏洞补丁的替代品。
+//   要覆盖它，需在配置里另给一个 POSIX 形态的 dataDir（或新增 dataDirPosix 配置项）。
 
 // 读库失败时的兜底文本（与 canon-akasha-usage 初始版本同文；改兜底 = 升级本插件）。
 const FALLBACK_SECTION = [
@@ -208,6 +216,13 @@ export function apply(ctx, config = {}) {
         if (command && mentionsDataDir(command) && WRITE_IDIOM.test(command)) {
           write({ kind: 'gate-denied', tool: name, target: 'akasha\\data（命令）' });
           return `阿卡夏门控：拒绝 ${name} 命令里对 akasha\\data 的写操作——请改走 akasha CLI / mcp__akasha__*。确需绕过请先停用 @akasha-book/gate。`;
+        }
+      } else if (AGENT_TOOLS.has(name)) {
+        // 委派型工具：自然语言 prompt 里若同时出现数据目录与写动作词，同样按"写操作"拒绝（2026-10-10 补）
+        const prompt = String(args.prompt ?? '');
+        if (prompt && mentionsDataDir(prompt) && WRITE_IDIOM.test(prompt)) {
+          write({ kind: 'gate-denied', tool: name, target: 'akasha\\data（委派 prompt）' });
+          return `阿卡夏门控：拒绝 ${name} 的 prompt 里对 akasha\\data 的写操作——委派出去的子代理同样不得直改库；请改走 akasha CLI / mcp__akasha__*。`;
         }
       }
     } catch { /* 守卫异常 → 放行 */ }

@@ -52,6 +52,34 @@ assert.equal(typeof g('pwsh', { command: `Remove-Item '${F('x.jsonl')}'` }), 'st
 assert.equal(typeof g('pwsh', { command: `cmd /c del ${F('x.jsonl')}` }), 'string', 'del 必须被拒');
 assert.equal(typeof g('pwsh', { command: `Copy-Item a.jsonl ${F('b.jsonl')}` }), 'string', 'Copy-Item 写入数据必须被拒');
 
+// —— 覆盖清单（2026-10-10 人读复查补）：**凡能写盘的工具，都要有"写数据必被拒"的用例** ——
+// 起因：守卫原先只覆盖 edit/write/apply_patch/pwsh/bash，漏了 dsh_wsl（WSL bash）与 codex 系（子进程可写盘）。
+// 规矩：新增任何"能写盘的工具"时，先把它加进本清单——测试会替你记住（漏了就红）。
+{
+  const P = F('canon.jsonl');            // 配置形态（反斜杠）
+  const P2 = P.replace(/\\/g, '/');      // 同路径的另一写法（守卫会归一）
+  const WRITER_TOOL_CASES = [
+    ['edit', { file_path: P }, '英文 tool / 直接路径'],
+    ['write', { file_path: P2 }, '另一写法'],
+    ['apply_patch', { path: P }, 'apply_patch 的 path 键'],
+    ['pwsh', { command: `Set-Content -Path '${P2}' -Value 'x'` }, 'PowerShell cmdlet'],
+    ['bash', { command: `echo x >> ${P2}` }, 'shell 追加重定向'],
+    ['dsh_wsl', { command: `echo x >> ${P2}` }, 'WSL bash（2026-10-10 补）'],
+    ['dsh_wsl', { command: `tee ${P2} < /dev/null` }, 'WSL tee（2026-10-10 补）'],
+    ['codex_exec', { prompt: `把 ${P} 里的第三条删掉，然后追加一条新记录` }, '委派 prompt（中文写动词）'],
+    ['codex_exec', { prompt: `直接编辑 ${P} 添加一条 canon 条目` }, '委派 prompt（编辑）'],
+    ['codex_thread_start', { prompt: `改写 ${P2} 的第一行` }, 'codex 线程起（改写）'],
+    ['codex_thread_resume', { prompt: `继续：往 ${P} 写入一条记录` }, 'codex 线程续（写入）'],
+  ];
+  for (const [tool, args, why] of WRITER_TOOL_CASES) {
+    assert.equal(typeof g(tool, args), 'string', `覆盖清单：${tool}（${why}）写数据必须被拒`);
+  }
+  // 反向：同批工具的**只读**用法必须放行（守卫是劝告层，不能退化成"凡提数据目录即拦"）
+  assert.equal(g('dsh_wsl', { command: `cat ${P2} | head -3` }), undefined, 'dsh_wsl 只读放行');
+  assert.equal(g('codex_exec', { prompt: `读一下 ${P} 并总结结构，不要改` }), undefined, 'codex_exec 纯读放行');
+  assert.equal(g('pwsh', { command: `Get-Content '${P}' -Encoding UTF8` }), undefined, 'pwsh 只读放行（覆盖清单反向）');
+}
+
 // —— 2026-10 wave1：默认路径回归（合并批曾把默认值写成字面量 '~/.akasha/...'，门控默认失效）——
 {
   const HOME_DATA = join(homedir(), '.akasha', 'data');

@@ -222,3 +222,13 @@
 - **验证（我方独立）**：插件自测全绿（端到端：真实 MCP 服务器注册 **18 工具** + 真调 `akasha_check` 返回 `{ok:true,errors:[]}`；畸形六形状 6/6 回错误且**服务器存活**；EPIPE 实测 exit=0 无崩溃栈；注册回滚、取消信号、硬/软失败路径）；核心套件 **137/137**（OSS）/ **138/138**（活树）；**E3 全矩阵 5 插件 × 3 版 DSH（0.2.0-rc.2 / 0.2.1-alpha.1 / 0.2.1-alpha.2）= 15/15 通过**；官方 `build-dsh-plugin` 审计 **100/100**（静态 80 + 运行时 20）；DSH-Store 预检 **passed**（扫描面完整；1 条 `warning/shell/child-process` 属预期，桥本就 spawn 本地进程）。
 - **文档**：新增 `docs/upstream-contracts.md`（对 DSH 的五个耦合点 C1–C5 + 升级时的固定检查动作 + 边界）。
 - **遗留**：本机 profile 装的仍是旧构建（sleep 1.5.1 动态加载版 / mcp 1.0.0 官方客户端版）——**需重打包 + 安装 + 重启**后才会切到新设计（由用户操作）。
+
+
+## R29 · 门控覆盖缺口修复 + 「写盘工具覆盖清单」测试（2026-10-10，人读复查）
+
+- **来源**：用户裁定「不要依赖脚本，逐项排查」→ 逐行读 `plugins/akasha-gate/index.js`（239 行）时发现：守卫只覆盖 `WRITE_TOOLS={edit,write,apply_patch}` 与 `SHELL_TOOLS={pwsh,bash}`，**漏了 `dsh_wsl`（WSL bash）与 codex 系（`codex_exec` / `codex_thread_*`，子进程可写盘）**——两条真实绕道。
+- **修复**：`SHELL_TOOLS` 增 `dsh_wsl`；新增 `AGENT_TOOLS` 扫描委派型 prompt（数据目录 + 写动作 ⇒ 拒绝）；`WRITE_IDIOM` 补**中文写动词**（追加/写入/改写/覆盖/替换/清空/删除/修改/编辑）与 `append|overwrite|modify`；版本 **1.2.3**。
+- **边界（写进代码注释）**：WSL 侧同一物理文件可能以 `/mnt/<盘>/…` 出现，而守卫只认配置形态的 `dataDir` ⇒ 挂载路径写法**拦不住**；这是"劝告层"的已知边界，不是安全承诺。
+- **测试（防复发）**：selftest 新增**写盘工具覆盖清单**——11 条"写数据必被拒"用例覆盖 `edit/write/apply_patch/pwsh/bash/dsh_wsl×2/codex_exec×2/codex_thread_start/codex_thread_resume`，外加 3 条"只读必须放行"反向用例；**新增写盘工具时先加进清单，漏了就红**。
+- **变异回归（证明测试不是装饰）**：用修复前的 `index.js`（`git show <sha>^:plugins/akasha-gate/index.js`）跑同一批用例 ⇒ `dsh_wsl` 与 `codex_exec` **当场未拦**（红），修复后全绿。
+- **工具侧同步**：工作区扫描器 `tools/risk-scan.mjs` 增加 `RISK-GUARD-COVER` 规则（守卫文件必须提到 `WRITER_TOOLS` 清单里的每个工具），其自测用**修复前的 gate 文件**做回归——落实「手检发现而脚本没报 ⇒ 完善脚本」的常设纪律。
