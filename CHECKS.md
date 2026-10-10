@@ -170,7 +170,7 @@
 
 - **发布**：`@akasha-book/session` 0.2.5 → **0.3.0**（索引 worker 化；`npm pack` 于 OSS 插件目录 → `npm publish --access public`）。发布后 `dist-tags.latest` 指向 0.3.0。
 - **完整性三重对账**：①注册表 `dist.integrity`（`sha512-WIJDWniM…`）与本地发送物 **sha512 全等**；②从注册表 `npm pack @akasha-book/session@0.3.0` 拉回物与本地发送物 **sha256 全等**；③包内容 5 项（`lib/index.js` / `lib/index-worker.mjs` / `package.json` / `cordis.patch.yml` / `README.md`）。
-- **隐私扫描（发布前）**：包内 5 文件 × 13 类强模式（本机路径 / 用户名 / 云与 GitHub token 前缀 / `@local/` scope / 回环端口 / 工具链目录名…）——**零命中**。
+- **隐私扫描（发布前）**：包内 5 文件 × 13 类强模式（本机路径 / 用户名 / 云与 GitHub token 前缀 / `@local` scope / 回环端口 / 工具链目录名…）——**零命中**。
 - **传播观察（如实）**：发布后约 2 分钟内 `npm view` 仍回 0.2.5（注册表处理 + view 缓存窗口），期间 `npm pack @…@0.3.0` 报错属正常；约 2 分钟后到位。
 - **同批版本对照**：gate repo **1.2.2** vs npm **1.2.1**（自我层 R20 尚未发布，属下一批）；hooks 1.2.1 = 1.2.1；sleep 1.5.1 = 1.5.1。
 - **遗留**：npm token 轮换待用户侧执行；gate 1.2.2（含自我层）发布时机待裁定。
