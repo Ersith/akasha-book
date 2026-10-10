@@ -205,3 +205,11 @@
 - **验证（我方独立）**：两批 `git am` 干净；`all.diff` × `git am` **双路树哈希全等** `9b239f042054f60affa76a357fcfaca6f9c935a9`；核心 **134/134**（OSS 口径）/ **135/135**（活树口径）、Node 20 **129→130 通过 + 5 SKIP**、四插件全绿；**活数据冒烟**：`mirror match` 命中 `mirror-ghost-citation-r1`（8.1 分）· 过滤语法与标签正确（活库未标元数据 ⇒ 过滤后 0 条，属预期）· 认知态三态逐一走通（强命中=记得·库内；弱命中=不确定 + 8 cites；`zxqv`/生僻字=确定不知道 + 外网契约）；**兼容性**：mirror 新必填 `story` 对活库 10 条**零破坏**（全部已有该字段）。
 - **落地与回滚**：活树已并（快照 `_rollback-20261010-mirror-layer\`：lib.mjs / test.mjs / SCHEMA.md / akasha.mjs / mcp.mjs）。
 - **遗留**：活库 10 条镜像尚无 `era/context/evidence/patterns` 标注（新过滤器待数据）；外网检索器仅在宿主侧实现（core 只给契约）。
+## R27 · A2 上下文预算分配（默认关闭；冗余落点 + 残差验收）2026-10-10
+
+- **来源**：外援 Claude 三补丁（`akasha-a2.tar.gz`，基线 `bf40d64`）——`0001` A2 上下文预算（含最初的 S=2 偶数对齐）；`0002` 允许 `budget --phase-check` 不带 `--enable`；`0003` **按我方复核意见改版**：偶数对齐降级为实验对照、主手段改「冗余落点 + 最近取用」、验收改「多长度前缀扰动 + S=2 残差抽样、主看 best−worst gap」。用户裁定「并」。
+- **背景（与基石文献对齐）**：目标模型 **DeepSeek-V4.1-Flash 的 KV 压缩步长 S=2**（arXiv 2609.36322 §2 与 Table 7 已正文级核实：其相位落差 6.09pp，偶数残差簇 ~95% 对奇数簇 ~89.5%）⇒ **A2 改额度＝改前缀长度＝挪相位**，故验收必须做相位抽样；**客户端无法对齐 provider 压缩相位**（论文亦未给对齐式缓解），主手段只能是**冗余＋就近**。
+- **机制**：`CONTEXT_BUDGET_SOURCES = ['self','usage','kit','session','retrieval']`（baseShare 0.15/0.15/0.15/0.25/0.30）；误差驱动微调（救场→加额、空转→减额、近平衡小步、恶化刹车）；**`exemptShrink: ['self','usage']`**（缩额被阻断并记 `self-layer-exempt` / `protocol-exempt`）；`placeWithRedundancy()`（关键段 ≥2 份、**奇数 token 偏移翻转 residue** 保证至少一份落好相位）+ `nearestFetch()`；`alignTokenCount / padBlockToStride` **明确标注「仅论文实验对照，非生产修复」**；`phaseResidueSample()`（多长度前缀扰动 ×14 + 残差采样 + best−worst 主指标，scoreFn 可注入真评测，缺省为论文形态代理）。**默认关**（`CONTEXT_BUDGET_DEFAULTS.enabled = false`）；CLI `budget [--enable] [--phase-check <文本>]`。只分配注入额度，**不改排序/存储**。
+- **验证（我方独立）**：三补丁 `git am` 干净（`b4f0a01` / `c1f4ab0` / `0a23a04`）；`all.diff` × `git am` **双路树哈希全等** `6a2736a1a6050ed68fae07c4a456161633f571da`；核心 **137/137**（OSS 口径）/ **138/138**（活树口径）、Node 20 **132→133 通过 + 5 SKIP**、四插件全绿；CLI 冒烟：默认关文案 · `--enable` 分配视图（self/usage 带 `[exempt]`、相位策略行）· `--phase-check` 残差验收输出。
+- **落地与回滚**：活树已并（快照 `_rollback-20261010-a2\`：lib.mjs / test.mjs / SCHEMA.md / akasha.mjs / research 稿）。
+- **诚实提醒**：`--phase-check` 缺省 scoreFn 为**代理形态**（照论文 Flash 表造 偶 0.95 / 奇 0.895），**其 gap=0.055 不代表本系统真实相位落差**；真验收须注入真 scoreFn。
