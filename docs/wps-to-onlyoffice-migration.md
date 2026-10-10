@@ -40,6 +40,8 @@
 
 ## 五、遗留事项
 
-1. **卷影存储偏小**：C: 仅分配 ~4 GB（已用 3.43 GB）⇒ 回滚点**会被新点挤掉**；建议 `vssadmin resize shadowstorage /for=C: /on=C: /maxsize=10%`（用户自行执行）。
+1. ~~**卷影存储偏小**~~ **→ 已解决（2026-10-11）**：`tools/enlarge-shadow-storage.ps1 -Apply` 执行 `vssadmin resize shadowstorage` ⇒ **C: 卷影上限 4.00 GB (1%) → 24.0 GB (10%)**，其它卷本来就是 10%（报告 `docs/shadowstorage-20261011-025443.txt`）。
+   - 自查记录：该脚本第一版有**两处"语言假设"缺陷**（中文正则 + 按英文 `Shadow Copy ID` 计数），违反我们"`.ps1` 纯 ASCII"的规矩；已改为**语言无关写法**（按数字/单位匹配；还原点/卷影改用 CIM `Win32_ShadowCopy` 与 `root\default:SystemRestore` 查询）。
+   - **未决**：`before-wps-uninstall-20261011` 这个还原点**是否仍在**，非提权无法确认（`Get-ComputerRestorePoint` / `vssadmin` 都要管理员；System 日志里没有对应事件源）。因**迁移已验收完成**，它的安全网作用已兑现；要确认就跑一次 `tools/enlarge-shadow-storage.ps1`（**不带 `-Apply`，纯只读**）。
 2. **归档保留期**：`_rollback-*wps*` 两个目录（合计 ~400 MB）**观察一段时间后再决定删**（按我们的"只搬不删"惯例）。
 3. **回滚路径**（若哪天想退回 WPS）：重装 WPS + 从 `_rollback-20261011-fileassoc\*.reg` 恢复两个候选键（关联仍由用户在设置页点选）。
