@@ -174,3 +174,11 @@
 - **传播观察（如实）**：发布后约 2 分钟内 `npm view` 仍回 0.2.5（注册表处理 + view 缓存窗口），期间 `npm pack @…@0.3.0` 报错属正常；约 2 分钟后到位。
 - **同批版本对照**：gate repo **1.2.2** vs npm **1.2.1**（自我层 R20 尚未发布，属下一批）；hooks 1.2.1 = 1.2.1；sleep 1.5.1 = 1.5.1。
 - **遗留**：npm token 轮换待用户侧执行；gate 1.2.2（含自我层）发布时机待裁定。
+## R23 · 排序补齐（wave3：严重度 × 可信度 × 复杂度，只进排序）2026-10-10
+
+- **来源**：外援 Claude 补丁（分支 wave3/rank，基于 `4cb3e1b`；tarball `akasha-rank.tar.gz` 9.2 KB：单补丁 + all.diff）——本项属「观察期后第一件」，用户裁定提前并入。
+- **机制**：`core/lib.mjs` 新增 `rankFactors / applyRank / severityComplexityOf / valenceTip / RANK_DEFAULTS / RANK_TEMPLATES`：`rank = 词法分 × 可信度 × 严重度′ × 复杂度′`，模板按既有 `credibilityOf.cls`（protocol / snapshot / frontier / evergreen）；**协议类强制 sev/cpx=1**；**arousal 只当一次信号**（作严重度则复杂度=1，防双计）；**因子恒 ≤1（只降权）**；**孤案 rank=score**（零权重约定）；**strong 仍只看整词**；时间仍只做门限；**A1 负载均衡默认关且恒等**。brief：arousal 移出 base（`valenceTip` 只表负价），`emotionBoost` 保留 API。
+- **验证（我方独立）**：`git am` 干净（`d17798d`）；`all.diff` × `git am` **双路树哈希全等**（`88649846c28f783cf7c3892eb7665ec89747085e`）；核心 **124/124**（活树口径）/ **123/123**（OSS 口径，README 计数已同步 120→123）、会话 **22/22**（Node 24）、**15 passed / 0 failed / 7 skipped**（Node 20，跳过全为 zstd；本提交新增 `tza()` 跳过助手，补齐 `4ab8856` 两条 worker 用例的漏网）；gate / hooks / sleep 全绿；**同库只读实证**（活数据副本）：`strong` 集合与 base **完全一致**、6 个查询 4 个顺序不变、2 个仅同分并列被因子打破。
+- **落地与回滚**：活树已并（快照 `_rollback-20261010-rank\`：lib.mjs / test.mjs / SCHEMA.md / akasha-README.md / plugin-selftest.mjs）；**MCP 常驻进程需重启才吃到新排序**（CLI 与后续索引调用即时生效）。
+- **工程坑（归档）**：① 外援补丁来自 CRLF 工作树，落本仓 LF 活树时每个文件首个 hunk 即失败——需「路径映射 + **剥 CR**」后 `git apply`；② 非运行时 node（`_tools\node20`）在 `D:\dsh-temp` 下 `mkdtemp` 报 EPERM（沙箱按程序放行）——TEMP 指到工作区即通。
+- **遗留**：A1 负载均衡启用时机；`arousal: 0`（显式平静）降权至 sev 0.5、而不写 arousal 为中性 1.0——语义按现状，留待观察。
