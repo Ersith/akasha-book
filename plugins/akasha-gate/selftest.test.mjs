@@ -155,4 +155,14 @@ assert.ok(logTText.includes('"kind":"gate-self-fallback"'), '自我层降级切�
 assert.ok(logTText.includes('"kind":"gate-self-recovered"'), '自我层恢复切换必须落线：gate-self-recovered');
 rmSync(TMP, { recursive: true, force: true });
 
+// —— STORE 审计边界用例：traversal / malformed / replay / 并发（fail closed 语义；纯路径判定，不触文件系统）——
+assert.equal(typeof g('write', { file_path: join(DATA, '..', 'data', 'canon.jsonl') }), 'string', 'traversal：data/../data/ 绕过路径仍须被拒（fail closed）');
+assert.equal(typeof g('pwsh', { command: `Set-Content -Path '${join(DATA, 'sub', '..', 'canon.jsonl')}' -Value x` }), 'string', 'traversal：命令侧 .. 仍须被拒');
+assert.doesNotThrow(() => { c.guard({ name: 'pwsh', arguments: {} }); c.guard({ name: 'write', arguments: {} }); c.guard({ name: '', arguments: null }); }, 'malformed：缺参数 / 空工具名 / null args 不得抛异常');
+const rep1 = g('edit', { file_path: F('canon.jsonl') });
+const rep2 = g('edit', { file_path: F('canon.jsonl') });
+assert.equal(rep1, rep2, 'replay：同一输入两次判定必须逐字一致（无隐藏状态、可重放）');
+g('write', { file_path: F('a.jsonl') });
+assert.equal(g('write', { file_path: N('ok.md') }), undefined, '并发/顺序无关：一次被拒不影响后续非数据区放行');
+
 console.log('selftest: all assertions passed');

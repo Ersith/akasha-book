@@ -446,6 +446,23 @@ if (mod) {
   });
 }
 
+// —— STORE 审计边界用例：malformed / 并发节流 / replay（纯函数，无副作用）——
+if (mod) {
+  t('边界·并发节流：最小间隔内不得重跑', () => { assert.equal(mod.shouldIndex(Date.now(), Date.now(), 30000), false); });
+  t('边界·并发节流：超过间隔允许重跑', () => { assert.equal(mod.shouldIndex(0, 30000, 30000), true); });
+  t('边界·malformed：非法时间戳按「从未索引」处理（fail closed → 允许一次）', () => {
+    assert.equal(mod.shouldIndex(NaN, Date.now(), 30000), true);
+    assert.equal(mod.shouldIndex(undefined, Date.now(), 30000), true);
+  });
+  t('边界·replay：同输入两次判定一致（纯函数、可重放）', () => {
+    assert.equal(mod.shouldIndex(1000, 2000, 30000), mod.shouldIndex(1000, 2000, 30000));
+  });
+  t('边界·大会话自适应节流 ×4（档案 >16MB）', () => {
+    assert.equal(mod.effectiveThrottle(20 * 1024 * 1024, 30000), 120000);
+    assert.equal(mod.effectiveThrottle(1024, 30000), 30000);
+  });
+}
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

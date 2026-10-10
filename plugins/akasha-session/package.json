@@ -1,6 +1,7 @@
 {
   "name": "@akasha-book/session",
   "version": "0.3.0",
+  "repository": { "type": "git", "url": "https://github.com/Ersith/akasha-book.git", "directory": "plugins/akasha-session" },
   "engines": { "node": ">=22.15.0" },
   "license": "MIT",
   "type": "module",
@@ -14,9 +15,17 @@
     "cordis.patch.yml",
     "README.md"
   ],
+  "scripts": { "test": "node selftest.test.mjs" },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible",
+        "0.2.1-alpha.1": "unknown",
+        "0.2.1-alpha.2": "unknown"
+      }
     }
   }
 }

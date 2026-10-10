@@ -151,4 +151,14 @@ assert.ok(readFileSync(logC, 'utf8').includes('"kind":"activated"'), '降级时�
   assert.ok(!existsSync(join(cwdD, '~')), 'cwd 下不得出现字面量 `~` 目录');
 }
 
+// —— STORE 审计边界用例：malformed / fail closed / replay（纯函数，无副作用）——
+{
+  const { akashaCliOf } = await import('./index.js');
+  assert.equal(akashaCliOf('pwsh', null), null, 'malformed：args=null 不得抛，返回 null（fail closed）');
+  assert.equal(akashaCliOf(undefined, { command: 'node akasha.mjs lookup x' }), null, 'malformed：工具名缺失 → null');
+  assert.equal(akashaCliOf('pwsh', { command: 'node akasha.mjs lookup x' }), 'lookup', '正常路径：识别 akasha 子命令');
+  const twice = [akashaCliOf('pwsh', { command: 'node akasha.mjs brief y' }), akashaCliOf('pwsh', { command: 'node akasha.mjs brief y' })];
+  assert.deepEqual(twice, ['brief', 'brief'], 'replay：同输入两次识别一致（纯函数、可重放）');
+}
+
 console.log('selftest: all assertions passed');

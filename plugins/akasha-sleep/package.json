@@ -1,15 +1,24 @@
 {
   "name": "@akasha-book/sleep",
   "version": "1.5.1",
+  "repository": { "type": "git", "url": "https://github.com/Ersith/akasha-book.git", "directory": "plugins/akasha-sleep" },
   "engines": { "node": ">=18" },
   "license": "MIT",
   "type": "module",
   "description": "阿卡夏之书睡眠器 v1.5：调度与注入（蒸馏逻辑归核心库 sleep.mjs，可手动 node akasha.mjs sleep）——空闲/定时触发 + 每回合条子 + 新会话唤醒条 + 库脉搏（写→可见通道）+ 回查提示（窗口内失败追一行）",
   "exports": { ".": "./lib/index.js" },
   "files": ["lib/index.js", "cordis.patch.yml", "README.md"],
+  "scripts": { "test": "node selftest.test.mjs" },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible",
+        "0.2.1-alpha.1": "unknown",
+        "0.2.1-alpha.2": "unknown"
+      }
     }
   }
 }

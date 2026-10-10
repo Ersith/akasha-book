@@ -248,6 +248,15 @@ const sleepLineC = contextsC.find((c) => c.name === 'akasha:sleep').text();
 assert.ok(String(sleepLineC).includes('核心库不可用'), sleepLineC);
 rmSync(dirC, { recursive: true, force: true });
 
+// —— STORE 审计边界用例：malformed / 回滚（rollback）语义 / 并发节流 ——
+{
+  const { isWakeNoteworthy, buildWakeNote } = await import('./lib/index.js');
+  assert.doesNotThrow(() => isWakeNoteworthy({}), 'malformed：空状态对象不得抛');
+  assert.equal(typeof buildWakeNote({ library: { canon: 0, mirror: 0, orphan: 0, pricing: 0, lexicon: 0, frontier: 0 } }), 'string', 'malformed 输入仍产出字符串（不抛、不静默吞）');
+  // 回滚（rollback）语义：核心库不可用（上面 dirC 场景）→ 不得落地任何状态，水位线不得推进
+  assert.ok(!existsSync(join(dirC, 'logs', 'sleep-state.json')), '回滚：核心库不可用 → sleep-state.json 不得存在（失败不推进水位线）');
+}
+
 // —— 终末清理 ——
 rmSync(dir, { recursive: true, force: true });
 
