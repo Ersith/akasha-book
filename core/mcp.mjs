@@ -27,6 +27,11 @@ const TOOLS = [
 ];
 
 function handle(msg) {
+  // 2026-10-10 加固：先做形状校验——JSON 合法但形状不对（null / 数字 / 字符串 / 缺 method）时
+  // 必须回 JSON-RPC 错误，而不是解构抛 TypeError（那会冒成未捕获异常、整台服务器死掉）。
+  if (msg === null || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.method !== 'string') {
+    return { jsonrpc: '2.0', id: (msg && typeof msg === 'object' && 'id' in msg) ? msg.id : null, error: { code: -32600, message: '无效的 JSON-RPC 请求（需要含 method 的对象）' } };
+  }
   const { id, method, params } = msg;
   if (method === 'initialize') {
     const protocolVersion = (params && params.protocolVersion) || '2024-11-05';
@@ -103,7 +108,26 @@ rl.on('line', line => {
   const s = line.trim();
   if (!s) return;
   let msg;
-  try { msg = JSON.parse(s); } catch { return; }
-  const reply = handle(msg);
+  try { msg = JSON.parse(s); } catch {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: '解析失败：不是合法 JSON' } }) + '\n');
+    return;
+  }
+  // 2026-10-10 加固：handle 本身也要兜底——任何未预期异常都回错误，绝不让它冒成未捕获异常打死服务器
+  let reply;
+  try { reply = handle(msg); }
+  catch (e) { reply = { jsonrpc: '2.0', id: (msg && typeof msg === 'object' && 'id' in msg) ? msg.id : null, error: { code: -32603, message: '内部错误：' + String(e?.message ?? e).slice(0, 200) } }; }
   if (reply) process.stdout.write(JSON.stringify(reply) + '\n');
 });
+
+// 2026-10-10 加固（与 mcp-akasha 桥同族）：客户端先退出时，写 stdout 会以**异步 'error' 事件**抛 EPIPE——
+// 未挂处理即未捕获异常。EPIPE/ERR_STREAM_DESTROYED → 静默退出；stdin 关闭 → 正常收尾。
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (error) => {
+    const code = String(error?.code ?? '');
+    if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') process.exit(0);
+    // 其他流错误：无法再写日志，直接退出 0（避免死循环报错）
+    process.exit(0);
+  });
+}
+process.stdin.on('error', () => process.exit(0));
+rl.on('close', () => process.exit(0));

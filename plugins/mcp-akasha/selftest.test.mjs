@@ -144,10 +144,51 @@ try {
       child.on('error', () => { clearTimeout(timer); done({ code: 'spawn-error' }); });
       child.on('exit', (code) => { clearTimeout(timer); done({ code }); });
       const send = (s) => { try { child.stdin.write(s); } catch { /* stdin 关闭 */ } };
+      // 畸形但各种形状：null / 数字 / 字符串 / 数组 / 无 method 的对象 / 非法 JSON
+      // —— 每一个都必须回 JSON-RPC 错误（-32600 / -32700），而**不能**让服务器崩掉。
+      send('null\n');
+      send('123\n');
+      send('"just a string"\n');
+      send('[]\n');
+      send('{}\n');
       send('{ this is not json }\n');
       send(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'no/such-method', params: {} }) + '\n');
+      // 存活探针在块外做（见下方 liveness 断言）
     });
     assert.ok(result.code === null || result.code === 0, 'malformed JSON-RPC 不得导致非零退出（实际 exit=' + result.code + '）');
+  }
+}
+
+// —— ⑤b 加固回归：畸形输入后服务器**仍活着**（形状校验 + 存活探针）——
+{
+  const serverPath = join(CORE, 'mcp.mjs');
+  if (existsSync(serverPath)) {
+    const result = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [serverPath], { stdio: ['pipe', 'pipe', 'pipe'] });
+      let buffer = ''; const responses = [];
+      child.stdout.on('data', (d) => {
+        buffer += String(d);
+        let i;
+        while ((i = buffer.indexOf('\n')) >= 0) { const line = buffer.slice(0, i).trim(); buffer = buffer.slice(i + 1); if (line) { try { responses.push(JSON.parse(line)); } catch { /* 忽略 */ } } }
+      });
+      child.stderr.on('data', () => {});
+      const send = (s) => { try { child.stdin.write(s + '\n'); } catch { /* stdin 关闭 */ } };
+      send('null'); send('123'); send('"str"'); send('[]'); send('{}'); send('{ bad }');
+      setTimeout(() => {
+        send(JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'tools/list' }));
+        setTimeout(() => {
+          const alive = child.exitCode === null;
+          const list = responses.find((r) => r.id === 99);
+          const errors = responses.filter((r) => r.error).length;
+          try { child.kill(); } catch { /* 已退出 */ }
+          resolve({ alive, tools: list?.result?.tools?.length ?? 0, errors });
+        }, 900);
+      }, 700);
+    });
+    assert.ok(result.errors >= 6, '六种畸形形状都须回 JSON-RPC 错误（实际 ' + result.errors + '）');
+    assert.ok(result.alive, '畸形输入后服务器必须仍然存活');
+    assert.ok(result.tools > 0, '存活探针：tools/list 仍可用（实际 ' + result.tools + ' 个工具）');
+    console.log('加固回归：畸形输入 ' + result.errors + ' 个错误响应；服务器存活；tools/list=' + result.tools);
   }
 }
 
