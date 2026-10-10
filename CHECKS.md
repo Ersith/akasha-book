@@ -166,3 +166,11 @@
 - **验证（我方独立）**：插件自测 **22/22**（新增「worker 投递/落线/hostMs」与「inline 降级」两用例；附修「worker 线程令事件循环不归零 → 收尾显式 exit」）；桩 ctx 全链路 mock 6/6；核心 **120/120**（session.mjs 加锁回归）；**对照**：2.1MB 档案 inline 宿主阻塞 **161ms** → 投递 **0.06ms**；真档案 17.53MB **1267ms** → **0.37ms**；**部署后首活**（hooks.jsonl）：`session-worker queued` → `session-index via=worker ms=840 hostMs=0 lagMs=10 added=33`，零 error / 零降级；睡眠侧核心 **121/121**（新增近失用例）；真库数字：orphan 最老 4 天（检视 30）/ canon 最老 4 天（89）/ 同主题多快照 0 组（72 主题）/ 最像一对 Jaccard 0.2412（θ 0.8）。
 - **状态**：新增 `plugins/akasha-session/lib/index-worker.mjs`（`package.json` 的 `files` 白名单已含）；**npm 重发待时机**（插件版本仍 0.2.5，本仓代码领先已发布物）。
 - **遗留**：worker 崩溃丢 pending 后靠下一触发重跑（未直接测，幂等由水位+去重保证）；同会话排队去重未单测（时序敏感）；锁等待上限 5s 为 `withFileLock` 固定口径。
+## R22 · npm 重发 `@akasha-book/session@0.3.0`（2026-10-10）
+
+- **发布**：`@akasha-book/session` 0.2.5 → **0.3.0**（索引 worker 化；`npm pack` 于 OSS 插件目录 → `npm publish --access public`）。发布后 `dist-tags.latest` 指向 0.3.0。
+- **完整性三重对账**：①注册表 `dist.integrity`（`sha512-WIJDWniM…`）与本地发送物 **sha512 全等**；②从注册表 `npm pack @akasha-book/session@0.3.0` 拉回物与本地发送物 **sha256 全等**；③包内容 5 项（`lib/index.js` / `lib/index-worker.mjs` / `package.json` / `cordis.patch.yml` / `README.md`）。
+- **隐私扫描（发布前）**：包内 5 文件 × 13 类强模式（本机路径 / 用户名 / 云与 GitHub token 前缀 / `@local/` scope / 回环端口 / 工具链目录名…）——**零命中**。
+- **传播观察（如实）**：发布后约 2 分钟内 `npm view` 仍回 0.2.5（注册表处理 + view 缓存窗口），期间 `npm pack @…@0.3.0` 报错属正常；约 2 分钟后到位。
+- **同批版本对照**：gate repo **1.2.2** vs npm **1.2.1**（自我层 R20 尚未发布，属下一批）；hooks 1.2.1 = 1.2.1；sleep 1.5.1 = 1.5.1。
+- **遗留**：npm token 轮换待用户侧执行；gate 1.2.2（含自我层）发布时机待裁定。

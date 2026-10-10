@@ -1,6 +1,6 @@
 {
   "name": "@akasha-book/session",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "engines": { "node": ">=22.15.0" },
   "license": "MIT",
   "type": "module",
