@@ -91,17 +91,17 @@ switch (cmd) {
     break;
   }
   case 'budget': {
-    // A2 上下文预算（默认关；--enable 才按误差分配）。不写库。
+    // A2 上下文预算（默认关；--enable 才按误差分配）。不写库。相位验收可单独跑。
     const enabled = !!flags.enable || !!flags['context-budget'];
-    if (!enabled && !flags.demo) {
-      print({ enabled: false, defaults: CONTEXT_BUDGET_DEFAULTS }, 'A2 上下文预算默认关。加 --enable 查看分配；--phase-check <文本> 做奇偶相位验收。');
-      break;
-    }
     if (flags['phase-check'] != null) {
       const mem = flags['phase-check'] === true ? '中性夹具记忆短语' : String(flags['phase-check']);
       const r = phaseStabilityCheck(mem, { stride: Number(flags.stride) || 2 });
       print(r, `相位验收 S=${r.stride}：` + (r.stable ? '稳定（各样本 startPhase=0）' : '不稳定') + ` · ${r.samples.length} 个前缀样本`);
       code = r.stable ? 0 : 1;
+      break;
+    }
+    if (!enabled) {
+      print({ enabled: false, defaults: CONTEXT_BUDGET_DEFAULTS }, 'A2 上下文预算默认关。加 --enable 查看分配；--phase-check <文本> 做奇偶相位验收。');
       break;
     }
     const alloc = allocateContextBudget({
