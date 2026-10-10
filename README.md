@@ -50,6 +50,7 @@
   - `@akasha-book/mcp`：MCP 注册桥
 - `paper/` —— 论文 v0.5（设计、实现与初步运营报告）
 - `docs/INSTALL.md` —— **安装与配置**（含五插件所需配置、验收四条、以及我们踩过的坑：配置别只写在包内 patch）
+- `docs/observation-metrics.md` —— **观察口径与方法**（C1/C3 基线期→观察期；六指标定义写死、判定先注册、负结果入库）
 - `docs/c1-c3-schedule.md` —— **C1/C3 设计计划（待评审）**：动作前坑提示 + 断言前事实把关；含触发逻辑、落点、开关与验收、6 个待评审问题
 - `docs/ab-task-battery.md` —— **A/B 任务电池与执行清单**（20 题、双臂、盲评评分表、成本与闸门）
 - `docs/recall-preventability-test-plan.md` —— **可预防性整体测试计划**（三档证据表 / 盲化判定 / 阈值由代价推导）
