@@ -1,0 +1,38 @@
+﻿=== SECURITY PATROL  20261011-030422 ===
+
+=== DEFENDER ===
+  exclusions(path/proc/ext/ip): 0/0/0/0
+  cloud_block_level=2  pua=2  asr_rules=3
+  realtime=True  tamper=True  signature_age_days=0.8
+
+=== ASR AUDIT (last 7 days) ===
+  total=1  audit_only=1  blocked=0
+  hint: audit_only>0 with no bad actor means a rule would have fired; inspect before flipping AuditMode -> Enabled.
+    Microsoft Defender Exploit Guard audited an operation that is not allowed by your IT administrator.  For more information please contact your IT administrator. 
+
+--- listeners (addr:port|proc) ---
+  (first run: 26 items recorded as baseline)
+
+--- scheduled tasks ---
+  (first run: 179 items recorded as baseline)
+
+--- services (enabled) ---
+  (first run: 296 items recorded as baseline)
+
+=== UPDATES / RECOVERY ===
+  pending_updates=6  last_install=10/10/2026 16:19:48
+  restore points: (unavailable) needs admin -- run this script elevated to see them
+
+=== REMOTE SURFACE ===
+  WinRM = Stopped/Manual
+  RemoteRegistry = Stopped/Disabled
+  TermService = Stopped/Manual
+  LanmanServer = Running/Automatic
+  RemoteAccess = Stopped/Disabled
+  SMB1 = False
+  SMB2 = True
+  RDP_deny = 1
+
+Report : H:\Harness\docs\patrol\patrol-20261011-030422.txt
+State  : H:\Harness\docs\patrol\state-20261011-030422.json  (baseline -> H:\Harness\docs\patrol\last-state.json)
+=== END ===
