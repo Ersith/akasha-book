@@ -1,12 +1,12 @@
 # @akasha-book/sleep
 
-> 1.5.4 起新增**称呼行**（`akasha:address`，order 133）：每回合 runtime context 注入「对用户称 Master；用户对你是『大肥鱼』」+ 执行点要求——
+> 1.5.5 起新增**称呼行**（`akasha:address`，order 133）：每回合 runtime context 注入「对用户称 Master；用户对你是『大肥鱼』」+ 执行点要求——
 > 成因见 `docs/observation-ledger.md` 与 `canon-address-drift-fix-20261010`：**规则躺在会话开头的注入里、执行点看不到 ⇒ 长会话中期必漂移**；
 > 修法＝接进每回合必然经过的面。
 
 > 阿卡夏之书（Akasha Book）· 睡眠器插件
 
-阿卡夏之书睡眠器 v1.5.1 —— **调度与注入**（蒸馏逻辑归核心库 `../../core/sleep.mjs`；手动触发 `node akasha.mjs sleep [--dry]` 与之共用同一水位线）。
+阿卡夏之书睡眠器 v1.5.5 —— **调度与注入**（蒸馏逻辑归核心库 `../../core/sleep.mjs`；手动触发 `node akasha.mjs sleep [--dry]` 与之共用同一水位线）。
 
 - **触发**：`agent/status → idle`，去抖 `minIntervalHours`（默认 6）；另一路定时兜底 `ctx.interval`（默认 1h——timer 属混入服务，需 `inject:['timer']`）。跳过也留痕（`sleep-skip`）；首次激活即跑一次（`activate`）。
 - **蒸馏**：`hooks.jsonl` 增量（水位线 `processedLines`）→ 统计 + 失败备注 + 待办（审计警告 → review；工具失败 / 拦截 / agent 错误 → 孤案候选；**失败前未查库的回合 → review `recall-miss`（召回复盘，带会话样本；不自动转孤案），wave1.1**）；报告 `sleep-<date>.json`（**同日重复跑加时间戳后缀，不覆盖**）；有待办时追加 `logs/inbox.jsonl`。
@@ -41,7 +41,7 @@ npm pack
 | 静态契约（manifest / Bundle Patch / 许可证 / 入口 ID） | **verified** | 官方 `build-dsh-plugin` 审计：静态分见本包审计输出；入口 ID 为插件自有，不 disable/replace 任何 `@deepseek-ai/*` |
 | 单元与边界测试（`npm test`） | **verified** | `node selftest.test.mjs` 全绿；覆盖 malformed 输入、并发/节流、replay 一致性；**含"用户消息形状"契约测试**（与宿主 `createUserMessage` 逐字段比对，见 [`docs/upstream-contracts.md`](../../docs/upstream-contracts.md) C1） |
 | 一次性 Profile 安装·启动·卸载（E3） | **verified** | 2026-10-10 一次性 DSH_HOME 实跑：install → cold start（HTTP 就绪）→ stop → uninstall → `--dump-config` 逐字回到基线；dsh 0.2.0-rc.2；证据见同目录 `EVIDENCE.json` |
-| 真实 Profile 运行 | **verified（本机）** | 桌面端 0.2.0-rc.2 实跑；**他人机器 unverified**（未做外部验收）；**称呼行 `akasha:address`（1.5.4，order 133）已活体可见**——每回合 runtime context 带「对用户称 Master / 用户称你大肥鱼」并写明执行点（交付 / 验收 / 复盘开口句） |
+| 真实 Profile 运行 | **verified（本机）** | 桌面端 0.2.0-rc.2 实跑；**他人机器 unverified**（未做外部验收）；**称呼行 `akasha:address`（1.5.5，order 133）已活体可见**——每回合 runtime context 带「对用户称 Master / 用户称你大肥鱼」并写明执行点（交付 / 验收 / 复盘开口句） |
 | 独立安全审计 / 公开分发（E5） | **unverified** | 未做独立审计；分发前应重评 |
 
 **下一道门（next gate）**：① 在 0.2.1-alpha.x 上按同一套用例复测（一次性 DSH_HOME），把 `unknown` 改为精确结论（`compatible` 或 `incompatible`）；
