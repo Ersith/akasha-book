@@ -1649,17 +1649,39 @@ export function recallSignals(records, opts = {}) {
   return out;
 }
 
-/** C2（2026-10-10）：**已知坑工具集**——库里对该工具名有强命中即视为"本可预防"。
- *  口径粗但可机检；定义与局限见 docs/observation-ledger.md §1（可换更细的映射表）。 */
+/**
+ * C2 v2（2026-10-10，外部评审建议）：**显式"工具→坑条目"映射表**。
+ * 为什么换掉 v1：v1 用"工具名在库里有强命中"判定，会把**仅仅提到该工具**的条目也算命中（偏宽）。
+ * 口径：列出**已归档、确有该工具坑**的条目 id；判定时校验 id 存在（退役/更名即自动失效，不悬空）。
+ * 维护：新坑条目归档后，把 id 加进对应工具；结构性工具（web_fetch/web_search）永不入表。
+ */
+export const RECALL_TRAP_MAP = Object.freeze({
+  pwsh: ['canon-review-manual-20261010', 'canon-npm-publish-20261010', 'canon-dsh-store-remediation-20261010'],
+  bash: ['canon-review-manual-20261010'],
+  edit: ['canon-review-manual-20261010'],
+  write: ['canon-review-manual-20261010'],
+  read: ['canon-review-manual-20261010'],
+  grep: ['canon-review-manual-20261010'],
+  dsh_wsl: ['canon-review-manual-20261010', 'canon-installability-20261010'],
+  codex_exec: ['canon-review-manual-20261010'],
+  apply_patch: ['canon-review-manual-20261010'],
+});
+
 /** 结构性不可预防（2026-10-10 实测：web_fetch 被误判为可预防）——网络/环境类失败，**任何记忆都不可能预防**。 */
 export const RECALL_STRUCTURAL_TOOLS = Object.freeze(['web_fetch', 'web_search']);
 
-export function recallToolTraps(candidates = ['pwsh', 'edit', 'write', 'read', 'grep', 'glob', 'bash', 'web_fetch', 'web_search', 'dsh_wsl', 'codex_exec', 'apply_patch']) {
+/** 已知坑工具集（C2 v2）：映射表 ∩ 结构性豁免之外；条目 id 需在库中存在（否则记 missing 但不判可预防）。 */
+export function recallToolTraps(opts = {}) {
+  const lib = opts.lib;
+  const have = lib ? new Set(currentRecords(lib.loadStore('canon').records).map((r) => String(r.id).replace(/-r\d+$/, ''))) : null;
   const traps = new Set();
-  for (const tool of candidates) {
-    if (RECALL_STRUCTURAL_TOOLS.includes(tool)) continue; // 结构性豁免：网络/环境类不判可预防
-    try { const d = lookupDetailed(tool, {}); if ((d.hits ?? []).some((h) => h.strong)) traps.add(tool); } catch { /* 库不可用 → 不判 */ }
+  const missing = [];
+  for (const [tool, ids] of Object.entries(RECALL_TRAP_MAP)) {
+    if (RECALL_STRUCTURAL_TOOLS.includes(tool)) continue;
+    if (!have) { traps.add(tool); continue; }
+    if (ids.some((id) => have.has(id))) traps.add(tool); else missing.push(tool + ':' + ids.join('|'));
   }
+  if (missing.length) try { console.error('[akasha] C2 映射表条目缺失（不判可预防）：' + missing.join(' , ')); } catch { /* 静默 */ }
   return traps;
 }
 
@@ -1714,7 +1736,7 @@ export function metrics(opts = {}) {
       perTurn: +(memoryCalls / Math.max(1, counters.turnEnds)).toFixed(2),
       byTool: memoryByName
     },
-    recall: recallSignals(kept, { toolTraps: recallToolTraps() }),
+    recall: recallSignals(kept, { toolTraps: recallToolTraps({ lib: { loadStore, currentRecords } }) }),
     topToolErrors: Object.entries(toolErrorsByName).sort((a, b) => b[1] - a[1]).slice(0, 5),
     topUsage: Object.entries(usageById).sort((a, b) => b[1] - a[1]).slice(0, 10),
     revisions: { count: revisions, longest, longestId }
