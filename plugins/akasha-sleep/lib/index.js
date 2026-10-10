@@ -158,13 +158,18 @@ export function apply(ctx, config = {}) {
 
   // 回查提示（v1.5，错误钩子的注入级动作）：进程内记录近期失败（工具 / agent），窗口内幂等渲染。
   const recentFailures = [];
+  const usedTools = new Set();                                    // 本会话用过哪些工具（首用预告的判据）
+  const announcedTraps = new Set();                               // 已预告过的陷阱工具（每工具一次）
   const noteFailure = (tool) => {
     try {
       recentFailures.push({ ts: Date.now(), tool: String(tool ?? '?') });
       if (recentFailures.length > 20) recentFailures.splice(0, recentFailures.length - 20);
     } catch { /* 静默 */ }
   };
-  ctx.on('tools/result', (exec, result) => { if (result?.isError === true) noteFailure(exec?.name); });
+  ctx.on('tools/result', (exec, result) => {
+    usedTools.add(String(exec?.name ?? '?'));                     // 首用预告用（2026-10-11）
+    if (result?.isError === true) noteFailure(exec?.name);
+  });
   ctx.on('agent/error', () => noteFailure('agent'));
 
   // 库脉搏（v1.3；v1.5 起附加回查行）：写→可见通道——并行会话 / 脚本写入库后，下一回合即可见并命名新内容。
@@ -266,13 +271,7 @@ export function apply(ctx, config = {}) {
           const now = Date.now();
           const WINDOW = 30 * 60 * 1000;
           const recent = (recentFailures || []).filter((f) => now - Number(f.ts ?? f.at) <= WINDOW);  // 字段是 ts（见 noteFailure）
-          if (!recent.length) return null;
-          const last = recent[recent.length - 1];
-          const tool = String(last.tool || '');
           const map = lib.RECALL_TRAP_MAP || {};
-          const ids = map[tool];
-          if (!ids || !ids.length) return null;                       // 不在映射表 ⇒ 不提示
-          if (preflightState.tool === tool && now - preflightState.at < WINDOW) return null;  // 同工具 30 分钟去重
           // 2026-10-11 修复（用户裁定：反射要能随工程知识纠错与优化）：
           //   **反射文本随条目走** —— 不再只认写死的表。
           //   ① 链感知解析（id 或 id-rN 取链尾）；② 条目缺失/已退役 ⇒ **不打**（fail closed，不执行过期反射）；
@@ -291,25 +290,62 @@ export function apply(ctx, config = {}) {
           const resolveEntry = (cid) => canonRecs.filter((r) => String(r.id) === cid || String(r.id).startsWith(cid + '-r')).pop() || null;
           const isRetired = (rec) => !!rec && (/已退役|retired/i.test(String(rec.claim ?? '')) || String(rec.id).endsWith('-retired'));
           const today = new Date().toISOString().slice(0, 10);
-          let id = null, act = null, hintSource = null;
-          for (const cand of ids) {
-            if (canonRecs.length) {
-              const rec = resolveEntry(cand);
-              if (!rec) continue;                                       // 链上已无此条 ⇒ 跳过
-              if (isRetired(rec)) continue;                              // 已退役 ⇒ 不执行过期反射
-              if (rec.hint_until && String(rec.hint_until) < today) continue;  // 反射有效期已过 ⇒ 跳过
-              if (typeof rec.hint === 'string' && rec.hint.trim()) { id = cand; act = rec.hint.trim(); hintSource = 'entry'; break; }
+          /** 某工具的首选反射：条目 `hint` 优先 → 兜底表；退役/过期/缺失一律跳过；取不到返回 null（fail closed）。
+           *  ⚠ 口径：**库可读时，条目是唯一来源**——该条目没有 hint 也**不**回落兜底（否则"退役/过期"会被兜底表救活，
+           *  等于过期反射照打）。兜底表只在**库读不到**时生效。 */
+          const hintForTool = (tool) => {
+            const ids = map[tool];
+            if (!ids || !ids.length) return null;
+            for (const cand of ids) {
+              if (canonRecs.length) {
+                const rec = resolveEntry(cand);
+                if (!rec) continue;                                       // 链上已无此条 ⇒ 跳过
+                if (isRetired(rec)) continue;                              // 已退役 ⇒ 不执行过期反射
+                if (rec.hint_until && String(rec.hint_until) < today) continue;  // 反射有效期已过 ⇒ 跳过
+                if (typeof rec.hint === 'string' && rec.hint.trim()) return { id: cand, act: rec.hint.trim(), hintSource: 'entry' };
+                continue;                                                  // 有条目但无 hint ⇒ 该候选作罢，不回落
+              }
+              if (FALLBACK_ACTIONS[cand]) return { id: cand, act: FALLBACK_ACTIONS[cand], hintSource: 'fallback' };
             }
-            if (FALLBACK_ACTIONS[cand]) { id = cand; act = FALLBACK_ACTIONS[cand]; hintSource = 'fallback'; break; }
+            return null;
+          };
+          const emitPreflight = (payload) => {
+            try {                                                        // 事件：关闭时走不到这里（双停）
+              appendFileSync(join(cfg.akashaDir, 'logs', 'hooks.jsonl'),
+                JSON.stringify({ ts: new Date().toISOString(), kind: 'preflight', ...payload }) + '\n', 'utf8');
+            } catch { /* 事件失败不影响提示 */ }
+          };
+          const trim80 = (s) => (s.length <= 80 ? s : s.slice(0, 79) + '…');
+
+          // ① 失败驱动（原逻辑）：近 30 分钟内有过失败 ⇒ 给"那件工具"的反射
+          if (recent.length) {
+            const tool = String(recent[recent.length - 1].tool || '');
+            const fresh = !(preflightState.tool === tool && now - preflightState.at < WINDOW);  // 同工具 30 分钟去重
+            if (fresh && map[tool]) {
+              const h = hintForTool(tool);
+              if (h) {
+                preflightState.tool = tool; preflightState.at = now;
+                emitPreflight({ tool, entry: h.id, hintSource: h.hintSource, mode: 'failure' });
+                return trim80('[坑前提示] ' + tool + ' 前：' + h.act + ' —— 条目 ' + h.id);
+              }
+            }
           }
-          if (!id || !act) return null;                                 // fail closed：没有现行条目/没有反射文本 ⇒ 不打
-          const line = '[坑前提示] ' + tool + ' 前：' + act + ' —— 条目 ' + id;
-          preflightState.tool = tool; preflightState.at = now;
-          try {                                                        // 事件：关闭时走不到这里（双停）
-            appendFileSync(join(cfg.akashaDir, 'logs', 'hooks.jsonl'),   // 用文件顶部已导入的 appendFileSync
-              JSON.stringify({ ts: new Date().toISOString(), kind: 'preflight', tool, entry: id, hintSource }) + '\n', 'utf8');
-          } catch { /* 事件失败不影响提示 */ }
-          return line.length <= 80 ? line : line.slice(0, 79) + '…';
+
+          // ② 首用预告（2026-10-11 新增；补"漏召"的结构缺口）：
+          //    渲染时**不知道本回合会用什么工具**，但知道**本会话还没用过哪些** ⇒ 逐个把"未用过的陷阱工具"预告一遍，
+          //    每个工具只预告一次（用过即止）= 把"事后回查"提前成"动手前预检"，不依赖历史失败。
+          if (cfg.preflightFirstUse !== false) {
+            const nextTool = Object.keys(map).find((t) => !usedTools.has(t) && !announcedTraps.has(t));
+            if (nextTool) {
+              const h = hintForTool(nextTool);
+              if (h) {
+                announcedTraps.add(nextTool);
+                emitPreflight({ tool: nextTool, entry: h.id, hintSource: h.hintSource, mode: 'first-use' });
+                return trim80('[坑前提示·首用] ' + nextTool + ' 还没用过：' + h.act + ' —— 条目 ' + h.id);
+              }
+            }
+          }
+          return null;
         } catch { return null; }
       }
     });

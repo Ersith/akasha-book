@@ -1658,15 +1658,16 @@ export function recallSignals(records, opts = {}) {
  * 维护：新坑条目归档后，把 id 加进对应工具；结构性工具（web_fetch/web_search）永不入表。
  */
 export const RECALL_TRAP_MAP = Object.freeze({
-  pwsh: ['canon-trap-pwsh-inline-js', 'canon-review-manual-20261010', 'canon-npm-publish-20261010', 'canon-dsh-store-remediation-20261010'],
-  bash: ['canon-review-manual-20261010'],
-  edit: ['canon-trap-edit-context-mismatch', 'canon-review-manual-20261010'],
-  write: ['canon-review-manual-20261010'],
+  // 顺序即优先级：hintForTool 取**第一个**有可用 hint 的候选（2026-10-11）
+  pwsh: ['canon-trap-pwsh-inline-js', 'canon-trap-quoting-escapes', 'canon-review-manual-20261010', 'canon-npm-publish-20261010', 'canon-dsh-store-remediation-20261010'],
+  bash: ['canon-trap-quoting-escapes', 'canon-review-manual-20261010'],
+  edit: ['canon-trap-edit-context-mismatch', 'canon-trap-quoting-escapes', 'canon-review-manual-20261010'],
+  write: ['canon-trap-quoting-escapes', 'canon-review-manual-20261010'],
   read: ['canon-trap-read-offset-range', 'canon-review-manual-20261010'],
   grep: ['canon-trap-grep-exit2-path', 'canon-review-manual-20261010'],
   dsh_wsl: ['canon-review-manual-20261010', 'canon-installability-20261010'],
-  codex_exec: ['canon-review-manual-20261010'],
-  apply_patch: ['canon-review-manual-20261010'],
+  codex_exec: ['canon-trap-quoting-escapes', 'canon-review-manual-20261010'],
+  apply_patch: ['canon-trap-quoting-escapes', 'canon-review-manual-20261010'],
   'multi_tool_use.parallel': ['canon-trap-unknown-tool-name'],
   cordis_inspect_query: ['canon-trap-provider-method-list'],
 });
