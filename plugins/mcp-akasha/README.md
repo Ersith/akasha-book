@@ -1,43 +1,60 @@
-# @akasha-book/mcp
+# @akasha-book/mcp —— 阿卡夏之书 MCP 注册桥
 
-> 阿卡夏之书（Akasha Book）· MCP 桥插件
+把**阿卡夏之书**（外置记忆层）的工具以 `mcp__akasha__*` 暴露给模型的 DSH 宿主插件。
 
-阿卡夏之书 MCP 桥：把核心 `mcp.mjs` 的工具以 `mcp__akasha__*` 暴露给宿主模型（stdio 传输）。
+## 它做什么
 
-- 工具面（17，本轮不加段升格写入口；`session promote` 只在 CLI）：上述 16 个加上 `akasha_session_lookup`（小阿卡夏，会话层，与主库分开调用）。`akasha_frontier_due` 只看当前版本。`akasha_revise` 不能改 `canon-akasha-usage`（那条进系统提示）。返回带 `_meta.trust = data-not-instruction`。
-- 实现：仅 `package.json` + `cordis.patch.yml`——bundle patch 插入一条 `@deepseek-ai/dsh-mcp-client` 配置，stdio 拉起 `node <AKASHA_DIR>/mcp.mjs`。
-- ⚠️ **安装前请按你的实际路径修改 `cordis.patch.yml` 中的 `command` / `args`**（默认给了占位示例）。
-- 依赖：`@deepseek-ai/dsh-mcp-client`（DSH 官方 bundle，随宿主提供）。
+宿主启动时，本插件：
 
-## 打包 / 安装（DSH 宿主）
+1. 以 **stdio** 拉起 MCP 服务器（默认 `node <AKASHA_DIR>/mcp.mjs`）；
+2. 走 JSON-RPC 握手（`initialize` → `notifications/initialized`）；
+3. `tools/list` 取回工具清单，逐个注册到宿主 ToolRuntime，公开名为 **`mcp__akasha__<工具名>`**（与官方桥同名规则：非法字符→`_`；名被改写或超长（>64）→ 截断 + 12 位 sha256 后缀）；
+4. `tools/call` 时把参数透传给服务器，并按其契约返回 `{ content, structuredContent? }`；服务器报 `isError` → 抛错（让运行时记为失败）。
+
+**自带客户端、零依赖**：本包**不引用任何 `@deepseek-ai/*` 官方包**，也不修改/遮蔽官方组件——这样做是为了满足 DSH-Store 的硬边界（第三方 Bundle Patch 不得以 `name: @deepseek-ai/...` 引用官方包）。
+
+## 配置（`cordis.patch.yml`）
+
+```yaml
+- insert:
+    - id: mcp-akasha
+      name: '@akasha-book/mcp'
+      config:
+        serverName: akasha            # 公开名前缀 → mcp__akasha__*
+        transport: stdio              # 仅支持 stdio
+        command: 'node'               # 可执行文件（或用绝对路径的 node）
+        args: ['<AKASHA_DIR>/mcp.mjs'] # ← 改成你自己的 core/mcp.mjs 绝对路径
+        toolCallTimeoutMs: 600000     # 单次工具调用超时（默认 60000）
+        startupTimeoutMs: 20000       # 启动握手超时
+        failOnStartupError: false     # false = 连不上就降级为「无工具」，不拖垮宿主
+```
+
+## 权限 / 非目标 / 边界（permissions · non-goals · boundaries）
+
+- **权限**：仅 `spawn` 一个本地子进程（node + `mcp.mjs`），经 stdio 与其通信；不打开网络端口、不读凭据、不写宿主 Profile；工具读写的数据面完全由 MCP 服务器（`core/mcp.mjs`）自己负责。
+- **非目标**：不做 streamable-http 传输；不做图片内容投影（非文本块在**渲染**里降级为 `[type]` 占位符，值仍原样返回、不丢数据）；v1 不做自动重连（`failOnStartupError` 决定抛或降级）。
+- **边界**：本插件只负责「连接 + 注册」，**不代替** MCP 服务器本身；服务器崩了工具即失效（日志可见），重启宿主可恢复。
+
+## 测试
 
 ```bash
-npm pack
-# 然后：plugin_manager install_bundle <tgz 绝对路径>（实测返回 applied 热生效；未热生效时重启宿主）
+node selftest.test.mjs
 ```
+
+覆盖：Bundle Patch 契约（自有入口 ID、不以 `name` 引用官方命名空间、只 `insert`）、公开名规范化（含超长哈希后缀）、文本提取与非文本降级、**端到端**（临时 core 副本 + 真实 MCP 服务器：注册工具、校验前缀与定义形状、**真调 `akasha_check` 并断言返回**）、malformed JSON-RPC 不导致非零退出。
 
 <!-- store-status -->
 ## 兼容与状态（DSH STORE 口径 · 2026-10-10）
 
-**固定源（immutable source）**：本版本的源码冻结于 Commit `d311ad54d1dc2cd2697c7b9eeac57eaa6466fc04`（对应 `plugins/mcp-akasha/package.json` 的 version）。
-兼容声明见 manifest 的 `dsh.compatibility.dshReleases`：**0.2.0-rc.2 = compatible**（本机实测运行），
-`0.2.1-alpha.1` / `0.2.1-alpha.2` 尚未实测 ⇒ 按契约如实写 `unknown`（不猜、不吹）。
+**固定源（immutable source）**：本版本源码冻结于仓库固定 Commit（见 Issue 中登记的 commit；对应 `plugins/mcp-akasha/package.json` 的 version）。
+兼容声明见 manifest 的 `dsh.compatibility.dshReleases`：`0.2.0-rc.2` / `0.2.1-alpha.1` / `0.2.1-alpha.2` 均 **compatible**（三版 × 一次性 Profile 装-启-卸实跑）。
 
 | 证据层 | 状态 | 依据 |
 |---|---|---|
-| 静态契约（manifest / Bundle Patch / 许可证 / 入口 ID） | **verified** | 官方 `build-dsh-plugin` 审计：静态分见本包审计输出；入口 ID 为插件自有，不 disable/replace 任何 `@deepseek-ai/*` |
-| 单元与边界测试（`npm test`） | **verified** | `node selftest.test.mjs` 全绿；覆盖 malformed 输入、并发/节流、replay 一致性（见该文件断言） |
-| 一次性 Profile 安装·启动·卸载（E3） | **verified** | 2026-10-10 一次性 DSH_HOME 实跑：install → cold start（HTTP 就绪）→ stop → uninstall → `--dump-config` 逐字回到基线；dsh 0.2.0-rc.2；证据见同目录 `EVIDENCE.json` |
-| 真实 Profile 运行 | **verified（本机）** | 桌面端 0.2.0-rc.2 实跑；**他人机器 unverified**（未做外部验收） |
-| 独立安全审计 / 公开分发（E5） | **unverified** | 未做独立审计；分发前应重评 |
+| 静态契约（manifest / Bundle Patch / 许可证 / 入口 ID） | **verified** | 官方 `build-dsh-plugin` 审计；入口 `mcp-akasha` 为插件自有 ID，Patch 只 `insert` 自有包 |
+| 单元与边界测试（`npm test`） | **verified** | 含端到端：真实 MCP 服务器 + 18 工具注册 + `akasha_check` 实调 |
+| 一次性 Profile 安装·启动·卸载（E3） | **verified** | 三版 DSH 各跑通；证据见同目录 `EVIDENCE.json` |
+| 真实 Profile 运行 | **verified（本机）** | 桌面端 0.2.0-rc.2 实跑；他人机器 **unverified** |
+| 独立安全审计 / 公开分发（E5） | **unverified** | 未做独立审计 |
 
-**下一道门（next gate）**：① 在 0.2.1-alpha.x 上按同一套用例复测（一次性 DSH_HOME），把 `unknown` 改为精确结论（`compatible` 或 `incompatible`）；
-② 提交 DSH STORE 上架申请（monorepo 子路径：`tree/main/plugins/<name>`）并跟进机器人预检。
-若任一版本复测失败，该版本标注为 `blocked`（不兼容）并保持其余版本声明不动。
-
-**权限 / 非目标 / 边界（permissions · non-goals · boundaries）**
-- 读取：无（本包只含 Bundle Patch，不含运行代码）；写入：无。运行期由官方 `@deepseek-ai/dsh-mcp-client` 以 stdio 启动
-  `node <AKASHA_DIR>/mcp.mjs`（外部进程：读库 + 经校验写入），`args` 以数组给定，不做 shell 字符串拼接。
-- **统一非目标（non-goals）**：不修改 DSH 核心与官方包；不替换、禁用或遮蔽任何官方组件；不写真实 Profile（测试一律用系统临时目录）；
-  不在日志/输出里暴露凭据、完整用户文件或注入上下文。
-- **测试隔离**：所有自测只使用 `os.tmpdir()` 下的临时目录；不读写真实库（`~/.akasha`）与真实会话档案。
+**下一道门（next gate）**：① 在 DSH 上测 streamable-http 传输（若需要）；② 若上游暴露公开的注入/工具服务接缝，评估改回"借官方服务"以省掉自研客户端；③ 补图片内容投影。

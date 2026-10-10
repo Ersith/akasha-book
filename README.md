@@ -49,6 +49,7 @@
   - `@akasha-book/session`：会话层调度（增量索引 / 压缩事件行 / 节奏条）+ 循环观测 P0
   - `@akasha-book/mcp`：MCP 注册桥
 - `paper/` —— 论文 v0.5（设计、实现与初步运营报告）
+- `docs/upstream-contracts.md` —— **对 DSH 的耦合点**（消息形状 / 工具定义 / 装载 / 观测线）与「升级宿主时的固定检查动作」
 - `deps.md` —— 依赖标注（平台 / 插件 / npm）
 - `CHECKS.md` —— 发布前隐私与安全扫描记录（四轮 + 维护同步复扫）
 
@@ -71,7 +72,7 @@ node mcp.mjs               # MCP stdio server（18 工具）
 2. 或取 **Release 附件**里的五个 `*.tgz`，用 DSH 插件管理器安装；或从源码自行打包：`cd plugins/akasha-gate && npm pack`（其余四件同法；零依赖，产物即 tgz）；
 3. 配置：默认值均指向 `~/.akasha`（家目录，运行时计算）；会话层的 `sessionsRoot` 指向你的宿主会话档案目录——细节见各插件 `README.md` 与 `cordis.patch.yml`。
 
-4. **上架状态（DSH-Store）**：五件均按 [DSH-Store](https://github.com/AI-Scarlett/DSH-Store) 契约做了整改——`dsh.compatibility.dshReleases` 三版窗口（`0.2.0-rc.2` / `0.2.1-alpha.1` / `0.2.1-alpha.2`）逐版本声明，且**三版各跑过一次性 Profile 的装-启-卸验收**（证据在各自 `EVIDENCE.json`）。上架申请：**`gate` / `hooks` / `session` / `sleep` 均已通过其自动预检**（`sleep` 首轮因"动态加载宿主包"被标扫描面不完整 → 已改为**插件本地构造**唤醒条消息并升 `1.5.2`，复检通过）；**`mcp` 暂不申请**——它的 Bundle Patch 需为官方 MCP 客户端添加配置行，触发该商城 `SUBMISSION_PATCH_PROTECTED`（"不得冒用官方命名空间"）。这是对第三方包的硬边界，我们接受并让 `mcp` 走 GitHub / npm 手工安装。
+4. **上架状态（DSH-Store）**：五件均按 [DSH-Store](https://github.com/AI-Scarlett/DSH-Store) 契约完成整改——`dsh.compatibility.dshReleases` 三版窗口（`0.2.0-rc.2` / `0.2.1-alpha.1` / `0.2.1-alpha.2`）逐版本声明，且**三版各跑过一次性 Profile 的装-启-卸验收**（证据在各自 `EVIDENCE.json`）；**五件均已提交上架申请**。其中两件为满足其硬边界做过实质改造：`sleep` 把唤醒条消息改为**插件本地构造**（原先动态加载宿主 `dsh-llm`，被其静态扫描判为扫描面不完整）；`mcp` 改为**自带 stdio 客户端**的自注册桥（原先的 Bundle Patch 需为官方 MCP 客户端添加配置行，触发 `SUBMISSION_PATCH_PROTECTED`）。这两处耦合与「升级宿主时的检查动作」登记在 [`docs/upstream-contracts.md`](docs/upstream-contracts.md)。
 
 ## 状态与边界（诚实）
 

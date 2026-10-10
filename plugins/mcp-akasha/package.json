@@ -1,12 +1,14 @@
 {
   "name": "@akasha-book/mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "repository": { "type": "git", "url": "https://github.com/Ersith/akasha-book.git", "directory": "plugins/mcp-akasha" },
   "engines": { "node": ">=22.15.0" },
   "license": "MIT",
   "type": "module",
-  "description": "阿卡夏之书 MCP 桥：把外置大脑（akasha）的工具以 mcp__akasha__* 暴露给模型（stdio：node mcp.mjs）",
-  "files": ["cordis.patch.yml"],
+  "description": "阿卡夏之书 MCP 注册桥：自带 stdio 客户端，把外置大脑（akasha）的工具以 mcp__akasha__* 暴露给模型（不引用任何 @deepseek-ai/* 包）",
+  "main": "index.js",
+  "exports": { ".": "./index.js" },
+  "files": ["index.js", "cordis.patch.yml", "README.md"],
   "scripts": { "test": "node selftest.test.mjs" },
   "dsh": {
     "bundle": {
