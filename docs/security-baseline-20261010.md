@@ -80,7 +80,27 @@
 
 **6. WPS 定性（用户"想不起来是啥"）**：**WPS Office 12.1.0.18276（金山办公）= 本机默认办公软件**（`.docx→WPS.Docx.6`、`.xlsx→ET.Xlsx.6`、`.pptx→WPP.PPTX.6`、`.pdf→KWPS.PDF.9`）⇒ **不可卸载**；常驻的 `wpscloudsvr`（云文档同步，已跑 23h、监听所有接口）⇒ **建议在 WPS 设置里关"云文档同步"**（保留本地办公能力），是否关取决于用户是否使用云文档。
 
-## 七、需要用户配合的两件
+## 八、加固执行与验收（2026-10-11）
+
+**用户已 `-Apply` 实跑**（报告 `docs/security-harden-20261011-021739.txt`，模式 `APPLY`），四项全部 `[APPLIED]`：
+
+| # | 动作 | 验收证据 |
+|---|---|---|
+| 1 | **删除失效排除项** `D:\product\test-electron` | 快照 `defender-baseline-snapshot.txt` 中 `exclusion_paths:` **已空**；MO2 四条**保留** ✓ |
+| 2 | **Defender 加严**：`CloudBlockLevel` 0→**2**、`MAPSReporting=2`、`SubmitSamplesConsent=1`、**3 条 ASR 上线（`AuditMode`，只记录不拦）** | 快照 `cloud_block_level: 2`、`asr_ids` 三条、`asr_actions: 2,2,2`（2=AuditMode）✓ |
+| 3 | **WPS 云同步服务**：`wpscloudsvr` **Stopped + Disabled** | `Get-Service` 复核 ✓ |
+| 4 | **Defender 基线快照落盘** | `docs/defender-baseline-snapshot.txt` ✓（供以后 diff 检测"谁又加了白名单"） |
+
+### ⚠️ 一条新运维教训：**禁用服务 ≠ 停掉能力——厂商看门狗会复活它**
+- 实测：杀掉 `wpscloudsvr` 后**数秒内出现新进程**，命令行 `… wpscloudsvr.exe /qingbangong /start_from=qingnse autologin` ⇒ **WPS「轻办公」组件在自动登录云账号**；
+- **复活渠道**：两个 WPS 更新计划任务（`WpsUpdateLogonTask_*` / `WpsUpdateTask_*` → `ksolaunch.exe /wpsupdate`，登录触发 + 定时触发）；父进程为"拉起即退"型守护；
+- **正解两级**：① 厂商设置里**退出登录 / 关轻办公与云文档**（根治，需 UI 操作）；② **网络层兜底** `tools/security-wps-outbound-block.ps1`（对该二进制建**出站阻断**，**用版本号 glob 应对 WPS 升级换路径**，dry-run 默认 / `-Apply` 生效 / `-Remove` 撤销；**只断网络、不影响本地编辑**）；
+- **保留不动**：WPS 更新任务（安全更新是正事）、防火墙 132 条系统默认规则、SMB（无放行规则，局域网不可达）。
+
+### 常规巡检项（我维护）
+1. **排除项快照 diff**（新增排除 = 报警）；2. **WPS 路径复核**（升级后重建出站阻断规则）；3. ASR 审计日志观察 1–2 周后决定是否转 `Enabled`；4. 25H2 升级前的兼容核查与回滚点。
+
+## 九、需要用户配合
 
 1. **一次性管理员权限**（用于 P0-1/P0-2 与 P1 的规则审计；只读为主，改动前逐条报）；
 2. **四个第三方监听的取舍**（WPS / Wacom / Steam / Eagle：哪些你日常要用）。
