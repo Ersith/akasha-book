@@ -13,6 +13,20 @@ import { dirname, join } from 'node:path';
 
 export const inject = ['systemPrompt', 'timer'];
 
+// —— 唤醒条消息构造（模块级导出，便于契约测试与复用）——
+// 语义等价于宿主 @deepseek-ai/dsh-llm 的 createUserMessage：
+//   createMessage(input) = deepFreeze(structuredClone({ ...input, id: brandString(randomUUID()) }))
+// 其中 brandString 是纯编译期类型标记（运行时恒等，见 @deepseek-ai/dsh-brand）。
+export const newMessageId = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `akasha-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+export const deepFreeze = (value) => {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const item of Object.values(value)) deepFreeze(item);
+    Object.freeze(value);
+  }
+  return value;
+};
+export const createUserMessage = (input) => deepFreeze({ ...structuredClone(input), role: 'user', id: newMessageId() });
+
 // 默认值：家目录下的 .akasha（可用 config 逐项覆盖）。
 const DEFAULT_AKASHA = join(homedir(), '.akasha');
 const DEFAULTS = {
@@ -87,18 +101,7 @@ export function apply(ctx, config = {}) {
 
   // 唤醒条（M6b）：新会话（agent/created）自动把「起床包」摘要递进 next-step inbox（不唤醒、不打断）。
   // 仅当有内容（无睡眠记录 / 有待办 / 审计警告）才说话；子代理与 compact 不打扰；一切异常只留痕。
-  // 唤醒条消息：**本地构造**（语义等价于宿主 @deepseek-ai/dsh-llm 的 createUserMessage——
-  // structuredClone + 深冻结 + 新鲜 id + role='user'）。刻意**不**动态加载宿主包：
-  // ① DSH-Store 静态扫描把「动态模块加载」判为扫描面不完整；② 本地构造耦合更少、静态可审计。
-  const newMessageId = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `akasha-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const deepFreeze = (value) => {
-    if (value && typeof value === 'object' && !Object.isFrozen(value)) {
-      for (const item of Object.values(value)) deepFreeze(item);
-      Object.freeze(value);
-    }
-    return value;
-  };
-  const createUserMessage = (input) => deepFreeze({ ...structuredClone(input), role: 'user', id: newMessageId() });
+  // 消息构造用模块级 createUserMessage（见文件头；本地实现、不动态加载宿主包）。
   const llmSkipNote = cfg.wakeNote === false ? 'wakeNote=false：唤醒条注入跳过（其余功能不受影响）' : null;
 
   const injectWakeNote = (agent) => {

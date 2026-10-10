@@ -257,6 +257,34 @@ rmSync(dirC, { recursive: true, force: true });
   assert.ok(!existsSync(join(dirC, 'logs', 'sleep-state.json')), '回滚：核心库不可用 → sleep-state.json 不得存在（失败不推进水位线）');
 }
 
+// —— 契约测试：本地构造的唤醒条消息 **与宿主逐字段比对**（守住"删掉动态加载"后的上游漂移）——
+{
+  const { createUserMessage, deepFreeze } = await import('./lib/index.js');
+  const sample = { content: [{ type: 'text', text: 'x' }], source: { kind: 'akasha-wake' } };
+  const mine = createUserMessage(structuredClone(sample));
+  assert.equal(mine.role, 'user', '本地构造：role=user');
+  assert.equal(typeof mine.id, 'string', '本地构造：id 为字符串');
+  assert.ok(Object.isFrozen(mine), '本地构造：顶层冻结');
+  assert.ok(Object.isFrozen(mine.content), '本地构造：嵌套冻结');
+  assert.ok(deepFreeze({ a: { b: 1 } }).a && Object.isFrozen(deepFreeze({ a: { b: 1 } }).a), 'deepFreeze 递归');
+
+  const hostModules = process.env.AKASHA_DSH_MODULES ?? 'D:\\DSHHarness\\resources\\app\\dsh\\node_modules';
+  const hostPath = join(hostModules, '@deepseek-ai', 'dsh-llm', 'lib', 'index.js');
+  if (existsSync(hostPath)) {
+    const { pathToFileURL } = await import('node:url');
+    const { createUserMessage: hostCreateUserMessage } = await import(pathToFileURL(hostPath).href);
+    const theirs = hostCreateUserMessage(structuredClone(sample));
+    assert.deepEqual(Object.keys(mine).sort(), Object.keys(theirs).sort(), '键集合与宿主一致');
+    assert.equal(mine.role, theirs.role, 'role 与宿主一致');
+    assert.equal(typeof mine.id, typeof theirs.id, 'id 类型与宿主一致');
+    assert.deepEqual(mine.content, theirs.content, '内容与宿主一致');
+    assert.deepEqual(mine.source, theirs.source, 'source 与宿主一致');
+    assert.equal(Object.isFrozen(mine), Object.isFrozen(theirs), '冻结语义与宿主一致');
+  } else {
+    console.log('SKIP 契约测试：未找到宿主 dsh-llm（可设 AKASHA_DSH_MODULES 指定应用模块目录）');
+  }
+}
+
 // —— 终末清理 ——
 rmSync(dir, { recursive: true, force: true });
 
