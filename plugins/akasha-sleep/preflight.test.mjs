@@ -68,7 +68,7 @@ T('④ 关闭时不注册 akasha:preflight', !rows.some((r) => r.name === 'akash
 
 // ⑤ 事件：开启时写 preflight 事件，关闭时行数不变
 makeFixture([mk('edit', 60_000)]);
-({ rows } = captureRows({ akashaDir: FIX, preflightHints: true }, []));
+({ rows } = captureRows({ akashaDir: FIX, preflightHints: true }, ["edit"]));
 row = rows.find((r) => r.name === 'akasha:preflight');
 const before = readFileSync(join(FIX, 'logs', 'hooks.jsonl'), 'utf8').split('\n').filter(Boolean).length;
 row.text();
