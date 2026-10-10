@@ -190,3 +190,10 @@
 - **落地与回滚**：活树已并（快照 `_rollback-20261010-a1\`：lib.mjs / test.mjs / SCHEMA.md / akasha.mjs / mcp.mjs）；新增设计文档 `research/weight-internalization-pid.md`；**MCP 面需重启才吃到 `loadBalance` 参数**（不带参数行为不变）。
 - **工程坑补充**：由行数组重组的映射补丁若**丢失末尾换行**，`git apply` 报 `corrupt patch at line N`——重组后须补回文件末尾换行。
 - **遗留**：启用时机（默认关，待语料/引用量增长后再评估）；`kExplore` 目前只对弱命中生效（按设计）。
+## R25 · A1 豁免与 root-id 用量口径修正（外援两批，2026-10-10）
+
+- **来源**：外援 Claude 两批补丁——`akasha-a1-exempt.tar.gz`（协议类豁免）+ `akasha-a1-fix2.tar.gz`（root-id 用量口径 + 自我层豁免）。**两条均源自我方复核发现**（R24 备注与 `canon-a1-id-convention-gap-20261010`：① 用量计数与查表的 id 口径不一致 ⇒ 修订条目永不计到；② 豁免只覆盖协议条、自我层同类未覆盖）。用户裁定「并」。
+- **机制**：① `loadBalanceCorrection` 增豁免——`cls === 'protocol'` → `correction=1` + `reasons:[{code:'protocol-exempt'}]`；扩至**自我层**（`isSelfLayerRecord`：id 前缀 `canon-(self-concept|address-layers|memory-auto-record)` ∪ tag『自我』）→ `self-layer-exempt`。② **用量口径修正**：新增 `rootIdOf()`（剥 `-rN`），用量窗口计数与平衡器查表**两侧统一按根 id** ⇒ 修订过的条目终于能累计引用（此前 `count` 恒 0）。默认仍关。
+- **验证（我方独立）**：两批均 `git am` 干净；**双路交叉对树**——路线 F（`da433d2` → 豁免 → `all.diff`）与路线 G（`am 豁免` → `am fix2 单补丁`）树哈希**完全一致** `b7f8a40b5213c3349a8530ab54c930996e039591`；核心 **130/130**（OSS 口径）/ **131/131**（活树口径）、Node 20 **125→126 通过 + 5 SKIP**、四插件全绿；**活数据实证**：协议条 count 0→**6**（protocol-exempt 校正 1）、自我层两条 count 0→**6 / 4**（self-layer-exempt 校正 1）、非豁免修订条 `front-kv-phase-sensitive-20261007` count 0→**3** → **over-quota 校正 0.5156**（终于吃得到罚）。
+- **落地与回滚**：活树已并（快照 `_rollback-20261010-a1fix2\`：lib.mjs / test.mjs / SCHEMA.md）。
+- **备注（给外援）**：`from-main-with-exempt.diff` 的 README hunk base 不一致（期望 127、实际 128）不可用；`all.diff` 口径正确。
