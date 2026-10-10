@@ -10,3 +10,6 @@
 - **索引观测线**：`session-index`（added / skipped / parseFails / ms / **lagMs**＝事件循环延迟采样）/ `session-index-skip` / `session-index-error` / **`session-index-slow`**（单次索引 >1.5s 告警，含 lagMs）。
 - 配置：`akashaDir`（核心库位置）/ `sessionsRoot`（宿主会话档案目录）/ `storeFile` / `metaFile` / `log`；默认见 `lib/index.js` 的 DEFAULTS。
 - 自测：`node selftest.mjs`（桩 ctx 端到端；临时目录，不碰真实数据；需与本包 `core/` 并列）。
+
+- **索引 worker 化（2026-10-10 · 计划队列 v0.4 项）**：宿主回调只投递（`postMessage`，µs 级返回），索引在**常驻 worker 线程**（`lib/index-worker.mjs`，插件加载即预热）串行执行、同会话排队去重；`indexSession` 以 `metaFile` 为锁对象串行化整段「读水位 → 追加 → 记账」（`core/lib.mjs` 的 `withFileLock`；**锁 meta 而非 store**——`appendSegments` 内部已持 store 锁，嵌套会死等）。退出协议：dispose → `{"type":"quit"}` → drain → 关闭（5s 兜底强杀）。降级链：`indexMode: 'worker' | 'inline'`（默认 worker；**连续** 3 次失败自动降级，任何成功回零）。
+- **观测语义（worker 化后）**：`session-index` 新增 `via`（worker/inline）与 `hostMs`（宿主投递耗时）；**`session-index-slow` 的含义变为「后台耗时 >1.5s」**——宿主卡顿请看 `hostMs` / `lagMs`。

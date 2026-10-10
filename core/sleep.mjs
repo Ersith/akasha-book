@@ -445,11 +445,41 @@ export function sleepPlan(opts = {}) {
     const ops = all.slice(0, params.maxOps);
     const truncated = { total: all.length, dropped: all.length - ops.length };
 
+    // 5.5) 近失报告（2026-10-10）：把「离触发还差多远」摆出来——ops 为空时不再是黑箱。
+    //   · 合并：同库 Jaccard 最高的若干对 vs θ（独立于上面贪心结果，纯诊断）
+    //   · 丢弃：最老的 orphan / canon 年龄 vs 各自阈值；快照取代与 frontier 同 url 的组数
+    //   诊断段不参与 planId 哈希（计划身份仍只由 params/basis/inputs/ops 决定），也不影响任何 op。
+    const nearMiss = { merge: {}, discard: {} };
+    for (const store of ['canon', 'mirror', 'lexicon', 'pricing']) {
+      const cands = eligible[store].map((v) => ({ id: v.rec.id, toks: planTokens(planPrimaryText(store, v.rec)) })).filter((c) => c.toks.size > 0);
+      const pairs = [];
+      for (let i = 0; i < cands.length; i += 1) {
+        for (let j = i + 1; j < cands.length; j += 1) {
+          const sim = jaccard(cands[i].toks, cands[j].toks);
+          if (sim > 0) pairs.push({ a: cands[i].id, b: cands[j].id, jaccard: +sim.toFixed(4) });
+        }
+      }
+      pairs.sort((x, y) => y.jaccard - x.jaccard || byStr(x.a, y.a) || byStr(x.b, y.b));
+      nearMiss.merge[store] = { theta: params.theta, candidates: cands.length, top: pairs.slice(0, 3) };
+    }
+    const orphanAges = eligible.orphan.map((v) => {
+      const created = day10(v.rec.created) || day10(v.chain[0].created);
+      return created ? { id: v.rec.id, created, ageDays: dayDiff(created, today) } : null;
+    }).filter(Boolean).sort((a, b) => b.ageDays - a.ageDays || byStr(a.id, b.id));
+    const canonAges = eligible.canon.map((v) => {
+      const lr = day10(v.rec.last_reviewed);
+      return lr ? { id: v.rec.id, last_reviewed: lr, ageDays: dayDiff(lr, today) } : null;
+    }).filter(Boolean).sort((a, b) => b.ageDays - a.ageDays || byStr(a.id, b.id));
+    nearMiss.discard['orphan-aging'] = { thresholdDays: params.orphanDays, examined: orphanAges.length, oldest: orphanAges.slice(0, 3) };
+    nearMiss.discard['canon-stale-unused'] = { thresholdDays: params.staleDays, examined: canonAges.length, oldest: canonAges.slice(0, 3), ...(usage === null ? { note: 'usage 日志缺失：本规则不出 op' } : {}) };
+    nearMiss.discard['snapshot-superseded'] = { stemsExamined: snaps.size, stemsWithMultiple: [...snaps.values()].filter((l) => l.length >= 2).length };
+    nearMiss.discard['frontier-duplicate-url'] = { urlsWithMultiple: [...byUrl.values()].filter((l) => l.length >= 2).length };
+
     const planId = 'plan-' + sha256(JSON.stringify({ v: 1, params, basis, inputs, ops })).slice(0, 16);
     const plan = {
       planId, version: 1, mode: 'plan-only',
       createdAt: (opts.now instanceof Date ? opts.now : new Date()).toISOString(),
-      params, basis, inputs, ops, truncated, excluded, skipped,
+      params, basis, inputs, ops, truncated, excluded, skipped, nearMiss,
       ...(Object.keys(badLines).length ? { badLines } : {}),
       note: '只读计划：未改六库。mergedText 留给模型 / 人填写；--apply / 回滚 / revokes 尚未实现（待本计划评审）。'
     };

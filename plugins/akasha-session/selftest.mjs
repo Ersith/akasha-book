@@ -25,18 +25,34 @@ function tz(name, fn) {
   skipped.push(name); console.log('SKIP', name, `— Node ${process.version} 无 zstd`);
 }
 
+// v0.4：worker 路径是异步的——给用例提供 async + 轮询等待能力。
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function ta(name, fn) {
+  try { await fn(); passed++; console.log('PASS', name); }
+  catch (e) { failures.push([name, e]); console.log('FAIL', name, '—', e.message); }
+}
+async function waitFor(pred, { timeoutMs = 20000, stepMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const v = pred();
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error('waitFor 超时：' + timeoutMs + 'ms');
+    await sleep(stepMs);
+  }
+}
+
 let mod = null;
 try { mod = await import('./lib/index.js'); }
 catch (e) { failures.push(['import lib/index.js', e]); console.log('FAIL import lib/index.js —', e.message); }
 
 function makeCtx() {
-  const handlers = {}; const contexts = [];
+  const handlers = {}; const contexts = []; const disposers = [];
   return {
-    handlers, contexts,
+    handlers, contexts, disposers,
     ctx: {
       on: (name, fn) => { (handlers[name] ??= []).push(fn); },
       systemPrompt: { context: (o) => { contexts.push(o); } },
-      effect: (fn) => { try { fn(); } catch { /* stub */ } },
+      effect: (fn) => { try { const d = fn(); if (typeof d === 'function') disposers.push(d); } catch { /* stub */ } },
       interval: undefined
     }
   };
@@ -49,10 +65,12 @@ if (mod) {
     const { ctx } = makeCtx();
     mod.apply(ctx, { akashaDir: CORE, log: join(dir, 'hooks.jsonl'), sessionsRoot: join(dir, 'sessions'), metaFile: join(dir, 'meta.json'), minIndexIntervalMs: 30000 });
     const lines = readLines(join(dir, 'hooks.jsonl'));
-    assert.equal(lines[0].kind, 'session-armed');
-    assert.equal(lines[0].pid, process.pid);
-    assert.equal(lines[0].minIndexIntervalMs, 30000);
-    assert.ok(lines[0].timerCheckMs > 0);
+    const armed = lines.find((l) => l.kind === 'session-armed');
+    assert.ok(armed, 'apply 应落 session-armed 线：' + JSON.stringify(lines.map((l) => l.kind)));
+    assert.equal(armed.pid, process.pid);
+    assert.equal(armed.minIndexIntervalMs, 30000);
+    assert.ok(armed.timerCheckMs > 0);
+    assert.ok(lines.some((l) => l.kind === 'session-worker' && l.event === 'spawn'), 'v0.4 默认应预热 worker（spawn 线）');
     rmSync(dir, { recursive: true, force: true });
   });
   t('骨架：挂 1 条 context 行（akasha:session，order 134）；无数据静默 null', () => {
@@ -82,7 +100,7 @@ if (mod) {
     const fx = join(sDir, 'session.v4.jsonl.zstd');
     writeFileSync(fx, zstdCompressSync(mk([1, 2])));
     const { ctx, handlers } = makeCtx();
-    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 30000 });
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 30000, indexMode: 'inline' });
     const fire = (h) => (h['session/event'] ?? []).forEach((fn) => fn({ id: 'abc12345' }, { type: 'turn/end', data: { turn: 1 } }));
     fire(handlers);
     let idx = readLines(log).filter((l) => l.kind === 'session-index');
@@ -99,7 +117,7 @@ if (mod) {
     appendFileSync(fx, zstdCompressSync(mk([3])));
     const { ctx: ctx2, handlers: h2 } = makeCtx();
     const log2 = join(dir, 'hooks2.jsonl');
-    mod.apply(ctx2, { akashaDir: CORE, log: log2, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0 });
+    mod.apply(ctx2, { akashaDir: CORE, log: log2, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0, indexMode: 'inline' });
     fire(h2);
     appendFileSync(fx, zstdCompressSync(mk([3]))); // 同内容再落一帧：档案变了（过 stat 快路）但无新 seq
     fire(h2);
@@ -209,7 +227,7 @@ if (mod) {
     writeFileSync(join(sDir, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([1, 2])));
     const { ctx, handlers, contexts } = makeCtx();
     // 去抖 30s：刚 turn/end 索引过，压缩仍须 force 补一次（不得被去抖吞掉而又宣称已收入）
-    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 30000 });
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 30000, indexMode: 'inline' });
     const fire = (sid, event) => (handlers['session/event'] ?? []).forEach((fn) => fn({ id: sid }, event));
     fire('cmp00001', { type: 'turn/end', data: { turn: 1 } });
     appendFileSync(join(sDir, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([3])));
@@ -249,7 +267,7 @@ if (mod) {
     const mk = (seqs) => Buffer.from(seqs.map((seq) => JSON.stringify({ seq, time: 1791312000000 + seq * 1000, type: 'user/message', data: { content: [{ type: 'text', text: '第' + seq + '条' }] } })).join('\n') + '\n');
     writeFileSync(join(sDir, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([1])));
     const { ctx, handlers } = makeCtx();
-    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0 });
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0, indexMode: 'inline' });
     const fire = () => (handlers['session/event'] ?? []).forEach((fn) => fn({ id: 'abc12345' }, { type: 'turn/end', data: { turn: 1 } }));
     fire();
     fire();
@@ -272,7 +290,7 @@ if (mod) {
     // 2026-10-08 合并批：appendSegments 现已自动建父目录（真修复）——改用「store.jsonl 是目录」注入失败
     // （父目录存在、mkdir 救不了，追加必失败），保持「失败后不停滞」用例语义。
     mkdirSync(join(dir, 'store.jsonl'));
-    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0 });
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0, indexMode: 'inline' });
     const fire = () => (handlers['session/event'] ?? []).forEach((fn) => fn({ id: 'abc12345' }, { type: 'turn/end', data: { turn: 1 } }));
     fire();
     fire();
@@ -290,7 +308,7 @@ if (mod) {
     const mk = (seqs) => Buffer.from(seqs.map((seq) => JSON.stringify({ seq, time: 1791312000000 + seq * 1000, type: 'user/message', data: { content: [{ type: 'text', text: '第' + seq + '条' }] } })).join('\n') + '\n');
     writeFileSync(join(sDir, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([1])));
     const { ctx, handlers } = makeCtx();
-    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0 });
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0, indexMode: 'inline' });
     (handlers['session/event'] ?? []).forEach((fn) => fn({ id: 'session-abc12345' }, { type: 'turn/end', data: { turn: 1 } }));
     const idx = readLines(log).filter((l) => l.kind === 'session-index');
     assert.equal(idx.length, 1, JSON.stringify(readLines(log)));
@@ -374,6 +392,53 @@ if (mod) {
     assert.ok(lines[0].atChars >= 21000, 'atChars 应为单调累计：' + JSON.stringify(lines[0]));
     rmSync(dir, { recursive: true, force: true });
   });
+
+  // ---------- v0.4：索引 worker 化 ----------
+  await ta('worker：宿主只投递 → 后台索引 → via=worker 落线（hostMs < 5ms）', async () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
+    const log = join(dir, 'hooks.jsonl');
+    const sessionsRoot = join(dir, 'sessions');
+    const sDir = join(sessionsRoot, '--W--', 'session-wkr12345');
+    mkdirSync(sDir, { recursive: true });
+    const mk = (seqs) => Buffer.from(seqs.map((seq) => JSON.stringify({ seq, time: 1791312000000 + seq * 1000, type: 'user/message', data: { content: [{ type: 'text', text: 'worker 夹具第' + seq + '条' }] } })).join('\n') + '\n');
+    writeFileSync(join(sDir, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([1, 2, 3])));
+    const { ctx, handlers, disposers } = makeCtx();
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0 });
+    const fire = () => (handlers['session/event'] ?? []).forEach((fn) => fn({ id: 'wkr12345' }, { type: 'turn/end', data: { turn: 1 } }));
+    fire();
+    const idx = await waitFor(() => readLines(log).find((l) => l.kind === 'session-index'));
+    assert.equal(idx.via, 'worker', 'v0.4 默认应走 worker：' + JSON.stringify(idx));
+    assert.ok(typeof idx.hostMs === 'number' && idx.hostMs < 5, '宿主投递应 < 5ms：' + idx.hostMs);
+    assert.equal(idx.added, 3, JSON.stringify(idx));
+    assert.equal(idx.session, 'wkr12345');
+    const all = readLines(log);
+    assert.ok(all.some((l) => l.kind === 'session-worker' && l.event === 'spawn'), '应有 worker spawn 线');
+    assert.ok(all.some((l) => l.kind === 'session-worker' && l.event === 'ready'), '应有 worker ready 线');
+    assert.equal(all.filter((l) => l.kind === 'session-worker-error').length, 0, '不得有 worker 错误：' + JSON.stringify(all.filter((l) => l.kind === 'session-worker-error')));
+    const storeRows = readFileSync(join(dir, 'store.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean).length;
+    assert.equal(storeRows, 3, 'store 应有 3 行：' + storeRows);
+    for (const d of disposers) { try { d(); } catch { /* 静默 */ } }
+    await waitFor(() => readLines(log).some((l) => l.kind === 'session-worker' && (l.event === 'bye' || l.event === 'exit')), { timeoutMs: 10000 });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  await ta('worker：降级链——worker 起不来时立即回 inline（不丢活）', async () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
+    const log = join(dir, 'hooks.jsonl');
+    const sessionsRoot = join(dir, 'sessions');
+    const sDir = join(sessionsRoot, '--W--', 'session-dg000001');
+    mkdirSync(sDir, { recursive: true });
+    const mk = (seqs) => Buffer.from(seqs.map((seq) => JSON.stringify({ seq, time: 1791312000000 + seq * 1000, type: 'user/message', data: { content: [{ type: 'text', text: '降级夹具第' + seq + '条' }] } })).join('\n') + '\n');
+    writeFileSync(join(sDir, 'session.v4.jsonl.zstd'), zstdCompressSync(mk([1, 2])));
+    const { ctx, handlers } = makeCtx();
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot, metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), minIndexIntervalMs: 0, indexMode: 'inline' });
+    (handlers['session/event'] ?? []).forEach((fn) => fn({ id: 'dg000001' }, { type: 'turn/end', data: { turn: 1 } }));
+    const idx = readLines(log).find((l) => l.kind === 'session-index');
+    assert.ok(idx && idx.via === 'inline', 'indexMode:inline 应走回退路径：' + JSON.stringify(idx));
+    assert.equal(idx.added, 2, JSON.stringify(idx));
+    assert.ok(!readLines(log).some((l) => l.kind === 'session-worker'), 'inline 模式不应起 worker：' + JSON.stringify(readLines(log).map((l) => l.kind)));
+    rmSync(dir, { recursive: true, force: true });
+  });
 }
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped` : ''}`);
@@ -382,3 +447,5 @@ if (failures.length) {
   for (const [name, e] of failures) console.log(' -', name, ':', e.message);
   process.exit(1);
 }
+// v0.4：worker 线程（即使 unref）会让事件循环不归零 → 全部用例跑完显式退出，避免"测试全绿但进程挂着"。
+process.exit(0);

@@ -8,6 +8,7 @@ import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 
 export const inject = ['systemPrompt', 'timer'];
 
@@ -24,7 +25,9 @@ const DEFAULTS = {
   contextOrder: 134,
   loopWatch: true,
   watchMinChars: 200,
-  watchCheckEvery: 480
+  watchCheckEvery: 480,
+  indexMode: 'worker',          // 'worker'（v0.4 默认）| 'inline'（回退）
+  workerRespawnMs: 15000
 };
 
 /** 去抖判定（纯函数）。 */
@@ -246,6 +249,94 @@ export function apply(ctx, config = {}) {
     for (const c of compacts) if (c.session === sid && c.indexed !== true) { c.indexed = true; c.reason = 'recovered'; c.recoveredBy = trigger; }
   };
 
+  // ---------- 索引 worker（v0.4）：宿主只投递任务，重活在后台线程串行跑 ----------
+  //   协议见 lib/index-worker.mjs；降级链：worker → （连续失败或 spawn 失败）→ inline 旧路径。
+  const workerUrl = new URL('./index-worker.mjs', import.meta.url);
+  let worker = null;
+  let workerFails = 0;
+  let workerMode = cfg.indexMode === 'inline' ? 'inline' : 'worker';
+  let quitting = false;
+  let respawnTimer = null;
+  let jobSeq = 0;
+  const pendingJobs = new Map(); // id -> { sid, trigger, extra, hostMs, stat }
+
+  const queueDepth = () => pendingJobs.size;
+
+  const scheduleRespawn = () => {
+    if (respawnTimer || quitting || workerMode !== 'worker') return;
+    respawnTimer = setTimeout(() => { respawnTimer = null; spawnWorker(); }, cfg.workerRespawnMs);
+    if (typeof respawnTimer.unref === 'function') respawnTimer.unref();
+  };
+
+  const onWorkerMessage = (msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'ready') { log({ kind: 'session-worker', event: 'ready', node: msg.node }); return; }
+    if (msg.type === 'queued') { log({ kind: 'session-worker', event: 'queued', session: msg.session, depth: msg.depth, running: msg.running }); return; }
+    if (msg.type === 'bye') { log({ kind: 'session-worker', event: 'bye', processed: msg.processed }); return; }
+    if (msg.type !== 'result') return;
+    const p = pendingJobs.get(msg.id);
+    pendingJobs.delete(msg.id);
+    const extra = p?.extra ?? {};
+    if (msg.error) {
+      lastFailAt.set(msg.session, Date.now());
+      log({ kind: 'session-index-error', session: msg.session, trigger: msg.trigger, message: msg.error, workerMs: msg.ms, hostMs: p?.hostMs ?? null, via: 'worker' });
+      return;
+    }
+    if (p?.stat) lastStat.set(msg.session, { size: p.stat.size, mtimeMs: p.stat.mtimeMs }); // 只记成功：失败后同档可重试
+    workerFails = 0; // 「连续失败」语义：任何一次成功都回零（2026-10-10 复查修正）
+    log({ kind: 'session-index', session: msg.session, trigger: msg.trigger, turn: extra.turn ?? null, added: msg.added, skipped: msg.skipped, parseFails: msg.parseFails, frameFails: msg.frameFails ?? 0, ms: msg.ms, hostMs: p?.hostMs ?? null, lagMs: loopLagMs, via: 'worker' });
+    if (msg.ms > 1500) log({ kind: 'session-index-slow', session: msg.session, trigger: msg.trigger, ms: msg.ms, lagMs: loopLagMs, added: msg.added, via: 'worker' });
+    settleCompacts(msg.session, msg.trigger);
+  };
+
+  function spawnWorker() {
+    if (workerMode !== 'worker' || worker || quitting) return;
+    try {
+      worker = new Worker(workerUrl);
+      worker.unref?.();
+      log({ kind: 'session-worker', event: 'spawn', pid: process.pid, pending: queueDepth() });
+      worker.on('message', (msg) => { try { onWorkerMessage(msg); } catch { /* 观测失败不拖宿主 */ } });
+      worker.on('error', (err) => {
+        log({ kind: 'session-worker-error', event: 'error', message: String(err?.message ?? err).slice(0, 300) });
+        worker = null;
+        workerFails += 1;
+        if (workerFails >= 3) { workerMode = 'inline'; log({ kind: 'session-worker', event: 'degraded-inline', fails: workerFails }); }
+        else scheduleRespawn();
+      });
+      worker.on('exit', (code) => {
+        const lost = pendingJobs.size;
+        if (lost) pendingJobs.clear();
+        log({ kind: 'session-worker', event: 'exit', code, lost, quitting });
+        worker = null;
+        if (!quitting) scheduleRespawn();
+      });
+    } catch (e) {
+      worker = null;
+      log({ kind: 'session-worker-error', event: 'spawn', message: String(e?.message ?? e).slice(0, 300) });
+    }
+  }
+  spawnWorker(); // 预热：apply 即起线程，首单不付冷启动
+
+  /** 投递一个索引任务；返回 { queued:true, hostMs } 或 { queued:false }（走 inline 回退）。 */
+  const dispatchIndex = (sid, file, trigger, extra, opts, st) => {
+    if (workerMode !== 'worker') return { queued: false };
+    spawnWorker();
+    if (!worker) return { queued: false };
+    const id = ++jobSeq;
+    const t0 = Date.now();
+    try {
+      worker.postMessage({ type: 'index', id, job: { akashaDir: cfg.akashaDir, session: sid, file, storeFile: cfg.storeFile, metaFile: cfg.metaFile, trigger, full: !!opts.full } });
+      const hostMs = Date.now() - t0;
+      pendingJobs.set(id, { sid, trigger, extra, hostMs, stat: st });
+      return { queued: true, hostMs };
+    } catch (e) {
+      workerFails += 1;
+      log({ kind: 'session-worker-error', event: 'post', message: String(e?.message ?? e).slice(0, 200) });
+      if (workerFails >= 3) { workerMode = 'inline'; log({ kind: 'session-worker', event: 'degraded-inline', fails: workerFails }); }
+      return { queued: false };
+    }
+  };
+
   /**
    * 返回索引结论（B1）：{ ok:true, reason:'indexed'|'unchanged' } = 档案内容已在会话层；
    * { ok:false, reason:'no-session'|'backoff'|'not-found'|'error' } = 没收进去；
@@ -278,11 +369,17 @@ export function apply(ctx, config = {}) {
         }
       }
       const t0 = Date.now();
+      const disp = dispatchIndex(sid, file, trigger, extra, opts, st);
+      if (disp.queued) {
+        // 宿主只投递（v0.4）：结果由 worker 回传，落地线条在 onWorkerMessage
+        return { ok: null, reason: 'queued', hostMs: disp.hostMs };
+      }
+      // 回退：inline 旧路径（indexMode:'inline' / worker 不可用 / 连续失败降级）
       const r = core().indexSession({ file, session: sid, storeFile: cfg.storeFile, metaFile: cfg.metaFile });
       if (st) lastStat.set(sid, { size: st.size, mtimeMs: st.mtimeMs }); // 只记成功：失败后同档可重试
       const dur = Date.now() - t0;
-      log({ kind: 'session-index', session: sid, trigger, turn: extra.turn ?? null, added: r.added, skipped: r.skipped, parseFails: r.parseFails, frameFails: r.frameFails ?? 0, ms: dur, lagMs: loopLagMs });
-      if (dur > 1500) log({ kind: 'session-index-slow', session: sid, trigger, ms: dur, lagMs: loopLagMs, added: r.added }); // >1.5s 告警线（2026-10-07 补4）
+      log({ kind: 'session-index', session: sid, trigger, turn: extra.turn ?? null, added: r.added, skipped: r.skipped, parseFails: r.parseFails, frameFails: r.frameFails ?? 0, ms: dur, lagMs: loopLagMs, via: 'inline' });
+      if (dur > 1500) log({ kind: 'session-index-slow', session: sid, trigger, ms: dur, lagMs: loopLagMs, added: r.added, via: 'inline' }); // >1.5s 告警线（2026-10-07 补4）
       settleCompacts(sid, trigger);
       return { ok: true, reason: 'indexed', added: r.added };
     } catch (error) {
@@ -335,6 +432,15 @@ export function apply(ctx, config = {}) {
       ctx.effect(() => () => { try { stop(); } catch { /* 静默 */ } });
     } catch { /* 静默 */ }
   }
+
+  // 退出协议（v0.4）：通知 worker drain 后关闭；5s 未退则强杀。
+  ctx.effect(() => () => {
+    quitting = true;
+    try { worker?.postMessage({ type: 'quit' }); } catch { /* ignore */ }
+    const w = worker;
+    const t = setTimeout(() => { try { w?.terminate(); } catch { /* ignore */ } }, 5000);
+    if (typeof t.unref === 'function') t.unref();
+  });
 
   // 条子：每回合一行（无内容静默）。
   ctx.systemPrompt.context({

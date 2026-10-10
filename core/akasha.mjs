@@ -202,6 +202,20 @@ switch (cmd) {
       const lines = [`睡眠计划 ${p.planId}（只读；六库未改）：${p.ops.length} 个操作${p.truncated.dropped ? `（共 ${p.truncated.total}，按上限 ${p.params.maxOps} 截去 ${p.truncated.dropped}）` : ''}；计划文件 ${r.planFile}`];
       for (const o of p.ops) lines.push(o.op === 'merge' ? `  merge   [${o.store}] ${o.keep} ← ${o.absorb.join(', ')}（${o.reason}）` : `  discard [${o.store}] ${o.id}（${o.reason}）`);
       for (const s of p.skipped) lines.push(`  · 跳过规则 ${s.rule}：${s.why}`);
+      if (p.ops.length === 0 && p.nearMiss) {
+        const nm = p.nearMiss;
+        lines.push('  · 近失报告（为何为空）：');
+        const o = nm.discard?.['orphan-aging'];
+        if (o) lines.push(`    - orphan-aging：检视 ${o.examined} 条，最老 ${o.oldest?.[0]?.ageDays ?? '?'} 天（阈值 ${o.thresholdDays} 天）`);
+        const c = nm.discard?.['canon-stale-unused'];
+        if (c) lines.push(`    - canon-stale-unused：检视 ${c.examined} 条，最老 ${c.oldest?.[0]?.ageDays ?? '?'} 天（阈值 ${c.thresholdDays} 天${c.note ? '；' + c.note : ''}）`);
+        const s2 = nm.discard?.['snapshot-superseded'];
+        if (s2) lines.push(`    - snapshot-superseded：同主题多快照 ${s2.stemsWithMultiple} 组（检视 ${s2.stemsExamined} 个主题）`);
+        const best = ['canon', 'mirror', 'lexicon', 'pricing']
+          .map((st) => ({ st, top: nm.merge?.[st]?.top?.[0], theta: nm.merge?.[st]?.theta, n: nm.merge?.[st]?.candidates }))
+          .filter((x) => x.top).sort((a, b) => b.top.jaccard - a.top.jaccard)[0];
+        if (best) lines.push(`    - near-duplicate：最高 Jaccard ${best.top.jaccard}（θ ${best.theta}；${best.st} 库 ${best.n} 条里最像的一对：${best.top.a} ↔ ${best.top.b}）`);
+      }
       lines.push('  · mergedText 留空待填；--apply 尚未实现（待计划评审）。');
       print({ ...p, planFile: r.planFile }, lines.join('\n'));
       break;

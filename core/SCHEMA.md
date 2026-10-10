@@ -162,8 +162,16 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
   inputs:  { hooksLog: { bytes, sha256 } },        // canon-stale 引用计数的来源
   ops: [ { op:"merge",   store, keep, absorb:[ids], reason, mergedText:null, evidence },
          { op:"discard", store, id, reason, evidence } ],
-  truncated: { total, dropped }, excluded: { protocol, promoted }, skipped: [ { rule, why } ] }
+  truncated: { total, dropped }, excluded: { protocol, promoted }, skipped: [ { rule, why } ],
+  nearMiss: {                                       // v2026-10-10：近失报告（诊断用；不进 planId、不影响 op）
+    merge:   { <store>: { theta, candidates, top: [ { a, b, jaccard } ×≤3 ] } },
+    discard: { 'orphan-aging':      { thresholdDays, examined, oldest: [ { id, created, ageDays } ×≤3 ] },
+               'canon-stale-unused':{ thresholdDays, examined, oldest: [ { id, last_reviewed, ageDays } ×≤3 ], note? },
+               'snapshot-superseded':{ stemsExamined, stemsWithMultiple },
+               'frontier-duplicate-url': { urlsWithMultiple } } } }
 ```
+
+- **近失报告（`nearMiss`，2026-10-10 起）**：把「离触发差多远」摆出来——`ops` 为空时不再是无解释的黑箱（CLI 在 0 op 时打印一行摘要）。它**不参与 planId 哈希、不影响任何 op**；合并段列出各库 Jaccard 最高的 ≤3 对，丢弃段列出最老的 orphan / canon 年龄与同主题多快照、同 URL 组数。
 
 - **确定性**：`planId = "plan-" + sha256({ params, basis, inputs, ops })` 前 16 位；`createdAt` 不参与。同库、同日志、同参数 ⇒ 同 ops、同 planId。库变一个字节 ⇒ basis 变 ⇒ planId 变（将来 apply 据此拒绝过期计划）。
 - **merge**（同库、都在当前集）：

@@ -156,3 +156,13 @@
 - **完整性三重对账**：注册表 `dist.integrity`（sha512）与本地发送物**三件全等**；三件 tarball 均已在注册表可下载且**与本地逐字节相同**（`hooks` 端点曾短暂 404，属传播时差，数分钟后恢复：HTTP 200 / 5091B / 哈希全等）。
 - **隐私双扫（回应「有没有暴露隐私 / API」）**：本地发送物 12 文件 + 注册表拉回物 8 文件（gate/session）× 17 类强模式（本机路径 / 用户名 / 各 token 前缀 / 回环端口 / 工具链盘符 / 活树目录名…）——**全部零命中**；包内仅 4 类文件（index.js / package.json / README / cordis.patch.yml）；README 人眼抽验无个人信息；npm 凭据仅存本机 npmrc，从未进入包内容或输出。
 - **遗留**：`hooks` 版本列表残存历史 `0.0.0-stage` 占位（R11 staged 时代产物；无隐私问题；可选 `npm deprecate` 清理）；token 轮换仍待用户侧执行。
+
+## R21 · 索引 worker 化（session 插件 + core 锁）与睡眠计划近失报告（2026-10-10）
+
+- **来源**：用户裁定「我们尝试结合最近的所学，试试小阿卡夏 worker 化」（本机实现，非外援批）；同批附「睡眠 ops 恒空」定案后的**近失报告**。
+- **机制（worker 化）**：宿主回调只投递（`postMessage`，µs 级）→ **常驻 worker 线程**（apply 即预热）串行执行、同会话排队去重；`indexSession` 以 `metaFile` 为锁对象串行化「读水位 → 追加 → 记账」（**锁 meta 而非 store**——内部 `appendSegments` 已持 store 锁，嵌套会死等）；退出协议 quit→drain→close（5s 兜底 terminate）；降级链 `indexMode: worker|inline`（**连续** 3 次失败降级、成功回零）。
+- **机制（近失报告）**：`sleepPlan` 增 `nearMiss` 诊断段（合并：各库 top-3 最近对 vs θ；丢弃：最老 orphan/canon 年龄 vs 阈值、同主题多快照组数、同 URL 组数）——**不进 planId、不影响任何 op**；CLI `sleep --plan` 在 0 op 时打印「近失报告（为何为空）」。
+- **口径**：worker 化验收 = 宿主投递 <5ms（hostMs≈0）+ 结果回传落线 + 幂等/去重不破 + 崩溃重跑不重复 + 锁互斥（CLI 与 worker 不交错）；近失验收 = 0 op 时能解释「离触发差多远」，且诊断段不改计划身份（planId 不变）。
+- **验证（我方独立）**：插件自测 **22/22**（新增「worker 投递/落线/hostMs」与「inline 降级」两用例；附修「worker 线程令事件循环不归零 → 收尾显式 exit」）；桩 ctx 全链路 mock 6/6；核心 **120/120**（session.mjs 加锁回归）；**对照**：2.1MB 档案 inline 宿主阻塞 **161ms** → 投递 **0.06ms**；真档案 17.53MB **1267ms** → **0.37ms**；**部署后首活**（hooks.jsonl）：`session-worker queued` → `session-index via=worker ms=840 hostMs=0 lagMs=10 added=33`，零 error / 零降级；睡眠侧核心 **121/121**（新增近失用例）；真库数字：orphan 最老 4 天（检视 30）/ canon 最老 4 天（89）/ 同主题多快照 0 组（72 主题）/ 最像一对 Jaccard 0.2412（θ 0.8）。
+- **状态**：新增 `plugins/akasha-session/lib/index-worker.mjs`（`package.json` 的 `files` 白名单已含）；**npm 重发待时机**（插件版本仍 0.2.5，本仓代码领先已发布物）。
+- **遗留**：worker 崩溃丢 pending 后靠下一触发重跑（未直接测，幂等由水位+去重保证）；同会话排队去重未单测（时序敏感）；锁等待上限 5s 为 `withFileLock` 固定口径。

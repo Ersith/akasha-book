@@ -239,42 +239,47 @@ function readMeta(metaFile) {
   try { return JSON.parse(readFileSync(metaFile, 'utf8')); } catch { return {}; }
 }
 
-/** 索引一个会话档案：水位 + id 去重 + meta 记账；full=true 忽略水位重扫（仍按 id 去重）。 */
-export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.storeFile, metaFile = SESSION_DEFAULTS.metaFile, full = false } = {}) {
-  const sid = String(session ?? 'unknown');
-  const { text, frameFails, frameTruncated } = readSessionArchive(file);
-  const records = [];
-  let parseFails = 0;
-  for (const line of text.split(/\r?\n/)) {
-    const s = line.trim();
-    if (!s) continue;
-    try { records.push(JSON.parse(s)); } catch { parseFails += 1; }
-  }
-  const seqOf = (rec, i) => (Number.isInteger(rec.seq) ? rec.seq : i + 1);
-  const meta = readMeta(metaFile);
-  const prev = meta.sessions?.[sid] ?? {};
-  const lastSeq = Number.isInteger(prev.lastSeq) ? prev.lastSeq : 0;
-  let maxSeq = lastSeq;
-  records.forEach((rec, i) => { const seq = seqOf(rec, i); if (seq > maxSeq) maxSeq = seq; });
-  // 配对按「全量记录」维护（修复中途索引切批的漏配）；产出只取新：emitFrom=lastSeq（--full 时 0）。
-  const segs = extractSegments(records, { session: sid, emitFrom: full ? 0 : lastSeq });
-  const existing = new Set(loadStore('session', storeFile).records.map((r) => r.id));
-  const incoming = segs.filter((x) => !existing.has(x.id));
-  const skipped = segs.length - incoming.length;
-  appendSegments(storeFile, incoming);
-  const ownedRecs = loadStore('session', storeFile).records.filter((r) => r.session === sid);
-  const ownedIds = new Set(ownedRecs.map((r) => r.id));
-  const conclIds = new Set(ownedRecs.filter((r) => r.kind === 'conclusion').map((r) => r.id));
-  const next = {
-    ...meta,
-    version: 1,
-    sessions: {
-      ...(meta.sessions ?? {}),
-      [sid]: { lastSeq: maxSeq, segments: ownedIds.size, conclusions: conclIds.size, indexedAt: new Date().toISOString(), source: file }
+/** 索引一个会话档案：水位 + id 去重 + meta 记账；full=true 忽略水位重扫（仍按 id 去重）。
+ *  lock（默认 true）：以 metaFile 为锁对象串行化整个「读水位 → 追加 → 记账」序列（worker 与 CLI 互斥）。
+ *  注意：不能锁 storeFile——appendSegments 内部已对 store 取锁，同进程嵌套会死等。 */
+export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.storeFile, metaFile = SESSION_DEFAULTS.metaFile, full = false, lock = true } = {}) {
+  const run = () => {
+    const sid = String(session ?? 'unknown');
+    const { text, frameFails, frameTruncated } = readSessionArchive(file);
+    const records = [];
+    let parseFails = 0;
+    for (const line of text.split(/\r?\n/)) {
+      const s = line.trim();
+      if (!s) continue;
+      try { records.push(JSON.parse(s)); } catch { parseFails += 1; }
     }
+    const seqOf = (rec, i) => (Number.isInteger(rec.seq) ? rec.seq : i + 1);
+    const meta = readMeta(metaFile);
+    const prev = meta.sessions?.[sid] ?? {};
+    const lastSeq = Number.isInteger(prev.lastSeq) ? prev.lastSeq : 0;
+    let maxSeq = lastSeq;
+    records.forEach((rec, i) => { const seq = seqOf(rec, i); if (seq > maxSeq) maxSeq = seq; });
+    // 配对按「全量记录」维护（修复中途索引切批的漏配）；产出只取新：emitFrom=lastSeq（--full 时 0）。
+    const segs = extractSegments(records, { session: sid, emitFrom: full ? 0 : lastSeq });
+    const existing = new Set(loadStore('session', storeFile).records.map((r) => r.id));
+    const incoming = segs.filter((x) => !existing.has(x.id));
+    const skipped = segs.length - incoming.length;
+    appendSegments(storeFile, incoming);
+    const ownedRecs = loadStore('session', storeFile).records.filter((r) => r.session === sid);
+    const ownedIds = new Set(ownedRecs.map((r) => r.id));
+    const conclIds = new Set(ownedRecs.filter((r) => r.kind === 'conclusion').map((r) => r.id));
+    const next = {
+      ...meta,
+      version: 1,
+      sessions: {
+        ...(meta.sessions ?? {}),
+        [sid]: { lastSeq: maxSeq, segments: ownedIds.size, conclusions: conclIds.size, indexedAt: new Date().toISOString(), source: file }
+      }
+    };
+    writeFileAtomic(metaFile, JSON.stringify(next, null, 2));
+    return { session: sid, added: incoming.length, skipped, lastSeq: maxSeq, parseFails, frameFails, frameTruncated };
   };
-  writeFileAtomic(metaFile, JSON.stringify(next, null, 2));
-  return { session: sid, added: incoming.length, skipped, lastSeq: maxSeq, parseFails, frameFails, frameTruncated };
+  return lock ? withFileLock(metaFile, run) : run();
 }
 
 /** 动作版本归并（**读取视图**；存储仍 append-only）：同一 call（session:ptr.callSeq）默认只回一版——
