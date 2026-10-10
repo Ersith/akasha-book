@@ -150,7 +150,7 @@ const extRow = cap13.rows.find((r) => r.name === 'akasha:extreme');
 T('⑬ 注册了 akasha:extreme 行', !!extRow, JSON.stringify(cap13.rows.map((r) => r.name)));
 T('⑬ 未知轮次 ⇒ 静默（不伪造）', !!extRow && extRow.text() === null, String(extRow && extRow.text()));
 for (const fn of cap13.handlers['agent/turn-stopping'] || []) fn({ turn: 312 });
-T('⑬ 有轮次真值 ⇒ 渲染', typeof (extRow && extRow.text()) === 'string' && extRow.text().includes('轮=312'), String(extRow && extRow.text()));
+T('⑬ 有轮次真值 ⇒ 渲染（并标本进程口径）', typeof (extRow && extRow.text()) === 'string' && extRow.text().includes('轮=312') && extRow.text().includes('本进程'), String(extRow && extRow.text()));
 for (const fn of cap13.handlers['tools/result'] || []) fn({ name: 'mcp__akasha__akasha_lookup' }, { isError: false });   // 312 轮查库
 for (const fn of cap13.handlers['agent/turn-stopping'] || []) fn({ turn: 320 });
 T('⑭ 距上次查库随轮次增长（312 查过 ⇒ 8 轮）', !!extRow && extRow.text().includes('距今 8 轮'), String(extRow && extRow.text()));
@@ -158,7 +158,25 @@ for (const fn of cap13.handlers['tools/result'] || []) fn({ name: 'mcp__akasha__
 T('⑭ 召回后「距上次查库」归零', !!extRow && extRow.text().includes('距今 0 轮'), String(extRow && extRow.text()));
 for (const fn of cap13.handlers['session/event'] || []) fn({ type: 'compaction/end' });
 T('⑭ 压缩事件计数入行', !!extRow && extRow.text().includes('压缩=1'), String(extRow && extRow.text()));
+for (const fn of cap13.handlers['tools/result'] || []) fn({ name: 'pwsh', args: { command: 'node H:/Harness/akasha/akasha.mjs check' } }, { isError: false });
+T('⑭ CLI 查库也计召回', !!extRow && extRow.text().includes('距今 0 轮'), String(extRow && extRow.text()));
 T('⑭ ≤80 字', (extRow.text() || '').length <= 80);
 
+makeFixture([mk('edit', 24 * 60 * 60 * 1000)]);
+const cap15 = captureRows({ akashaDir: FIX, preflightHints: false }, []);
+const cmpRow = cap15.rows.find((r) => r.name === 'akasha:compensate');
+T('⑮ 注册了 akasha:compensate 行', !!cmpRow, JSON.stringify(cap15.rows.map((r) => r.name)));
+for (const fn of cap15.handlers['agent/turn-stopping'] || []) fn({ turn: 100 });
+T('⑮ 未压缩过 ⇒ 静默', !!cmpRow && cmpRow.text() === null, String(cmpRow && cmpRow.text()));
+for (const fn of cap15.handlers['session/event'] || []) fn({ type: 'compaction/end' });
+for (const fn of cap15.handlers['agent/turn-stopping'] || []) fn({ turn: 105 });
+T('⑮ 压缩后 5 轮（≤15）⇒ 脆弱窗提示', !!cmpRow && /脆弱窗/.test(cmpRow.text() || ''), String(cmpRow && cmpRow.text()));
+for (const fn of cap15.handlers['session/event'] || []) fn({ type: 'compaction/end' });
+for (const fn of cap15.handlers['session/event'] || []) fn({ type: 'compaction/end' });
+for (const fn of cap15.handlers['agent/turn-stopping'] || []) fn({ turn: 130 });
+T('⑯ 压缩 ≥3 且未查库 ⇒ 提示先查', !!cmpRow && /先查库再答/.test(cmpRow.text() || ''), String(cmpRow && cmpRow.text()));
+for (const fn of cap15.handlers['tools/result'] || []) fn({ name: 'mcp__akasha__akasha_lookup' }, { isError: false });
+for (const fn of cap15.handlers['agent/turn-stopping'] || []) fn({ turn: 131 });
+T('⑰ 刚查过库 ⇒ 不再催（闭环）', !!cmpRow && !/先查库再答|强制/.test(cmpRow.text() || ''), String(cmpRow && cmpRow.text()));
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

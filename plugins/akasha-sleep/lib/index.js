@@ -167,13 +167,21 @@ export function apply(ctx, config = {}) {
     } catch { /* 静默 */ }
   };
   // 极限观测（2026-10-11 用户令）：把「该查库了」变成**可见信号**，不靠记性——针对"200 轮后忘记查库"的观察。
-  const obs = { turn: 0, steps: 0, compactions: 0, usedToolsN: 0, lastRecallTurn: null };
+  const obs = { turn: 0, steps: 0, compactions: 0, usedToolsN: 0, lastRecallTurn: null, lastCompactionTurn: null };
+  const clip = (s) => (s.length <= 80 ? s : s.slice(0, 79) + '…');   // 行宽硬约束的统一裁剪（模块级，供多行共用）
   const isRecallTool = (name) => /^mcp__akasha__/.test(String(name || ''));
   ctx.on('tools/result', (exec, result) => {
     const tool = String(exec?.name ?? '?');
     usedTools.add(tool);                                          // 首用预告用（2026-10-11）
     obs.usedToolsN = usedTools.size;
-    if (isRecallTool(tool)) obs.lastRecallTurn = obs.turn;         // 召回动作 ⇒ 刷新"距上次查库"
+    if (isRecallTool(tool)) obs.lastRecallTurn = obs.turn;         // MCP 召回 ⇒ 刷新"距上次查库"
+    else {
+      // CLI 查库也算召回（2026-10-11 实测：本会话大量查库走 `node akasha.mjs …`，只认 MCP 会显示"尚未查库"＝自欺）
+      try {
+        const blob = JSON.stringify(exec?.args ?? exec?.input ?? exec?.params ?? '');
+        if (/akasha\.mjs|session\.mjs|mcp\.mjs/.test(blob)) obs.lastRecallTurn = obs.turn;
+      } catch { /* 忽略 */ }
+    }
     if (result?.isError === true) noteFailure(exec?.name);
   });
   ctx.on('agent/error', () => noteFailure('agent'));
@@ -183,7 +191,10 @@ export function apply(ctx, config = {}) {
   try {
     ctx.on('session/event', (p) => {
       const t = String(p?.type ?? p?.name ?? p?.eventType ?? '');
-      if (t.startsWith('compaction/end') || (t === 'compaction' && p?.phase === 'end')) obs.compactions++;
+      if (t.startsWith('compaction/end') || (t === 'compaction' && p?.phase === 'end')) {
+        obs.compactions++;
+        obs.lastCompactionTurn = obs.turn;      // 脆弱窗判据（压缩补偿行用）
+      }
     });
   } catch { /* 事件不存在 */ }
 
@@ -375,9 +386,41 @@ export function apply(ctx, config = {}) {
       text: () => {
         try {
           if (!obs.turn) return null;
-          const gap = obs.lastRecallTurn === null ? '(本会话尚未查库)' : '距今 ' + Math.max(0, obs.turn - obs.lastRecallTurn) + ' 轮';
-          const line = '[极限观测] 轮=' + obs.turn + ' 压缩=' + obs.compactions + ' 上次查库=' + gap;
+          const gap = obs.lastRecallTurn === null ? '(本进程尚未查库)' : '距今 ' + Math.max(0, obs.turn - obs.lastRecallTurn) + ' 轮';
+          // 口径标注（2026-10-11）：轮次/压缩/查库均为**本进程**统计——重启即归零；不标会被读成"整场会话"
+          const line = '[极限观测·本进程] 轮=' + obs.turn + ' 压缩=' + obs.compactions + ' 上次查库=' + gap;
           return line.length <= 80 ? line : line.slice(0, 79) + '…';
+        } catch { return null; }
+      }
+    });
+  }
+
+  // 压缩补偿行（2026-10-11 用户方向："针对压缩轮次增加，逐步强行增加使用库查记忆进行补全"）。
+  //   依据（当晚实测）：① 压缩摘要只保话题、**丢约定**——四条核心约定存活率 0–21%，而**每回合注入的称呼层 100% 存活**；
+  //   ② 「丢记忆」实例（turn 220）落在**压缩后 15 轮内**（压缩在 205）。
+  //   ⇒ 分级补偿：**脆弱窗**（距上次压缩 ≤15 轮）要求"重要结论先落库"；**压缩 ≥3** 且本回合尚未查库 ⇒ 要求先查；
+  //   **压缩 ≥5** ⇒ 升级为强制；**查过即不再催**（闭环，避免噪音）。
+  const RECALL_WINDOW = 15;
+  if (cfg.compensate !== false) {
+    ctx.systemPrompt.context({
+      name: 'akasha:compensate',
+      order: (cfg.pulseOrder ?? 132) + 3,
+      text: () => {
+        try {
+          if (!obs.turn || !obs.compactions) return null;                  // 没压缩过 ⇒ 不打扰
+          const sinceComp = obs.lastCompactionTurn === null ? null : Math.max(0, obs.turn - obs.lastCompactionTurn);
+          const recalledRecently = obs.lastRecallTurn !== null && (obs.turn - obs.lastRecallTurn) <= 2;
+          const inWindow = sinceComp !== null && sinceComp <= RECALL_WINDOW;
+          if (obs.compactions >= 5 && !recalledRecently) {
+            return clip('[压缩补偿·强制] 本会话已压缩 ' + obs.compactions + ' 次：关键动作前先 akasha_lookup/brief 补全，再动手');
+          }
+          if (obs.compactions >= 3 && !recalledRecently) {
+            return clip('[压缩补偿] 已压缩 ' + obs.compactions + ' 次' + (inWindow ? '（脆弱窗 距上次 ' + sinceComp + ' 轮）' : '') + '：本回合先查库再答');
+          }
+          if (inWindow) {
+            return clip('[压缩补偿·脆弱窗] 距上次压缩 ' + sinceComp + ' 轮：重要结论先落库，动手前先查');
+          }
+          return null;
         } catch { return null; }
       }
     });
