@@ -1635,7 +1635,9 @@ export function recallSignals(records, opts = {}) {
       if (k === '*') for (const [kk, ww] of wins) if (kk !== '*' && !ww.failed) ww.recalled = true; // 未归属召回：宽口径
       continue;
     }
-    const isFail = (rec.kind === 'tool' && rec.ok === false && !String(rec.tool ?? '').startsWith(MEMORY_PREFIX)) || rec.kind === 'agent-error';
+    // 2026-10-10 口径修正（可预防性测试第 1 步当场发现）：门控拒绝不是任务失败——守卫按设计工作；此前使它灌水（59 条里 11 条属此类）。
+    const guardDenied = /门控|gate-denied/.test(String(rec.message ?? ''));
+    const isFail = (rec.kind === 'tool' && rec.ok === false && !guardDenied && !String(rec.tool ?? '').startsWith(MEMORY_PREFIX)) || rec.kind === 'agent-error';
     if (!isFail) continue;
     const w = win(k);
     if (w.failed) continue;
