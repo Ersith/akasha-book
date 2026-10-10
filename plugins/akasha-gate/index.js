@@ -40,6 +40,9 @@ const AGENT_TOOLS = new Set(['codex_exec', 'codex_thread_start', 'codex_thread_r
 // 2026-10-07 复查：重定向判定排除 JS 箭头（`=>`）与 `2>&1`——`(?<![=\-])` 挡 `=>`/`->`，`(?![&=])` 挡 `>&`；
 // 曾因旧规则 `>\s*[^\s|]` 误拦只读探针命令（node -e 的 `=>{`）。`>>` 保留（真追加重定向）。
 // 2026-10-10 人读复查补：**中文写动词**（委派型 prompt 常用"删掉/追加/写入/改写"），原先只认英文与 cmdlet。
+// 2026-10-10 假阳性修复：shell 命令的写构造判定（收窄）——只认重定向与写/删类构造，
+// 不再用广义写词表（那张表会让「只读命令里出现 data 路径」也被拒；当日实测被误拦一次）。
+const WRITE_CMD = /(>>|(?<![=\-])>(?![&=])|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Item|\bdel\b|\brm\b|tee\b|sed -i)/i;
 const WRITE_IDIOM = /(>>|(?<![=\-])>(?![&=])\s*[^\s|]|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Item|tee\b|sed -i|drop\b|delete\b|\bdel\b|追加|写入|改写|覆盖|替换|清空|删除|修改|编辑|append\b|overwrite\b|modify\b)/i;
 
 // ⚠ 已知边界（2026-10-10）：WSL 里同一物理文件可能以 `/mnt/<盘>/…` 出现，而本守卫只认配置里的 dataDir 形态
@@ -223,7 +226,7 @@ export function apply(ctx, config = {}) {
         }
       } else if (SHELL_TOOLS.has(name)) {
         const command = String(args.command ?? args.script ?? '');
-        if (command && mentionsDataDir(command) && WRITE_IDIOM.test(command)) {
+        if (command && mentionsDataDir(command) && WRITE_CMD.test(command)) {
           write({ kind: 'gate-denied', tool: name, target: 'akasha\\data（命令）' });
           return `阿卡夏门控：拒绝 ${name} 命令里对 akasha\\data 的写操作——请改走 akasha CLI / mcp__akasha__*。确需绕过请先停用 @akasha-book/gate。`;
         }

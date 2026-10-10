@@ -1658,7 +1658,7 @@ export function recallSignals(records, opts = {}) {
  * 维护：新坑条目归档后，把 id 加进对应工具；结构性工具（web_fetch/web_search）永不入表。
  */
 export const RECALL_TRAP_MAP = Object.freeze({
-  pwsh: ['canon-review-manual-20261010', 'canon-npm-publish-20261010', 'canon-dsh-store-remediation-20261010'],
+  pwsh: ['canon-trap-pwsh-inline-js', 'canon-review-manual-20261010', 'canon-npm-publish-20261010', 'canon-dsh-store-remediation-20261010'],
   bash: ['canon-review-manual-20261010'],
   edit: ['canon-trap-edit-context-mismatch', 'canon-review-manual-20261010'],
   write: ['canon-review-manual-20261010'],
