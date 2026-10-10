@@ -1,0 +1,236 @@
+// akasha-gate 自测：用桩 ctx 捕获 guard / section，验证判定逻辑（不需要宿主）。
+// 运行：node selftest.mjs（退出码 0 = 全过）；全部路径用系统临时目录，无绝对机器路径。
+import assert from 'node:assert/strict';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { apply, createGateRules, RULES_VERSION, decodeLayers, collectStrings, collectPathArgs } from './index.js';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+// 定位 akasha 核心库（含 lib.mjs）：支持多布局，避免"测试只认仓库树"这种假设。
+//   · 环境变量 AKASHA_CORE 优先；
+//   · 仓库布局：plugins/akasha-gate → ../../core；
+//   · 插件与 core 平级；本机开发树：插件与 akasha 包同级（H:\Harness\{dsh-akasha-gate, akasha}）。
+const CORE_CANDIDATES = [
+  process.env.AKASHA_CORE,
+  join(HERE, '..', '..', 'core'),
+  join(HERE, '..', 'core'),
+  join(HERE, '..', 'akasha'),
+  join(HERE, '..', 'akasha', 'core')
+].filter(Boolean);
+const CORE = CORE_CANDIDATES.find((d) => existsSync(join(d, 'lib.mjs')));
+if (!CORE) {
+  console.error('找不到 akasha 核心 lib.mjs；候选：' + CORE_CANDIDATES.join(' | '));
+  process.exit(2);
+}
+const TMP = join(tmpdir(), 'akasha-gate-selftest');
+const PROJ = join(TMP, 'proj');
+const DATA = join(PROJ, 'data'); // 模拟被测数据目录
+const LOG = join(TMP, 'hooks.jsonl');
+rmSync(TMP, { recursive: true, force: true });
+mkdirSync(DATA, { recursive: true });
+
+function harness(config) {
+  const captured = { guard: null, sections: [] };
+  const ctx = {
+    tools: { guard(fn) { captured.guard = fn; return () => {}; } },
+    systemPrompt: { section(s) { captured.sections.push(s); return () => {}; } },
+    on() { return () => {}; }
+  };
+  apply(ctx, config);
+  // 兼容旧断言：captured.section = 用法条段；全量在 captured.sections
+  Object.defineProperty(captured, 'section', { get() { return captured.sections.find((s) => s.name === 'akasha:protocol'); } });
+  return captured;
+}
+const sectionOf = (cap, name) => cap.sections.find((s) => s.name === name);
+
+const c = harness({ log: LOG, dataDir: DATA, akashaDir: PROJ, sectionOrder: 700 });
+assert.ok(c.guard, 'guard 已注册');
+assert.ok(c.section, 'section 已注册');
+
+const g = (name, args) => c.guard({ name, arguments: args });
+const F = (p) => join(DATA, p); // 数据区文件路径
+const N = (p) => join(PROJ, p); // 非数据区路径
+
+// —— 文件工具分支 ——
+assert.equal(typeof g('edit', { file_path: F('canon.jsonl') }), 'string', 'edit 直写数据必须被拒');
+assert.equal(typeof g('write', { file_path: F('new.jsonl').replace(/\\/g, '/') }), 'string', 'write 直写数据（正斜杠）必须被拒');
+assert.equal(typeof g('apply_patch', { path: F('x.jsonl') }), 'string', 'apply_patch 直写数据必须被拒');
+assert.equal(g('edit', { file_path: N('README.md') }), undefined, '非数据区 edit 放行');
+assert.equal(g('write', { file_path: join(PROJ, 'data2', 'x.jsonl') }), undefined, '相似前缀目录不误伤');
+
+// —— 命令分支 ——
+assert.equal(typeof g('pwsh', { command: `Add-Content -Path '${F('x.txt')}' -Value 'x'` }), 'string', 'Add-Content 写数据必须被拒');
+assert.equal(typeof g('pwsh', { command: `Set-Content -Path ${F('canon.jsonl').replace(/\\/g, '/')} -Value 'x'` }), 'string', 'Set-Content（正斜杠）必须被拒');
+assert.equal(typeof g('pwsh', { command: `Remove-Item '${F('x.jsonl')}'` }), 'string', 'Remove-Item 必须被拒');
+assert.equal(typeof g('pwsh', { command: `cmd /c del ${F('x.jsonl')}` }), 'string', 'del 必须被拒');
+assert.equal(typeof g('pwsh', { command: `Copy-Item a.jsonl ${F('b.jsonl')}` }), 'string', 'Copy-Item 写入数据必须被拒');
+
+// —— 覆盖清单（2026-10-10 人读复查补）：**凡能写盘的工具，都要有"写数据必被拒"的用例** ——
+// 起因：守卫原先只覆盖 edit/write/apply_patch/pwsh/bash，漏了 dsh_wsl（WSL bash）与 codex 系（子进程可写盘）。
+// 规矩：新增任何"能写盘的工具"时，先把它加进本清单——测试会替你记住（漏了就红）。
+{
+  const P = F('canon.jsonl');            // 配置形态（反斜杠）
+  const P2 = P.replace(/\\/g, '/');      // 同路径的另一写法（守卫会归一）
+  const WRITER_TOOL_CASES = [
+    ['edit', { file_path: P }, '英文 tool / 直接路径'],
+    ['write', { file_path: P2 }, '另一写法'],
+    ['apply_patch', { path: P }, 'apply_patch 的 path 键'],
+    ['pwsh', { command: `Set-Content -Path '${P2}' -Value 'x'` }, 'PowerShell cmdlet'],
+    ['bash', { command: `echo x >> ${P2}` }, 'shell 追加重定向'],
+    ['dsh_wsl', { command: `echo x >> ${P2}` }, 'WSL bash（2026-10-10 补）'],
+    ['dsh_wsl', { command: `tee ${P2} < /dev/null` }, 'WSL tee（2026-10-10 补）'],
+    ['codex_exec', { prompt: `把 ${P} 里的第三条删掉，然后追加一条新记录` }, '委派 prompt（中文写动词）'],
+    ['codex_exec', { prompt: `直接编辑 ${P} 添加一条 canon 条目` }, '委派 prompt（编辑）'],
+    ['codex_thread_start', { prompt: `改写 ${P2} 的第一行` }, 'codex 线程起（改写）'],
+    ['codex_thread_resume', { prompt: `继续：往 ${P} 写入一条记录` }, 'codex 线程续（写入）'],
+  ];
+  for (const [tool, args, why] of WRITER_TOOL_CASES) {
+    assert.equal(typeof g(tool, args), 'string', `覆盖清单：${tool}（${why}）写数据必须被拒`);
+  }
+  // 反向：同批工具的**只读**用法必须放行（守卫是劝告层，不能退化成"凡提数据目录即拦"）
+  assert.equal(g('dsh_wsl', { command: `cat ${P2} | head -3` }), undefined, 'dsh_wsl 只读放行');
+  assert.equal(g('codex_exec', { prompt: `读一下 ${P} 并总结结构，不要改` }), undefined, 'codex_exec 纯读放行');
+  assert.equal(g('pwsh', { command: `Get-Content '${P}' -Encoding UTF8` }), undefined, 'pwsh 只读放行（覆盖清单反向）');
+}
+
+// —— 2026-10 wave1：默认路径回归（合并批曾把默认值写成字面量 '~/.akasha/...'，门控默认失效）——
+{
+  const HOME_DATA = join(homedir(), '.akasha', 'data');
+  const d = harness({ log: LOG }); // 不传 dataDir / akashaDir：走默认值
+  const gd = (name, args) => d.guard({ name, arguments: args });
+  assert.equal(typeof gd('write', { file_path: join(HOME_DATA, 'canon.jsonl') }), 'string', '默认配置：直写 ~/.akasha/data 必须被拒');
+  assert.equal(typeof gd('edit', { file_path: '~/.akasha/data/canon.jsonl' }), 'string', '默认配置：`~` 写法的目标路径也必须被拒');
+  assert.equal(typeof gd('bash', { command: 'echo x >> ~/.akasha/data/canon.jsonl' }), 'string', '默认配置：bash `>> ~/.akasha/data` 必须被拒');
+  assert.equal(typeof gd('bash', { command: 'rm -f "$HOME/.akasha/data/x.jsonl" ; echo done > /dev/null; tee $HOME/.akasha/data/y' }), 'string', '默认配置：$HOME 写法必须被拒');
+  assert.equal(gd('bash', { command: 'cat ~/.akasha/data/canon.jsonl' }), undefined, '默认配置：只读放行');
+  assert.equal(gd('write', { file_path: join(homedir(), '.akasha', 'notes.md') }), undefined, '默认配置：数据区外放行');
+  const tildeDir = harness({ log: LOG, dataDir: '~/.akasha/data' });
+  assert.equal(typeof tildeDir.guard({ name: 'write', arguments: { file_path: join(HOME_DATA, 'x.jsonl') } }), 'string', 'config.dataDir 以 ~ 开头必须展开');
+}
+
+// —— 不误伤（放行） ——
+assert.equal(g('pwsh', { command: `Get-Content '${F('canon.jsonl')}' -Encoding UTF8` }), undefined, '读数据放行');
+assert.equal(g('pwsh', { command: `cmd /c "chcp 65001>nul & cd /d ${PROJ} && node test.mjs"` }), undefined, '含 > 但无数据区 放行');
+assert.equal(g('pwsh', { command: 'node akasha.mjs audit --today 2027-06-01' }), undefined, 'akasha CLI 放行');
+assert.equal(g('read', { file_path: F('canon.jsonl') }), undefined, 'read 工具不受影响');
+
+// —— 2026-10-07 复查：JS 箭头函数里的 `>` 不是写重定向 ——
+const arrowRead = `node -e "const fs=require('fs');const a=fs.readFileSync('${F('canon.jsonl').replace(/\\/g, '/')}','utf8').split(String.fromCharCode(10)).map(l=>{return l});"`;
+assert.equal(g('pwsh', { command: arrowRead }), undefined, '箭头函数 ≠ 写重定向：只读 node -e 必须放行');
+assert.equal(typeof g('pwsh', { command: `echo x > ${F('y.txt')}` }), 'string', '带空格重定向写数据仍拦');
+assert.equal(typeof g('pwsh', { command: `echo x>${F('y.txt')}` }), 'string', '无空格重定向写数据仍拦');
+
+// —— 系统提示 section（渲染时读库当前版本；读不到回退兜底，永不抛）——
+assert.equal(c.section.name, 'akasha:protocol');
+assert.equal(c.section.order, 700);
+assert.equal(typeof c.section.text, 'function', 'text 为渲染函数（库自己说话）');
+
+// 桩库：akashaDir 指向带 canon-akasha-usage 的临时库（含 lib.mjs 拷贝）
+const STUB = join(TMP, 'stub-akasha');
+mkdirSync(join(STUB, 'data'), { recursive: true });
+copyFileSync(join(CORE, 'lib.mjs'), join(STUB, 'lib.mjs'));
+writeFileSync(join(STUB, 'data', 'canon.jsonl'),
+  JSON.stringify({
+    id: 'canon-akasha-usage',
+    claim: '## 用法（桩）\n- 来源态：学过 / 接触过 / 记得·库内 / 搜到；\n- 开工先 akasha_kit。',
+    source: { type: '复现', ref: 'stub' },
+    last_reviewed: '2026-01-01'
+  }) + '\n' +
+  JSON.stringify({
+    id: 'canon-self-concept-stub',
+    claim: '我是示例大肥鱼（stub 自我条目）。',
+    tags: ['自我'],
+    source: { type: '复现', ref: 'stub' },
+    last_reviewed: '2026-01-01'
+  }) + '\n', 'utf8');
+const cStub = harness({ log: LOG, dataDir: DATA, akashaDir: STUB, sectionOrder: 700 });
+const libText = cStub.section.text();
+assert.ok(String(libText).includes('来源态'), '库驱动路：注入库文本');
+assert.ok(String(libText).includes('akasha_kit'), '库文本含用法路由（开工先 kit）');
+
+// —— 自我层（akasha:self 每会话自动核对「我是谁」）——
+const selfStub = String(sectionOf(cStub, 'akasha:self').text());
+assert.ok(selfStub.includes('自我层') && selfStub.includes('canon-self-concept-stub'), '自我层：注入 tag『自我』的当前条目');
+assert.equal(sectionOf(cStub, 'akasha:self').order, 699, '自我层排在用法条之前（order-1）');
+
+// 读不到库 → 回退兜底且不抛
+const cNo = harness({ log: LOG, dataDir: DATA, akashaDir: join(TMP, 'no-such-akasha-dir'), sectionOrder: 700 });
+const fb = cNo.section.text();
+assert.ok(String(fb).includes('来源态') && String(fb).includes('akasha_kit'), '兜底文本含纪律与用法');
+assert.equal(typeof fb, 'string', '回退路径也必须返回字符串');
+assert.ok(String(sectionOf(cNo, 'akasha:self').text()).includes('暂不可读'), '库不可达 → 自我层兜底且不抛');
+
+// —— 库驱动降级/恢复的切换观测线 ——
+// 注：stub 模块用「读标志文件」切换行为，而非重写模块文件——同路径重写会命中 require 缓存。
+const logT = join(TMP, 'switch-hooks.jsonl');
+const flagPath = join(TMP, 'flag.txt');
+const libStub = join(TMP, 'lib.mjs');
+writeFileSync(flagPath, 'library', 'utf8');
+writeFileSync(libStub, [
+  "import { readFileSync } from 'node:fs';",
+  `const FLAG = ${JSON.stringify(flagPath)};`,
+  'export function loadStore() {',
+  "  const mode = readFileSync(FLAG, 'utf8').trim();",
+  "  if (mode === 'fallback') throw new Error('forced-fallback');",
+  "  return { records: [{ id: 'canon-akasha-usage', claim: '## stub\\n- 来源态：' + mode }, { id: 'canon-self-concept-x', claim: '我是大肥鱼。', tags: ['自我'], logged_at: '2026-01-01T00:00:00Z' }] };",
+  '}',
+  'export function currentRecords(records) { return records; }'
+].join('\n'), 'utf8');
+const cT = harness({ log: logT, dataDir: DATA, akashaDir: TMP, sectionOrder: 700 });
+assert.ok(String(cT.section.text()).includes('来源态：library'), '库驱动路：注入 stub 文本');
+writeFileSync(flagPath, 'fallback', 'utf8');
+assert.ok(!String(cT.section.text()).includes('来源态：library'), '降级路：stub 抛错 → 回退兜底且不抛');
+writeFileSync(flagPath, 'library', 'utf8');
+assert.ok(String(cT.section.text()).includes('来源态：library'), '恢复路：回到库驱动');
+// 自我层：库驱动 / 降级 / 恢复（同一 stub 开关）
+const selfT = sectionOf(cT, 'akasha:self');
+assert.ok(String(selfT.text()).includes('我是大肥鱼'), '自我层库驱动路：渲染 stub 条目');
+writeFileSync(flagPath, 'fallback', 'utf8');
+assert.ok(!String(selfT.text()).includes('我是大肥鱼') && String(selfT.text()).includes('暂不可读'), '自我层降级：库不可读 → 兜底且不抛');
+writeFileSync(flagPath, 'library', 'utf8');
+assert.ok(String(selfT.text()).includes('我是大肥鱼'), '自我层恢复：回到库驱动');
+const logTText = readFileSync(logT, 'utf8');
+assert.ok(logTText.includes('"kind":"gate-usage-fallback"'), '降级切换必须落线：gate-usage-fallback');
+assert.ok(logTText.includes('"kind":"gate-usage-recovered"'), '恢复切换必须落线：gate-usage-recovered');
+assert.ok(logTText.includes('"kind":"gate-self-fallback"'), '自我层降级切换必须落线：gate-self-fallback');
+assert.ok(logTText.includes('"kind":"gate-self-recovered"'), '自我层恢复切换必须落线：gate-self-recovered');
+rmSync(TMP, { recursive: true, force: true });
+
+// —— STORE 审计边界用例：traversal / malformed / replay / 并发（fail closed 语义；纯路径判定，不触文件系统）——
+assert.equal(typeof g('write', { file_path: join(DATA, '..', 'data', 'canon.jsonl') }), 'string', 'traversal：data/../data/ 绕过路径仍须被拒（fail closed）');
+assert.equal(typeof g('pwsh', { command: `Set-Content -Path '${join(DATA, 'sub', '..', 'canon.jsonl')}' -Value x` }), 'string', 'traversal：命令侧 .. 仍须被拒');
+assert.doesNotThrow(() => { c.guard({ name: 'pwsh', arguments: {} }); c.guard({ name: 'write', arguments: {} }); c.guard({ name: '', arguments: null }); }, 'malformed：缺参数 / 空工具名 / null args 不得抛异常');
+const rep1 = g('edit', { file_path: F('canon.jsonl') });
+const rep2 = g('edit', { file_path: F('canon.jsonl') });
+assert.equal(rep1, rep2, 'replay：同一输入两次判定必须逐字一致（无隐藏状态、可重放）');
+g('write', { file_path: F('a.jsonl') });
+assert.equal(g('write', { file_path: N('ok.md') }), undefined, '并发/顺序无关：一次被拒不影响后续非数据区放行');
+
+// —— 2026-10-11 借鉴批（源自 CyberStrikeAI 的门控设计）：B2 判定面扩展 + ruleId + 工厂与门控同源 ——
+assert.equal(typeof RULES_VERSION, 'string', 'RULES_VERSION 已导出（审计线要用）');
+// ① 路径类字段的**嵌套/数组**（旧实现只看顶层 file_path/path ⇒ 嵌套会漏）
+assert.equal(typeof g('edit', { meta: { file_path: F('canon.jsonl') } }), 'string', '嵌套路径字段必须拦');
+assert.equal(typeof g('write', { paths: [N('ok.md'), F('canon.jsonl')] }), 'string', '数组里的路径字段必须拦');
+// ② **假阳性护栏**：正文里"提到"数据路径 ≠ 写目标（设计时自查发现，必须永不被拦）
+assert.equal(g('edit', { file_path: N('notes.md'), new_string: `文档里提到 ${F('canon.jsonl')} 这个路径` }), undefined, '正文提及数据路径不得误拦');
+// ③ 百分号编码绕行（命令类：全文扫描 + 解码 ≤3 轮）
+const encPath = F('canon.jsonl').replace(/\\/g, '/').split('/').map((s) => encodeURIComponent(s)).join('/');
+assert.equal(typeof g('pwsh', { command: `echo x >> "${encPath}"` }), 'string', '百分号编码路径 + 追加重定向必须拦');
+// ④ 只读命令（含同样路径）仍必须放行
+assert.equal(g('pwsh', { command: `type "${encPath}"` }), undefined, '只读命令含数据路径应放行');
+// ⑤ 纯函数行为
+assert.equal(decodeLayers('%41%42%43'), 'ABC', 'decodeLayers 单轮');
+assert.equal(decodeLayers('%2541'), 'A', 'decodeLayers 多轮解码');
+assert.deepEqual(collectPathArgs({ a: 'x', file_path: 'y' }), ['y'], 'collectPathArgs 只收路径类键');
+assert.ok(collectStrings({ a: 'x', b: { c: 'y' } }).includes('y'), 'collectStrings 递归收值');
+// ⑥ 工厂与门控同源（CLI `gate-dry` 试匹配的依据）
+const rulesMod = createGateRules({ dataDir: DATA });
+const vDeny = rulesMod.verdict({ name: 'edit', arguments: { file_path: F('canon.jsonl') } });
+assert.equal(vDeny.deny, true, '工厂判决：拦');
+assert.equal(vDeny.ruleId, 'write-tool-data-path', 'ruleId 正确（写工具）');
+assert.equal(rulesMod.verdict({ name: 'read', arguments: { file_path: F('canon.jsonl') } }).deny, false, '工厂判决：read 放行');
+assert.equal(rulesMod.verdict({ name: 'pwsh', arguments: { command: `echo x >> "${encPath}"` } }).ruleId, 'shell-write-into-data', 'ruleId 正确（命令类）');
+
+console.log('selftest: all assertions passed');
