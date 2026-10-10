@@ -25,12 +25,12 @@
 |---|---|---|
 | 静态契约（manifest / Bundle Patch / 许可证 / 入口 ID） | **verified** | 官方 `build-dsh-plugin` 审计：静态分见本包审计输出；入口 ID 为插件自有，不 disable/replace 任何 `@deepseek-ai/*` |
 | 单元与边界测试（`npm test`） | **verified** | `node selftest.test.mjs` 全绿；覆盖 malformed 输入、并发/节流、replay 一致性（见该文件断言） |
-| 一次性 Profile 安装·启动·卸载（E3） | **尚未（unverified）** | 本表如实标注：E3 证据**未执行**，属**下一道门**；不把未执行写成 passed |
+| 一次性 Profile 安装·启动·卸载（E3） | **verified** | 2026-10-10 一次性 DSH_HOME 实跑：install → cold start（HTTP 就绪）→ stop → uninstall → `--dump-config` 逐字回到基线；dsh 0.2.0-rc.2；证据见同目录 `EVIDENCE.json` |
 | 真实 Profile 运行 | **verified（本机）** | 桌面端 0.2.0-rc.2 实跑；**他人机器 unverified**（未做外部验收） |
 | 独立安全审计 / 公开分发（E5） | **unverified** | 未做独立审计；分发前应重评 |
 
-**下一道门（next gate）**：① 用一次性 Profile（临时 `DSH_HOME`）跑通安装 → 启动 → 卸载并留证据；
-② 在 0.2.1-alpha.x 上按同一套用例复测，把 `unknown` 改为精确结论（`compatible` 或 `incompatible`）。
+**下一道门（next gate）**：① 在 0.2.1-alpha.x 上按同一套用例复测（一次性 DSH_HOME），把 `unknown` 改为精确结论（`compatible` 或 `incompatible`）；
+② 提交 DSH STORE 上架申请（monorepo 子路径：`tree/main/plugins/<name>`）并跟进机器人预检。
 若任一版本复测失败，该版本标注为 `blocked`（不兼容）并保持其余版本声明不动。
 
 **权限 / 非目标 / 边界（permissions · non-goals · boundaries）**
