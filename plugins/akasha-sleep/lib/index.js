@@ -44,7 +44,8 @@ const DEFAULTS = {
   contextOrder: 130,
   pulseOrder: 132,
   addressOrder: 133,
-  preflightOrder: 135  // C1｜易错点前置（order 135；C3 若上线则 136，优先级 C3 > C1）
+  preflightOrder: 135, // C1｜易错点前置
+  statefulOrder: 134   // C3｜断言前把关（order 134 < 135 ⇒ 先渲染，命中时 C1 让位）
 };
 
 /** 唤醒条是否值得推（有内容才说话）：无睡眠记录 / 有待办 / 审计有警告。 */
@@ -199,6 +200,52 @@ export function apply(ctx, config = {}) {
     }
   });
 
+  // C3｜断言前把关（stateful-fact gate，2026-10-10；评审 v2 定稿＝触发改到提问侧）
+  // 为什么改触发：context 行在回合开始渲染、回复尚未产生；且本插件看不到用户消息事件 ⇒
+  //   取**会话层最近一条 intent 段**（跳过注入样式的段）做 6 类关键词判定。
+  // 只提醒不阻断；statefulGate:false ⇒ 提示与事件双停。
+  const gateState = { c3Cat: null, c3At: 0, c3Fired: false };
+  if (cfg.statefulGate !== false) {
+    const STATEFUL = [
+      { cat: "发布", re: /已发布|未发布|上架|没过审|已过审|待审/ },
+      { cat: "安装", re: /已安装|未安装|装好了|装上了/ },
+      { cat: "版本", re: /版本|version/i },
+      { cat: "开关", re: /开关|启用|禁用|默认开|默认关/ },
+      { cat: "存在", re: /是否存在|有没有|在不在|还在吗/ },
+    ];
+    ctx.systemPrompt.context({
+      name: "akasha:stateful",
+      order: cfg.statefulOrder,
+      text: () => {
+        try {
+          const path = join(cfg.akashaDir, "data", "session.jsonl");
+          const lines = readFileSync(path, "utf8").split("\n").slice(-200);
+          let gist = null;
+          for (let i = lines.length - 1; i >= 0; i--) {
+            if (!lines[i].includes("\"kind\":\"intent\"")) continue;
+            let r; try { r = JSON.parse(lines[i]); } catch { continue; }
+            const g = String(r.gist || "");
+            if (!g) continue;
+            if (g.startsWith("Current runtime context")) continue;   // 跳过注入上下文（否则必误触发）
+            if (g.includes("阿卡夏·")) continue;
+            gist = g; break;
+          }
+          if (!gist) return null;
+          const hit = STATEFUL.find((k) => k.re.test(gist));
+          if (!hit) return null;
+          const now = Date.now();
+          if (gateState.c3Cat === hit.cat && now - gateState.c3At < 30 * 60 * 1000) return null;  // 同类 30 分钟去重
+          gateState.c3Cat = hit.cat; gateState.c3At = now; gateState.c3Fired = true;
+          try {
+            appendFileSync(join(cfg.akashaDir, "logs", "hooks.jsonl"),
+              JSON.stringify({ ts: new Date().toISOString(), kind: "stateful-reminder", cat: hit.cat }) + "\n", "utf8");
+          } catch { /* 事件失败不影响提示 */ }
+          return "[断言提醒] 状态性事实——先查再答（例：versions + dist-tags 两处核对）";
+        } catch { return null; }
+      }
+    });
+  }
+
   // C1｜易错点前置（pre-flight hint，2026-10-10 解冻后实现；评审 v2 定稿）
   // 依据：可预防漏召率 91.2%（回合级）、会话级 100% ⇒ 缺的不是知识，是"动作前把库拉进来"。
   // 形态：一行 ≤80 字，只提示不阻断；关（preflightHints:false）则**提示与事件双停**（不写假触发）。
@@ -212,6 +259,7 @@ export function apply(ctx, config = {}) {
       order: cfg.preflightOrder,
       text: () => {
         try {
+          if (gateState.c3Fired) return null;   // C3 优先（同回合只出一条）
           const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
           const now = Date.now();
           const WINDOW = 30 * 60 * 1000;
