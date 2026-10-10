@@ -64,6 +64,13 @@ export function buildWakeNote(k) {
 }
 
 export function apply(ctx, config = {}) {
+
+  // A/B 实验开关（2026-10-10 用户解冻，见 docs/ab-experiment-design.md §6）：
+  // abOff=true ⇒ **关闭臂**——本插件不注册任何守卫/注入/工具，只记一行观测；库文件与日志照旧（便于事后复盘）。
+  if (config.abOff === true) {
+    try { (ctx.logger?.info ?? (() => {}))('sleep: abOff=true（A/B 关闭臂）——本插件不注册任何面'); } catch { /* 静默 */ }
+    return;
+  }
   const cfg = { ...DEFAULTS, ...config };
   const require_ = createRequire(import.meta.url);
   const reportDir = join(cfg.akashaDir, 'logs');

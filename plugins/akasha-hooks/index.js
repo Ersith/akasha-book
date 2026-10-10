@@ -31,6 +31,13 @@ export function akashaCliOf(name, args) {
 }
 
 export function apply(ctx, config = {}) {
+
+  // A/B 实验开关（2026-10-10 用户解冻，见 docs/ab-experiment-design.md §6）：
+  // abOff=true ⇒ **关闭臂**——本插件不注册任何守卫/注入/工具，只记一行观测；库文件与日志照旧（便于事后复盘）。
+  if (config.abOff === true) {
+    try { (ctx.logger?.info ?? (() => {}))('hooks: abOff=true（A/B 关闭臂）——本插件不注册任何面'); } catch { /* 静默 */ }
+    return;
+  }
   const logPath = typeof config.log === 'string' && config.log.trim() !== '' ? expandHome(config.log) : DEFAULT_LOG;
   const akashaDir = typeof config.akashaDir === 'string' && config.akashaDir.trim() !== '' ? expandHome(config.akashaDir) : DEFAULT_AKASHA;
   const idleDebounceMs = Number.isInteger(config.idleDebounceMs) && config.idleDebounceMs > 0 ? config.idleDebounceMs : 600000;

@@ -214,6 +214,13 @@ export function createToolDefinition(client, { serverName, tool, toolCallTimeout
 }
 
 export async function apply(ctx, config = {}) {
+
+  // A/B 实验开关（2026-10-10 用户解冻，见 docs/ab-experiment-design.md §6）：
+  // abOff=true ⇒ **关闭臂**——本插件不注册任何守卫/注入/工具，只记一行观测；库文件与日志照旧（便于事后复盘）。
+  if (config.abOff === true) {
+    try { (ctx.logger?.info ?? (() => {}))('mcp: abOff=true（A/B 关闭臂）——本插件不注册任何面'); } catch { /* 静默 */ }
+    return;
+  }
   const cfg = { ...DEFAULTS, ...(config ?? {}) };
   const log = (message) => { try { ctx.logger?.info?.(`mcp-akasha(${cfg.serverName}): ${message}`); } catch { /* 日志失败不影响主流程 */ } };
   const logError = (message) => { try { ctx.logger?.error?.(`mcp-akasha(${cfg.serverName}): ${message}`); } catch { /* 同上 */ } };

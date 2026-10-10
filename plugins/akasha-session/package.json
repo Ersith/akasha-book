@@ -1,8 +1,14 @@
 {
   "name": "@akasha-book/session",
-  "version": "0.3.1",
-  "repository": { "type": "git", "url": "https://github.com/Ersith/akasha-book.git", "directory": "plugins/akasha-session" },
-  "engines": { "node": ">=22.15.0" },
+  "version": "0.3.2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ersith/akasha-book.git",
+    "directory": "plugins/akasha-session"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
   "license": "MIT",
   "type": "module",
   "description": "小阿卡夏：会话层插件 —— 自动增量索引（turn/end 去抖）+ 压缩事件行 + 每回合节奏条 + 循环观测 P0（dry 干跑，只观测不干预）",
@@ -15,7 +21,9 @@
     "cordis.patch.yml",
     "README.md"
   ],
-  "scripts": { "test": "node selftest.test.mjs" },
+  "scripts": {
+    "test": "node selftest.test.mjs"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

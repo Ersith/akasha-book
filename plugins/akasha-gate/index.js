@@ -92,6 +92,13 @@ const SELF_TAIL = ['</akasha-self-data>', '详读：`node akasha.mjs show <id>`�
 const SELF_FALLBACK = [...SELF_HEAD, '（自我层暂不可读：库不可达——先跑 `akasha_kit`。）', ...SELF_TAIL].join('\n');
 
 export function apply(ctx, config = {}) {
+
+  // A/B 实验开关（2026-10-10 用户解冻，见 docs/ab-experiment-design.md §6）：
+  // abOff=true ⇒ **关闭臂**——本插件不注册任何守卫/注入/工具，只记一行观测；库文件与日志照旧（便于事后复盘）。
+  if (config.abOff === true) {
+    try { (ctx.logger?.info ?? (() => {}))('gate: abOff=true（A/B 关闭臂）——本插件不注册任何面'); } catch { /* 静默 */ }
+    return;
+  }
   const logPath = typeof config.log === 'string' && config.log.trim() !== '' ? expandHome(config.log) : DEFAULT_LOG;
   // 路径用 Node 自己的 resolve（2026-10 复查）。此前把 '/' 一律换成 '\\' 再 join，
   // 在 POSIX 上不再是绝对路径，require 核心库失败，用法条永远停在兜底。
