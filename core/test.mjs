@@ -2597,6 +2597,13 @@ t('③ 同构＝权重衰减：给出置信度与折扣，低置信时显式标�
   if (m.confidence.startsWith('低')) assert.ok(String(m.summary.note).includes('折扣'), '低置信须显式标注折扣（防把最近邻当近同构）');
 });
 
+t('④ 历史回放：可运行且给出汇总（可预防/缺口）与纪律行', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const out = execFileSync(process.execPath, ['tools/replay-audit.mjs'], { cwd: process.cwd(), encoding: 'utf8', maxBuffer: 1 << 24 });
+  assert.ok(/历史回放/.test(out), '有标题行');
+  assert.ok(/可预防\s*\d+\s*·\s*缺口\s*\d+/.test(out), '有汇总（可预防/缺口）：' + out.split('\n')[1]);
+  assert.ok(/不得.*裁决|须人工结合证据判定/.test(out), '有"机械不裁决"的纪律行');
+});
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

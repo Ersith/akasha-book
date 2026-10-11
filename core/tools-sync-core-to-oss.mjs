@@ -1,13 +1,13 @@
 // sync-core-to-oss.mjs —— core 侧正式同步器（2026-10-11 用户令「开搞」收尾；根除"手工复制冲坏 OSS 适配"的雷）
 //   为什么需要它：`core/` **不在** oss-sync 的同步范围（oss-sync 只同步 `plugins/*`）⇒ 过去一直是手工 Copy-Item
-//   ⇒ ① 活树路径（`../dsh-akasha-gate/`）被原样带进仓里 ⇒ 模块找不到；② 每次覆盖都会把 OSS 侧的适配冲掉。
+//   ⇒ ① 活树路径（`../plugins/akasha-gate/`）被原样带进仓里 ⇒ 模块找不到；② 每次覆盖都会把 OSS 侧的适配冲掉。
 //   做法：固定清单 + **同一套映射**（路径/本机路径 → 占位符）+ **逐文件语法校验**；跑完可选跑 OSS 测试。
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
-const LIVE = 'H:/Harness/akasha';
-const OSS_CORE = 'H:/Harness/dist/akasha-oss/core';
-const NODE = 'D:/DSHHarness/resources/runtime/primary-runtime/dependencies/node/bin/node.exe';
+const LIVE = '<AKASHA_DIR>';
+const OSS_CORE = '<LOCAL_PATH>';
+const NODE = '<DSH_INSTALL>';
 
 // 固定清单：源码 + 文档（不含 data/，数据由 sync-data-to-oss.mjs 专管）
 const FILES = ['lib.mjs', 'session.mjs', 'sleep.mjs', 'akasha.mjs', 'mcp.mjs', 'test.mjs', 'SCHEMA.md', 'PROTOCOL.md', 'MEMORY-TEST.md', 'CHECKS.md'];

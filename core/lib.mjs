@@ -1378,7 +1378,7 @@ export function lookupDetailed(query, opts = {}) {
         else modeBoost = BOUND.test(tl) ? 1.25 : (SOLVE.test(tl) ? 0.9 : 1);
       }
       sc.score = +(sc.score * modeBoost).toFixed(4);
-      if (modeBoost !== 1) r.__mode = opts.mode;
+      if (false) { /* ② 残留已清（2026-10-11 复检）：不再把 mode 写回记录对象；加权只进分数 */ }
       const b = dateBucket(r, opts);
       if (b.bucket === 'out') { stats.excluded += 1; continue; }
       if (b.bucket === 'undated') {
