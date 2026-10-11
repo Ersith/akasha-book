@@ -654,7 +654,15 @@ export function clipByBudget(result, opts = {}) {
     return kept;
   };
   const out = { ...result };
-  if (Array.isArray(out.hits)) out.hits = trim(out.hits);
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  if (Array.isArray(out.hits)) {
+    const all = out.hits;
+    if (offset > 0) out.hits = all.slice(offset);          // ② 分页：先跳过后裁剪（排序稳定）
+    out.__afterOffset = out.hits.length;                    // 供区分「offset 跳过」与「上限裁掉」
+    out.hits = trim(out.hits);
+    out.budget = null;                                      // 占位，下面统一写
+    out.__total = all.length;
+  }
   if (Array.isArray(out.groups)) {
     // brief 用 groups[].hits，cross 用 groups[].items ⇒ 两者都处理（2026-10-11）
     out.groups = out.groups.map((g) => (Array.isArray(g.hits)
@@ -665,7 +673,19 @@ export function clipByBudget(result, opts = {}) {
     + (Array.isArray(result.groups) ? result.groups.reduce((n, g) => n + (g.items || g.hits || []).length, 0) : 0);
   const after = (Array.isArray(out.hits) ? out.hits.length : 0)
     + (Array.isArray(out.groups) ? out.groups.reduce((n, g) => n + (g.items || g.hits || []).length, 0) : 0);
-  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, itemsBefore: before, itemsAfter: after, trimmed: Math.max(0, before - after) };
+  const total = out.__total ?? before;
+  const afterOffset = out.__afterOffset ?? before;
+  delete out.__total; delete out.__afterOffset;
+  const trimmedOut = Math.max(0, afterOffset - after);      // 仅「被上限裁掉」的条数（不含 offset 跳过）
+  const skippedByOffset = Math.min(offset, total);
+  const nextOffset = offset + after;
+  // ③ 可见性：每次返回都带一行人类可读的装载说明（不再有静默截断）
+  const parts = ['本页 ' + after + ' 条 / 共 ' + total + ' 条', used + '/' + cap + ' tok'];
+  if (skippedByOffset > 0) parts.push('已跳过前 ' + skippedByOffset + ' 条(offset)');
+  if (trimmedOut > 0) parts.push('因上限未显示 ' + trimmedOut + ' 条 → 续取 offset=' + nextOffset + '（或 --full）');
+  else parts.push('无因上限丢弃');
+  const hint = parts.join(' · ');
+  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, nextOffset, exhausted: trimmedOut === 0, hint };
   return out;
 }
 
@@ -1376,7 +1396,7 @@ export function lookupDetailed(query, opts = {}) {
   const orphanOnly = strongHits === 0 && cites.length === 0 && ranked.some((h) => h.zeroWeight);
   const knowledge = knowledgeRoute({ query: q, strongHits, cites, orphanOnly });
   const __res = { hits: ranked, stats, knowledge };
-  return opts.contextBudget === false ? __res : clipByBudget(__res, opts);
+  return opts.contextBudget === false ? __res : clipByBudget(__res, { ...opts, offset: opts.offset });
 }
 
 export function lookup(query, opts = {}) {

@@ -40,7 +40,8 @@ switch (cmd) {
     const rSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: null };
     const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
     if (!rSel.ok || !rUnt.ok) { console.error(rSel.error || rUnt.error); code = 1; break; }
-    const { hits, stats, knowledge } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined });
+    const __paging = { offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined };
+    const { hits, stats, knowledge, budget } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, ...__paging });
     const tierOf = (h) => (h.displayTier ? ' ' + h.displayTier : '') + (h.stale ? ' 待复核' : '') + (h.refuted ? ' refuted' : '');
     const lines = hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score})${tierOf(h)}${h.undated ? ' [未定年]' : ''} ${h.snippet}`) : ['（无结果）'];
     if (knowledge) {
@@ -53,7 +54,8 @@ switch (cmd) {
       lines.push(`· 另有 ${stats.undated} 条日期未知${ex}· ${stats.excluded} 条因日期范围排除。日期未知＝无法参与「该时段发生了什么」的判断，≠该时段没有它。`);
       if (flags.report) lines.push(`· 报告：范围内 ${stats.dated} · 未知 ${stats.undated} · 范围外 ${stats.excluded} · 时间来源 event_time ${stats.timeSource.event_time} / logged_at ${stats.timeSource.logged_at}${flags.undated ? '（--undated 已并入）' : '（--undated 可并入）'}`);
     }
-    print(flags.report ? { hits, stats, knowledge } : hits, lines.join('\n'));
+    if (budget && (budget.trimmed > 0 || budget.offset > 0)) lines.push('[装载] ' + budget.hint);
+    print(flags.report ? { hits, stats, knowledge, budget } : hits, lines.join('\n'));
     break;
   }
   case 'brief': {
