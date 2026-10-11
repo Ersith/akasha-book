@@ -1367,6 +1367,18 @@ export function lookupDetailed(query, opts = {}) {
       const hayL = hay.toLowerCase();
       const sc = scoreTokens(hayL, tokens);
       if (sc.score <= 0) continue; // 统计只看「关键词命中者」的日期归桶
+      // ② 任务模式加权（2026-10-11，lookupDetailed 主路径；与 brief 侧同口径）：不传 mode ⇒ 系数 1 ⇒ 零行为变化。
+      //    ⚠ 教训：本文件里 scored/hit 构造有多份副本，打补丁**必须行为探针复核**（今日已两次改错副本）。
+      let modeBoost = 1;
+      if (opts.mode === 'task' || opts.mode === 'improve') {
+        const tl = (r.tags || []).map(String).join(' ');
+        const SOLVE = /(解法|成功|复现|有效|最佳实践)/;
+        const BOUND = /(坑|失败|教训|纪律|边界|禁止|陷阱)/;
+        if (opts.mode === 'task') modeBoost = SOLVE.test(tl) ? 1.25 : (BOUND.test(tl) ? 0.9 : 1);
+        else modeBoost = BOUND.test(tl) ? 1.25 : (SOLVE.test(tl) ? 0.9 : 1);
+      }
+      sc.score = +(sc.score * modeBoost).toFixed(4);
+      if (modeBoost !== 1) r.__mode = opts.mode;
       const b = dateBucket(r, opts);
       if (b.bucket === 'out') { stats.excluded += 1; continue; }
       if (b.bucket === 'undated') {
@@ -1442,7 +1454,19 @@ export function brief(query, opts = {}) {
         .toLowerCase();
       const hayL = hay.toLowerCase();
       const sc = scoreTokens(hayL, tokens);
-      if (sc.score > 0) scored.push({ r, cred, score: sc.score, strong: name !== 'orphan' && sc.whole >= 1, zeroWeight: name === 'orphan' });
+      if (sc.score > 0) {
+        // ② 任务模式加权（2026-10-11，设计稿 §2.5「先判任务模式」）：不传 mode ⇒ 系数 1 ⇒ 零行为变化。
+        //    如实口径：按 tags 关键词小幅加权，**不是**语义理解；命中加权的条目在结果里带 `mode` 标注。
+        let modeBoost = 1;
+        if (opts.mode === 'task' || opts.mode === 'improve') {
+          const tl = (r.tags || []).map(String).join(' ');
+          const SOLVE = /(解法|成功|复现|有效|最佳实践)/;
+          const BOUND = /(坑|失败|教训|纪律|边界|禁止|陷阱)/;
+          if (opts.mode === 'task') modeBoost = SOLVE.test(tl) ? 1.25 : (BOUND.test(tl) ? 0.9 : 1);
+          else modeBoost = BOUND.test(tl) ? 1.25 : (SOLVE.test(tl) ? 0.9 : 1);
+        }
+        scored.push({ r, cred, score: +(sc.score * modeBoost).toFixed(4), mode: modeBoost !== 1 ? opts.mode : undefined, strong: name !== 'orphan' && sc.whole >= 1, zeroWeight: name === 'orphan' });
+      }
     }
     // 排序 = (词法分 + frontier 状态 + 负价 tip) × (严重度 × 可信度 × 复杂度)。
     // arousal 进严重度乘子，不再加进 base（防双计）。过期不改存储层系数。strong 不看乘子。
@@ -1558,14 +1582,25 @@ export function mirrorCompare(text, opts = {}) {
   const paradigm = rows.filter((r) => r.evidence === 'story');
   const judged = baseline.filter((r) => r.verdict);
   const worse = judged.filter((r) => /失败|部分/.test(String(r.verdict)));
+  // ③ 同构＝权重衰减（2026-10-11，设计稿 §2.9）：**有近同构 ⇒ 高置信**；**无近同构 ⇒ 最近邻 + 折扣**（×0.6），且**显式标注**
+  const topScore = rows.reduce((m, r) => Math.max(m, Number(r.score) || 0), 0);
+  const total = baseline.length + paradigm.length;
+  const confidence = total === 0 ? '无案例'
+    : topScore >= 3 ? '高（有近同构）'
+      : topScore >= 1 ? '中（弱同构）'
+        : '低（仅最近邻）';
+  const decay = confidence.startsWith('低') ? 0.6 : (confidence.startsWith('中') ? 0.85 : 1);
+  const decayNote = (confidence === '低（仅最近邻）' || confidence === '中（弱同构）')
+    ? ('⚠ ' + confidence + ' ⇒ 按最近邻 + 原理推演，置信度折扣 ×' + decay + '；')
+    : '';
   return {
-    query: String(text).slice(0, 60), baseline, paradigm,
+    query: String(text).slice(0, 60), baseline, paradigm, confidence, decay,
     summary: {
-      baseline: baseline.length, paradigm: paradigm.length,
+      baseline: baseline.length, paradigm: paradigm.length, confidence, decay,
       judged: judged.length, worse: worse.length,
-      note: judged.length
+      note: decayNote + (judged.length
         ? ('基线镜里已有 ' + judged.length + ' 条带可判定结果（其中 ' + worse.length + ' 条为失败/部分）——可用作"更好还是更差"的比较基准')
-        : '基线镜尚无带可判定结果的条目：请用 mirror outcome <id> --verdict 成功|失败|部分 --rework N 记录本次结果（否则"更好更差"只能靠印象）',
+        : '基线镜尚无带可判定结果的条目：请用 mirror outcome <id> --verdict 成功|失败|部分 --rework N 记录本次结果（否则"更好更差"只能靠印象）'),
     },
   };
 }

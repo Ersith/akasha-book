@@ -2568,6 +2568,27 @@ t('⑤ 弃权评测：判分规则写死（一等错 / 一等对 / 半分）', a
   assert.equal(judge.judgeOne(an, { stance: 'unknown' }).score, 0, '过度弃权＝一等错');
 });
 
+t('② 任务模式（目标/改进）：传 mode 会按 tags 加权改动分数；不传 ⇒ 零变化', () => {
+  const a = lib.lookupDetailed('坑', { contextBudget: false, limit: 12 });
+  const b = lib.lookupDetailed('坑', { contextBudget: false, limit: 12, mode: 'improve' });
+  const sa = JSON.stringify(a.hits.map((h) => h.score));
+  const sb = JSON.stringify(b.hits.map((h) => h.score));
+  // 若命中里确有 BOUND 类（坑/失败/教训/纪律/边界/禁止/陷阱）标签的条目 ⇒ improve 应产生差异；否则允许相同
+  const cur = new Map(lib.currentRecords(lib.loadStore('canon').records).map((r) => [String(r.id), r]));
+  const BOUND = /(坑|失败|教训|纪律|边界|禁止|陷阱)/;
+  const hasBound = a.hits.some((h) => BOUND.test(((cur.get(String(h.id)) || {}).tags || []).join(' ')));
+  if (hasBound) assert.notEqual(sa, sb, '有 BOUND 类命中时，improve 模式应改变分数');
+  else assert.equal(sa, sb, '无 BOUND 类命中时应与默认一致');
+  const c = lib.lookupDetailed('坑', { contextBudget: false, limit: 12, mode: 'task' });
+  assert.ok(Array.isArray(c.hits), 'task 模式可调用');
+});
+t('③ 同构＝权重衰减：给出置信度与折扣，低置信时显式标注', () => {
+  const m = lib.mirrorCompare('告警没人信');
+  assert.ok(typeof m.confidence === 'string' && m.confidence.length > 0, '有置信度字段');
+  assert.ok([0.6, 0.85, 1].includes(m.decay), '折扣 ∈ {0.6, 0.85, 1}：' + m.decay);
+  if (m.confidence.startsWith('低')) assert.ok(String(m.summary.note).includes('折扣'), '低置信须显式标注折扣（防把最近邻当近同构）');
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');
