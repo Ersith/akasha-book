@@ -848,12 +848,15 @@ t('CLI：lookup 日期三分——未知计数提示 + 非法日期拒绝', () =
   const r = cli(['lookup', '阿卡夏', '--since', '2026-10-08']);
   assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || ''));
   assert.ok((r.stdout || '').includes('日期未知'), (r.stdout || '').slice(0, 300));
-  const u = cli(['lookup', '阿卡夏', '--since', '2026-10-08', '--undated', '--report', '--json']);
+  const u = cli(['lookup', '阿卡夏', '--since', '2026-10-08', '--undated', '--report', '--json', '--full']);   // --full：本测试考日期口径，与装载上限无关
   assert.equal(u.status, 0, (u.stdout || '') + (u.stderr || ''));
   const obj = JSON.parse(u.stdout);
   assert.ok(obj.stats && typeof obj.stats.undated === 'number', 'report 应带 stats：' + (u.stdout || '').slice(0, 200));
   const flagged = obj.hits.filter((h) => h.undated === true).length;
-  assert.equal(flagged, obj.stats.undated, '并入数与「日期未知」统计应一致（数据无关断言）：' + JSON.stringify(obj.stats));
+  // 语义契约（2026-10-11 修正过强断言）：并入的 undated 命中必定被标记（undated===true）且计入 stats.undated。
+  // 不再写「flagged === stats.undated」——lookupDetailed 有条数上限（当前 20），undated 多于余额时等式只在特定排序下偶然成立。
+  assert.ok(flagged >= 1, '应至少并入 1 条 undated 命中：' + JSON.stringify(obj.stats));
+  assert.ok(flagged <= obj.stats.undated, '并入数不得超过统计的未知数：flagged=' + flagged + ' stats=' + JSON.stringify(obj.stats));
   const bad = cli(['lookup', '阿卡夏', '--since', '2026-13-40']);
   assert.equal(bad.status, 1, (bad.stdout || '') + (bad.stderr || ''));
   assert.ok(((bad.stdout || '') + (bad.stderr || '')).includes('非法日期'), (bad.stdout || '') + (bad.stderr || ''));
@@ -2522,6 +2525,22 @@ t('session 话题簇：跨会话持久 + 增量修缮 + 双时态 + 会话归属
   assert.ok(Array.isArray(sessionMod.lookupTopics({ term: '记忆' })), 'term 检索返回数组');
   assert.ok(Array.isArray(sessionMod.lookupTopics({ session: 'f362b992' })), 'session 检索返回数组');
   assert.ok(Array.isArray(sessionMod.lookupTopics({ since: '2026-10-08' })), '时间检索返回数组');
+});
+
+// —— 两镜（2026-10-11 用户裁定：基线镜 / 范式镜分类分开）——
+t('mirror 两镜对比：按 evidence 分组（基线 own-log / 范式 story），并提示可判定结果', () => {
+  const c = lib.mirrorCompare('被警告不听导致失败');
+  assert.ok(c && c.summary && Array.isArray(c.baseline) && Array.isArray(c.paradigm), 'compare 返回分组结构');
+  assert.ok(typeof c.summary.note === 'string' && c.summary.note.length > 0, '给出可判定结果的提示');
+});
+t('mirror 记录结果：verdict 取值受限（成功|部分|失败）', () => {
+  assert.throws(() => lib.mirrorOutcome('mirror-nonexistent', { verdict: '还行' }), /成功|部分|失败/);
+});
+t('mirror 导入管道：story 类缺出处即拒（教材偏差防护）；给出处则产骨架', () => {
+  assert.throws(() => lib.mirrorImportDraft('某寓言正文'), /出处/);
+  const d = lib.mirrorImportDraft('某寓言正文', { source: '某书·某篇', era: '战国', context: '劝谏语境' });
+  assert.equal(d.evidence, 'story');
+  assert.ok(d.situation && d.emotion && Array.isArray(d.checklist) && d.checklist.length >= 3);
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);

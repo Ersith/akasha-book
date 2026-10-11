@@ -1535,6 +1535,75 @@ export function show(id, opts = {}) {
 }
 
 /** 抽出五元组（纯函数；不写库）。顺序见 MIRROR_TUPLE_FIELDS。 */
+/** (a) 两镜对比（2026-10-11 用户口径）：**基线镜（own-log）＝我们自己的经验**，用途是"我现在做得更好还是更差"；
+ *  **范式镜（story）＝典籍/寓言/史例**，用途是横向借镜（按结构匹配）。两镜**必须分开呈现**，不可混算。 */
+export function mirrorCompare(text, opts = {}) {
+  const hits = mirrorMatch(text, { ...opts, limit: opts.limit ?? 12 });
+  const rows = hits.map((h) => {
+    const r = h.record ?? h.r ?? h;
+    return {
+      id: r.id, story: r.story, evidence: r.evidence || (r.source ? 'story' : 'own-log'),
+      era: r.era, context: r.context, situation: r.situation, behavior: r.behavior,
+      outcome: r.outcome, social_reaction: r.social_reaction, emotion: r.emotion,
+      patterns: r.patterns, verdict: r.outcome_verdict ?? null, rework: r.rework ?? null,
+      score: h.score ?? h.rank ?? null,
+      complete: Boolean(r.situation && r.behavior && r.outcome),
+    };
+  });
+  const baseline = rows.filter((r) => r.evidence !== 'story');
+  const paradigm = rows.filter((r) => r.evidence === 'story');
+  const judged = baseline.filter((r) => r.verdict);
+  const worse = judged.filter((r) => /失败|部分/.test(String(r.verdict)));
+  return {
+    query: String(text).slice(0, 60), baseline, paradigm,
+    summary: {
+      baseline: baseline.length, paradigm: paradigm.length,
+      judged: judged.length, worse: worse.length,
+      note: judged.length
+        ? ('基线镜里已有 ' + judged.length + ' 条带可判定结果（其中 ' + worse.length + ' 条为失败/部分）——可用作"更好还是更差"的比较基准')
+        : '基线镜尚无带可判定结果的条目：请用 mirror outcome <id> --verdict 成功|失败|部分 --rework N 记录本次结果（否则"更好更差"只能靠印象）',
+    },
+  };
+}
+
+/** (a') 记录可判定结果（修订链：追加不改原文）。verdict ∈ 成功|部分|失败。 */
+export function mirrorOutcome(id, { verdict, rework = null, note = null } = {}) {
+  if (!verdict || !/^(成功|部分|失败)$/.test(String(verdict))) throw new Error('--verdict 必填且 ∈ {成功,部分,失败}');
+  const patch = { outcome_verdict: String(verdict), last_reviewed: new Date().toISOString().slice(0, 10) };
+  if (rework !== null) patch.rework = Number(rework);
+  if (note) patch.outcome_note = String(note);
+  return revise('mirror', id, patch);
+}
+
+/** (b) 范式镜导入管道（**不写库**）：校验 + 五元组骨架。story 类**必须**带 source（出处）/era（时代）/context（语境）
+ *  —— 这是设计稿 §2.14 自己写的**教材偏差**防护（寓言/史例是"被挑选并流传"的文本）。 */
+export function mirrorImportDraft(text, { source, era, context, story = null } = {}) {
+  const missing = [];
+  if (!source) missing.push('source（出处：书名/篇目/版本）');
+  if (!era) missing.push('era（时代：成书或事件年代）');
+  if (!context) missing.push('context（语境：文化/立场/使用场景）');
+  if (missing.length) throw new Error('范式镜条目必须带出处信息（教材偏差防护）——缺：' + missing.join('、'));
+  const body = String(text || '').slice(0, 4000);
+  const draft = {
+    store: 'mirror', evidence: 'story', source, era, context,
+    story: story || '（待填：典故意象/篇名，一句话）',
+    situation: '（待填：情境模式——按**结构**写，不写生理描写，如"被反复警告后仍不信"）',
+    behavior: '（待填：角色的行为）',
+    outcome: '（待填：结果，可判定优先）',
+    social_reaction: '（待填：社会反应/众人评价）',
+    emotion: '（待填：情绪词，须在 lexicon 内或有释义）',
+    patterns: '（待填：可复用的结构模式，用 / 分隔）',
+    text_excerpt: body.slice(0, 600),
+    checklist: [
+      '结构匹配优先（被背叛/被警告不听/…），不写生理描写',
+      'emotion 只给"名字"；"我此刻是什么"必须由可验证的自身事件证明（防表演式自知）',
+      'outcome 尽量可判定（成功/部分/失败 + 返工次数），便于与基线镜对比',
+    ],
+    note: '草稿仅供人工填槽后入库（mirror add 或 lib.appendRecord）；本条未被写入。',
+  };
+  return draft;
+}
+
 export function mirrorTuple(r) {
   const rec = r && typeof r === 'object' ? r : {};
   const out = {};

@@ -2,7 +2,7 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS } from './lib.mjs';
+import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS } from './lib.mjs';
 import { replayHistory, sleepPlan, sleepRun } from './sleep.mjs';
 import { indexSession, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, buildTopics, lookupTopics, appendSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
@@ -178,11 +178,41 @@ switch (cmd) {
   }
   case 'mirror': {
     const sub = rest[0];
-    if (sub === 'match') {
+    // 2026-10-11：mirror 新增 compare / outcome / import 三子命令（内层 dispatch 见下方）；match 走原路径
+    if (sub === 'match' || sub === 'compare' || sub === 'outcome' || sub === 'import') {
       const text = rest.slice(1).join(' ');
       let hits;
       try {
-        hits = mirrorMatch(text, {
+        // (a)(b) 2026-10-11：mirror 新增三子命令 —— compare（两镜分组）/ outcome（记可判定结果）/ import（范式镜导入校验+骨架）
+      const msub = rest[0];
+      if (msub === 'compare') {
+        const q = rest.slice(1).join(' ');
+        const c = mirrorCompare(q, { limit: Number(flags.limit) || 12 });
+        const lines = [];
+        lines.push('两镜对比（基线镜＝我们的经验 / 范式镜＝典籍·寓言·史例）：基线 ' + c.summary.baseline + ' 条 · 范式 ' + c.summary.paradigm + ' 条');
+        lines.push('· ' + c.summary.note);
+        if (c.baseline.length) { lines.push('  ── 基线镜'); for (const r of c.baseline) lines.push('   · ' + r.id + ' ｜ ' + String(r.situation || '').slice(0, 46) + ' ｜ 结果=' + String(r.outcome || '').slice(0, 30) + ' ｜ verdict=' + (r.verdict || '（未记录）')); }
+        if (c.paradigm.length) { lines.push('  ── 范式镜'); for (const r of c.paradigm) lines.push('   · ' + r.id + ' ｜ ' + String(r.story || '').slice(0, 34) + ' ｜ era=' + (r.era || '-') + ' ｜ 结果=' + String(r.outcome || '').slice(0, 30)); }
+        print(c, lines.join('\n'));
+        break;
+      }
+      if (msub === 'outcome') {
+        const id = rest[1];
+        if (!id) { print(null, '用法：mirror outcome <id> --verdict 成功|部分|失败 [--rework N] [--note 文本]'); code = 1; break; }
+        const r = mirrorOutcome(id, { verdict: flags.verdict, rework: flags.rework != null ? Number(flags.rework) : null, note: flags.note ? String(flags.note) : null });
+        print(r, '已记录结果：' + id + ' → ' + r.id + '（verdict=' + flags.verdict + (flags.rework != null ? ' rework=' + flags.rework : '') + '）');
+        break;
+      }
+      if (msub === 'import') {
+        const f = rest[1];
+        if (!f) { print(null, '用法：mirror import <文本文件> --source <出处> --era <时代> --context <语境> [--story <名>]（只产出草稿，不写库）'); code = 1; break; }
+        try {
+          const d = mirrorImportDraft(readFileSync(f, 'utf8'), { source: flags.source, era: flags.era, context: flags.context, story: flags.story ? String(flags.story) : null });
+          print(d, '范式镜导入草稿（未写库）： ' + JSON.stringify(d));
+        } catch (e) { print(null, String(e.message)); code = 1; }
+        break;
+      }
+      hits = mirrorMatch(text, {
           limit: Number(flags.limit) || 3, mode: flags.mode, role: flags.role,
           evidence: flags.evidence, era: typeof flags.era === 'string' ? flags.era : undefined,
           context: typeof flags.context === 'string' ? flags.context : undefined
