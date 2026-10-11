@@ -472,7 +472,9 @@ switch (cmd) {
       const d = lookupSegmentsDetailed(q, {
         storeFile,
         session: flags.session ? String(flags.session) : undefined,
-        kind: flags.kind,
+        // (1) 2026-10-11：默认只查「结论 + 意图 + 节点」；动作段 gist 是工具调用参数，
+        //                混进来会把"调过什么"误读成"想过什么" ⇒ 看动作面请显式 --actions。
+        kind: flags.kind ? flags.kind : (flags.actions ? 'intent,action,conclusion' : undefined),
         level: flags.level,
         since: flags.since,
         until: flags.until,
@@ -485,7 +487,7 @@ switch (cmd) {
       const lines = hits.length
         ? hits.map((h) => (h.kind === 'node'
           ? `[node L${h.level}] ${h.id}（${h.score}）${(h.children ?? []).length} 孩子 · ${String(h.gist).slice(0, 160)}`
-          : `[${h.kind}] ${h.id}（${h.score}）turn ${h.turn ?? '?'} · ${String(h.gist).slice(0, 160)}`))
+          : `[${h.kind}] ${h.id}（${h.score}）turn ${h.turn ?? '?'} · ${h.kind === 'action' ? '[动作·工具调用，非结论] ' : ''}${String(h.gist).slice(0, 160)}`))
         : ['（无命中——默认不含过程段；需要时加 --process）'];
       lines.push('[覆盖] 主题命中 ' + d.matched + ' 段 / 作用域内 ' + d.sessionTotal + ' 段 · 本页 ' + hits.length + ' 段'
         + (d.exhausted ? ' · 已到末尾（拿全）' : ' · 未拿全，续取 --offset ' + d.nextOffset));

@@ -324,12 +324,15 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   if (!q) return { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true };
   const tokens = tokenize(q);
   if (!tokens.length) return { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true };
+  // (1) 2026-10-11：**默认面只给 conclusion + intent**——实测发现动作段（646 条）gist 是工具调用参数，
+  //     排到结论前会把"我调过什么"误读成"我们想过什么"。要动作/节点/过程须显式指定（kind / level / --actions）。
   const SEG_KINDS = ['intent', 'action', 'conclusion', ...(includeProcess ? ['process'] : [])];
   let kinds;
   if (kind != null) kinds = (Array.isArray(kind) ? kind : String(kind).split(',')).map((x) => String(x).trim()).filter(Boolean);
   else if (level === 'nodes') kinds = ['node'];
   else if (level === 'segs') kinds = SEG_KINDS;
-  else kinds = [...SEG_KINDS, 'node'];
+  else if (all) kinds = [...SEG_KINDS, 'node'];          // all=true＝看历史全貌，回宽面（与"不做版本归并"同义）
+  else kinds = ['conclusion', 'intent', 'node', ...(includeProcess ? ['process'] : [])];   // 默认：结论+意图+节点；process 仍须显式（includeProcess）
   const records = loadStore('session', storeFile).records;
   const sess = resolveSessionPrefix(records, session);
   const view = all ? records : collapseActionVersions(records);
@@ -411,7 +414,11 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
 function resolvedSess(records, session) { return resolveSessionPrefix(records, session); }
 
 export function sessionClusters({ storeFile = SESSION_DEFAULTS.storeFile, session, kind = 'conclusion', topN = 12, minCount = 3, limit = 4 } = {}) {
-  const STOP = new Set(['的', '了', '是', '在', '我', '你', '他', '它', '和', '与', '就', '都', '也', '不', '要', '这', '那', '有', '没', '个', '上', '下', '里', '到', '把', '被', '而', '但', '还', '会', '能', '可以', '我们', '什么', '怎么', 'the', 'and', 'for', 'with', 'that', 'this']);
+  // (3) 2026-10-11：扩停用词——实测发现"全绿/终验/留痕/继续/验证/修复/文档"这类**工程口头语**会霸占簇名，
+  //     使簇不反映主题。停用词分三类：虚词、工程流程词、元叙述词。
+  const STOP = new Set([
+    '的', '了', '是', '在', '我', '你', '他', '它', '和', '与', '就', '都', '也', '不', '要', '这', '那', '有', '没', '个', '上', '下', '里', '到', '把', '被', '而', '但', '还', '会', '能', '可以', '我们', '什么', '怎么', 'the', 'and', 'for', 'with', 'that', 'this',
+    '全绿', '终验', '留痕', '继续', '验证', '修复', '修正', '文档', '测试', '结果', '完成', '确认', '检查', '切片', '全部', '时间', '第一', '第二', '第三', '现在', '然后', '所以', '已经', '进行', '需要', '应该', '问题', '部分', '内容', '方式', '情况', '通过', '新增', '落地', '启动', '看一下', '看一下', '接着', '同时', '另外' ]);
   const allRecords = loadStore('session', storeFile).records;
   const sess = resolvedSess(allRecords, session);
   const records = allRecords
@@ -427,13 +434,30 @@ export function sessionClusters({ storeFile = SESSION_DEFAULTS.storeFile, sessio
     const cnt = new Map();
     for (const t of terms(r.gist)) cnt.set(t, (cnt.get(t) || 0) + 1);
     if (!cnt.size) continue;
-    const top = [...cnt.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    // 簇名取"最长的 Top3 候选"里的最高频者：长词更像主题（≥3 汉字或 ≥4 ASCII），短词多是口水
+    const cands = [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
+      .filter(([t]) => (/^[\u4e00-\u9fff]{3,}$/.test(t) || /^[a-z0-9._-]{4,}$/.test(t)));
+    if (!cands.length) continue;
+    // 用"长词"做簇名：在候选中优先选能作为其它候选子串的长词（更概括），否则取最高频
+    const longCands = cands.filter(([t]) => cands.some(([o]) => o !== t && o.includes(t)));
+    const top = (longCands[0] ?? cands[0])[0];
     const g = groups.get(top) ?? { term: top, count: 0, samples: [], chars: 0 };
     g.count += 1; g.chars += String(r.gist || '').length;
     if (g.samples.length < limit) g.samples.push({ id: r.id, turn: r.turn ?? null, gist: String(r.gist || '').slice(0, 90) });
     groups.set(top, g);
   }
-  return [...groups.values()].filter((g) => g.count >= minCount).sort((a, b) => b.count - a.count).slice(0, topN);
+  // (3)' 种子词优先：lexicon 里的术语（数据驱动，不硬编码主题）排在纯频次簇之前
+  let seeds = new Set();
+  try {
+    for (const r of loadStore('lexicon').records) {
+      const t = String(r.term ?? '').trim();
+      if (t) seeds.add(t);
+    }
+  } catch { /* lexicon 不可读则只用频次 */ }
+  return [...groups.values()]
+    .filter((g) => g.count >= minCount)
+    .sort((a, b) => (seeds.has(b.term) ? 1 : 0) - (seeds.has(a.term) ? 1 : 0) || b.count - a.count)
+    .slice(0, topN);
 }
 
 /** 注入块渲染（小体积；≤budget 字符，命令提示始终保底）。 */

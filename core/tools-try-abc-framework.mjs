@@ -50,15 +50,23 @@ for (const t of ['库无界', '定价', '双通路']) {
   const d = s.lookupSegmentsDetailed(t, { session: full, limit: 1 });
   const h = d.hits[0];
   if (!h) { console.log('  「' + t + '」无命中'); continue; }
-  console.log('\n  ▸「' + t + '」段 ' + h.id + '（turn ' + h.turn + '）');
+  console.log('\n  ▸「' + t + '」段 ' + h.id + '（turn ' + h.turn + ' / seq ' + h.seq + '）');
   console.log('     [段 gist] ' + String(h.gist).slice(0, 150));
-  // 档案里同一 turn 的助手原话（含该主题词的句子）
-  const sameTurn = rows.filter((r) => (r.data && r.data.turn === h.turn) && /assistant|user/.test(String(r.type)));
+  // (4) 保真对照改走 **seq 直回原档**（此前按"同 turn 含该词"匹配，对工具参数形态天然对不上）
+  const sameRow = rows.find((r) => r.seq === h.seq);
   let found = null;
-  for (const r of sameTurn) {
-    const c = Array.isArray(r.data?.content) ? r.data.content.map((x) => x?.text || '').join(' ') : String(r.data?.content ?? '');
+  if (sameRow) {
+    const c = Array.isArray(sameRow.data?.content) ? sameRow.data.content.map((x) => x?.text || '').join(' ')
+      : String(sameRow.data?.content ?? sameRow.data?.message?.content?.map?.((x) => x?.text || '').join(' ') ?? '');
     const i = c.indexOf(t);
-    if (i >= 0) { found = c.slice(Math.max(0, i - 60), i + 90).replace(/\s+/g, ' '); break; }
+    found = i >= 0 ? c.slice(Math.max(0, i - 60), i + 110).replace(/\s+/g, ' ')
+      : (c ? '（同一 seq 行命中，但该行不含此主题词——gist 来自该行动的语义归纳）' : null);
   }
-  console.log('     [档案原话] ' + (found ? found : '（该 turn 档案里未见该词——可能来自更早上下文）'));
+  console.log('     [原档 seq ' + h.seq + '] ' + (sameRow ? (found || c2(sameRow)) : '（档案里未找到同 seq 行）'));
+}
+
+function c2(row) {
+  const c = Array.isArray(row.data?.content) ? row.data.content.map((x) => x?.text || '').join(' ')
+    : String(row.data?.content ?? '');
+  return c.slice(0, 120).replace(/\s+/g, ' ');
 }
