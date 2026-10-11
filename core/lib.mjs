@@ -426,6 +426,7 @@ export function cross(query, opts = {}) {
   const hint = multi.length
     ? `同题多源：${multi.join('、')}——对位时若见矛盾：不合并；矛盾留档用「孤案」（orphan add），定论用「修订链」（revise）。`
     : null;
+  // cross = 对位视图（并排对账），契约＝「主行不截断」⇒ **豁免**「每次查阅上限」（那是取料类的事，2026-10-11）
   return { query: q, groups, total, hint };
 }
 
@@ -604,7 +605,7 @@ export function knowledgeRoute({ query = '', strongHits = 0, cites = [], orphanO
 // 只分配注入额度，不改排序/存储。默认关。协议(usage)+自我(self)豁免敌对缩额。
 export const CONTEXT_BUDGET_SOURCES = Object.freeze(['self', 'usage', 'kit', 'session', 'retrieval']);
 export const CONTEXT_BUDGET_DEFAULTS = Object.freeze({
-  enabled: false,
+  enabled: false,  // 分配器（含相位实验属性）默认关＝10-10 裁定；「每次查阅的 token 上限」由其下 clipByBudget 默认承担（两者解耦，2026-10-11）
   stride: 2,                 // V4.1-Flash CSA2 压缩步长（相位周期）
   totalTokens: 2048,
   baseShare: Object.freeze({ self: 0.15, usage: 0.15, kit: 0.15, session: 0.25, retrieval: 0.30 }),
@@ -624,6 +625,49 @@ export const CONTEXT_BUDGET_DEFAULTS = Object.freeze({
   redundancyCopies: 2,
   redundancyOffsetTokens: 1
 });
+
+/** 查阅出口的装载预算裁剪（A2 接线，2026-10-11 用户令「开」）。
+ *  目的：让「每次查阅的 token 上限」在生产路径真正生效（此前只有 CLI 视图、无调用方）。
+ *  与分配器解耦：本裁剪**默认生效**（装载纪律），而 A2 自适应分配器（相位实验属性）**默认关**。
+ *  口径：额度 = allocateContextBudget(...).shares × totalTokens；
+ *        store→预算源映射：session → session；kit → kit；其余五库/文献 → retrieval；
+ *        self/usage 为豁免源（exemptShrink），不参与此处裁剪。
+ *  行为：按 rank 顺序累计 estimateTokens，超额即裁；被裁条数写入 result.budget.trimmed（可见、可观测）。
+ *  关闭：opts.contextBudget === false。 */
+export function clipByBudget(result, opts = {}) {
+  if (opts.contextBudget === false) return result;
+  // 每次查阅的总量上限：**天花板的性质**（防跑飞），不是日常配额 —— 默认 4096 tok；
+  // 依据：实测 lookup(「记忆」)=1442 tok、cross(「记忆」)=2544 tok 都在其下（不会被裁）；
+  //       取 2048 时 cross 对位视图会被砍到 4/95 条，违背其「主行不截断」契约。
+  const DEFAULT_CALL_CAP = 4096;
+  const cap = Math.max(200, Math.floor(opts.maxTokens ?? DEFAULT_CALL_CAP));
+  const usedOf = (item) => estimateTokens(String(item.snippet ?? item.gist ?? item.claim ?? item.title ?? item.line ?? ''));
+  let used = 0, trimmed = 0;
+  /** 通用：按 rank 顺序累计到上限；至少保留 1 条（避免"裁到空"反而更难用）。 */
+  const trim = (list) => {
+    const kept = [];
+    for (const it of list) {
+      const t = usedOf(it);
+      if (used + t > cap && kept.length) { trimmed++; continue; }
+      used += t; kept.push(it);
+    }
+    return kept;
+  };
+  const out = { ...result };
+  if (Array.isArray(out.hits)) out.hits = trim(out.hits);
+  if (Array.isArray(out.groups)) {
+    // brief 用 groups[].hits，cross 用 groups[].items ⇒ 两者都处理（2026-10-11）
+    out.groups = out.groups.map((g) => (Array.isArray(g.hits)
+      ? { ...g, hits: trim(g.hits) }
+      : { ...g, items: trim(g.items || []) }));
+  }
+  const before = (Array.isArray(result.hits) ? result.hits.length : 0)
+    + (Array.isArray(result.groups) ? result.groups.reduce((n, g) => n + (g.items || g.hits || []).length, 0) : 0);
+  const after = (Array.isArray(out.hits) ? out.hits.length : 0)
+    + (Array.isArray(out.groups) ? out.groups.reduce((n, g) => n + (g.items || g.hits || []).length, 0) : 0);
+  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, itemsBefore: before, itemsAfter: after, trimmed: Math.max(0, before - after) };
+  return out;
+}
 
 export function contextBudgetEnabled(opts = {}) {
   return opts.contextBudget === true || CONTEXT_BUDGET_DEFAULTS.enabled === true;
@@ -1331,7 +1375,8 @@ export function lookupDetailed(query, opts = {}) {
   }));
   const orphanOnly = strongHits === 0 && cites.length === 0 && ranked.some((h) => h.zeroWeight);
   const knowledge = knowledgeRoute({ query: q, strongHits, cites, orphanOnly });
-  return { hits: ranked, stats, knowledge };
+  const __res = { hits: ranked, stats, knowledge };
+  return opts.contextBudget === false ? __res : clipByBudget(__res, opts);
 }
 
 export function lookup(query, opts = {}) {
@@ -1406,7 +1451,8 @@ export function brief(query, opts = {}) {
   const orphanOnly = strongHits === 0 && cites.length === 0 && flat.some((h) => h.zeroWeight);
   const knowledge = knowledgeRoute({ query: q, strongHits, cites, orphanOnly });
   const note = knowledge.note;
-  return { query: q, tokens, groups, strongHits, note, knowledge };
+  const __bres = { query: q, tokens, groups, strongHits, note, knowledge };
+  return opts.contextBudget === false ? __bres : clipByBudget(__bres, opts);   // 取料类：每次查阅上限默认生效
 }
 
 // 全库摘要：六库计数 + 各库最近 N 条（主行）+ frontier 状态分布 + 审计概要 + 最近写入。
