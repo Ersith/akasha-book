@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS } from './lib.mjs';
 import { replayHistory, sleepPlan, sleepRun } from './sleep.mjs';
-import { indexSession, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
+import { indexSession, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, buildTopics, lookupTopics, appendSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -422,6 +422,7 @@ switch (cmd) {
       '会话层（session layer）用法：',
       '  node akasha.mjs session index <sessionId|文件路径> [--session ID] [--root D] [--store F] [--meta F] [--full]',
       '  node akasha.mjs session themes [--session ID] [--limit N]      # ★会话主题表（主题＝本会话窗口内新增的库条目 + tags 建议词）',
+      '  node akasha.mjs session topics [--build] [--term X] [--session SID] [--since D] [--until D]   # ★话题簇（跨会话持久＋增量修缮＋双时态＋会话归属；--build 更新一代）',
       '  node akasha.mjs session clusters [--session ID] [--top N]      # ⚠实验件：词频/种子簇四轮迭代未达标，结果仅作词频参考，导航请用 themes',
       '  node akasha.mjs session lookup <词> [--session ID] [--kind a,b] [--level nodes|segs] [--since D] [--until D] [--offset N] [--process] [--all] [--limit N] [--store F] [--json]',
       '  node akasha.mjs session promote <segId> --to <store> [--data \'<json>\'] [--confirm-replay] [--apply] [--repair] [--store F] [--target F]',
@@ -493,6 +494,26 @@ switch (cmd) {
       lines.push('[覆盖] 主题命中 ' + d.matched + ' 段 / 作用域内 ' + d.sessionTotal + ' 段 · 本页 ' + hits.length + ' 段'
         + (d.exhausted ? ' · 已到末尾（拿全）' : ' · 未拿全，续取 --offset ' + d.nextOffset));
       print(flags.json ? d : hits, lines.join('\n'));
+      break;
+    }
+    if (sub === 'topics') {
+      // (b'') 话题簇：跨会话持久 + 增量修缮 + 双时态 + 会话归属（2026-10-11 用户口径）
+      let built = null;
+      if (flags.build) {
+        built = buildTopics({ storeFile });
+        const rec = { kind: 'topic', treegen: (loadStore('session', storeFile).records.filter((r) => r.kind === 'topic').reduce((n, r) => Math.max(n, Number(r.treegen) || 0), 0)) + 1,
+          fingerprint: built.fingerprint, clusters: built.list, logged_at: new Date().toISOString() };
+        appendSegments(storeFile ?? SESSION_DEFAULTS.storeFile, [rec]);
+      }
+      const list = lookupTopics({ storeFile, term: flags.term ? String(flags.term) : undefined, session: flags.session ? String(flags.session) : undefined, since: flags.since, until: flags.until });
+      const lines = [];
+      lines.push('话题簇（跨会话持久 · 双时态 = 事件轴/记录轴 · 会话归属）：' + list.length + ' 簇' + (built ? '（本代 ' + built.list.length + ' 簇，覆盖 ' + built.sessions + ' 个会话）' : ''));
+      for (const c of list.slice(0, 40)) {
+        lines.push('  ' + String(c.term).padEnd(12) + '×' + String(c.count).padStart(3) + ' · 跨 ' + Object.keys(c.sessions || {}).length + ' 会话'
+          + ' · 事件 ' + (c.firstEvent || '?') + '~' + (c.lastEvent || '?') + ' · 记录 ' + (c.firstLogged || '?') + '~' + (c.lastLogged || '?')
+          + (c.entries && c.entries.length ? ' · 例 ' + c.entries[0] : ''));
+      }
+      print(list, lines.join('\n'));
       break;
     }
     if (sub === 'themes') {

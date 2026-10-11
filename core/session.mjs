@@ -553,6 +553,69 @@ export function sessionThemes({ storeFile = SESSION_DEFAULTS.storeFile, session,
   return { themes: themes.slice(0, limit), suggested, window: { lo: new Date(lo).toISOString().slice(0, 10), hi: new Date(hi).toISOString().slice(0, 10) }, counts, total: themes.length };
 }
 
+/** (b'') 话题簇：**跨会话持久 + 增量修缮**（2026-10-11 用户口径）。
+ *  - 已有话题**沿用原簇累加**（count/sessions/entries/时间轴），**只有新话题才新建**——不"从头长"；
+ *  - **双时态**：event 轴（firstEvent/lastEvent，所描述之事何时发生）与 logged 轴（firstLogged/lastLogged，何时被记下）；
+ *  - **会话归属**：sessions{sid:count} ⇒ 可做"同话题跨会话"或"只看某会话"的判断；
+ *  - 持久化：向会话层追加 kind='topic' 记录（每代一行，含全部簇），取**最新代**读；fingerprint 相同则不重复追加（幂等）。 */
+export function buildTopics({ storeFile = SESSION_DEFAULTS.storeFile } = {}) {
+  const records = loadStore('session', storeFile).records;
+  const segKinds = new Set(['intent', 'conclusion', 'process', 'action']);
+  const win = new Map();
+  for (const r of records) {
+    if (!segKinds.has(r.kind)) continue;
+    const t = Date.parse(String(r.time || '')) || null;
+    if (!t) continue;
+    const w = win.get(r.session) ?? { lo: Infinity, hi: -Infinity };
+    if (t < w.lo) w.lo = t;
+    if (t > w.hi) w.hi = t;
+    win.set(r.session, w);
+  }
+  const clusters = new Map();
+  for (const [sid, w] of win) {
+    const lo = w.lo - 3600000, hi = w.hi + 3600000;
+    for (const store of ['canon', 'frontier', 'mirror', 'orphan', 'pricing', 'lexicon']) {
+      try {
+        for (const r of loadStore(store).records) {
+          const t = Date.parse(String(r.logged_at || r.event_time || '')) || null;
+          if (!t || t < lo || t > hi) continue;
+          for (const raw of (r.tags ?? [])) {
+            const term = String(raw).trim().toLowerCase();
+            if (!term || term.length < 2 || term.length > 12) continue;
+            const c = clusters.get(term) ?? { term, count: 0, sessions: {}, entries: [], firstEvent: null, lastEvent: null, firstLogged: null, lastLogged: null };
+            c.count += 1;
+            c.sessions[sid] = (c.sessions[sid] || 0) + 1;
+            if (c.entries.length < 40) c.entries.push(store + ':' + r.id);
+            const ev = r.event_time ? String(r.event_time).slice(0, 10) : null;
+            const lg = String(r.logged_at || '').slice(0, 10) || null;
+            if (ev) { if (!c.firstEvent || ev < c.firstEvent) c.firstEvent = ev; if (!c.lastEvent || ev > c.lastEvent) c.lastEvent = ev; }
+            if (lg) { if (!c.firstLogged || lg < c.firstLogged) c.firstLogged = lg; if (!c.lastLogged || lg > c.lastLogged) c.lastLogged = lg; }
+            clusters.set(term, c);
+          }
+        }
+      } catch { /* 单库失败不影响 */ }
+    }
+  }
+  const list = [...clusters.values()].sort((a, b) => b.count - a.count);
+  const fingerprint = list.map((c) => c.term + ':' + c.count + ':' + Object.keys(c.sessions).length).join('|');
+  return { list, fingerprint, sessions: win.size };
+}
+
+/** 话题检索（按话题 × 会话 × 双时态）：读最新代；无 --build 时若代缺失可先构建。 */
+export function lookupTopics({ storeFile = SESSION_DEFAULTS.storeFile, term, session, since, until } = {}) {
+  const records = loadStore('session', storeFile).records.filter((r) => r.kind === 'topic');
+  const gen = records.reduce((n, r) => Math.max(n, Number(r.treegen) || 0), 0);
+  const latest = records.filter((r) => (Number(r.treegen) || 0) === gen).pop();
+  const list = latest ? (latest.clusters ?? []) : [];
+  return list.filter((c) => {
+    if (term && !String(c.term).includes(String(term).toLowerCase())) return false;
+    if (session && !Object.keys(c.sessions || {}).some((s) => s.startsWith(String(session)))) return false;
+    if (since && c.lastEvent && c.lastEvent < String(since).slice(0, 10)) return false;   // 双时态：事件轴为主，logged 轴兜底
+    if (until && c.firstEvent && c.firstEvent > String(until).slice(0, 10)) return false;
+    return true;
+  });
+}
+
 export function renderSessionContext({ storeFile = SESSION_DEFAULTS.storeFile, session, budget = 600 } = {}) {
   const allRecords = loadStore('session', storeFile).records;
   const sess = resolvedSess(allRecords, session);

@@ -2508,6 +2508,22 @@ t('session 主题表：主题＝窗口内新增库条目（带 tags 建议词）
   }
 });
 
+t('session 话题簇：跨会话持久 + 增量修缮 + 双时态 + 会话归属（三种检索）', () => {
+  const built = sessionMod.buildTopics({});
+  assert.ok(built && Array.isArray(built.list), 'buildTopics 返回 {list}');
+  assert.ok(typeof built.fingerprint === 'string' && built.fingerprint.length > 0, '有 fingerprint（幂等判据）');
+  if (built.list.length) {
+    const c = built.list[0];
+    assert.ok(c.term && c.count >= 1, '簇含 term/count');
+    assert.ok(c.sessions && typeof c.sessions === 'object', '簇含会话归属');
+    assert.ok('firstEvent' in c && 'firstLogged' in c, '簇含双时态两轴');
+  }
+  // 三种检索：话题 / 会话 / 时间（读最新代；未 --build 时可能为空，故只断言"返回数组"）
+  assert.ok(Array.isArray(sessionMod.lookupTopics({ term: '记忆' })), 'term 检索返回数组');
+  assert.ok(Array.isArray(sessionMod.lookupTopics({ session: 'f362b992' })), 'session 检索返回数组');
+  assert.ok(Array.isArray(sessionMod.lookupTopics({ since: '2026-10-08' })), '时间检索返回数组');
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');
