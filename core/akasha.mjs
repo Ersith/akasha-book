@@ -41,7 +41,7 @@ switch (cmd) {
     const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
     if (!rSel.ok || !rUnt.ok) { console.error(rSel.error || rUnt.error); code = 1; break; }
     const __paging = { offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined };
-    const { hits, stats, knowledge, budget } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, ...__paging });
+    const { hits, stats, knowledge, budget } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, ...__paging });
     const tierOf = (h) => (h.displayTier ? ' ' + h.displayTier : '') + (h.stale ? ' 待复核' : '') + (h.refuted ? ' refuted' : '');
     const lines = hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score})${tierOf(h)}${h.undated ? ' [未定年]' : ''} ${h.snippet}`) : ['（无结果）'];
     if (knowledge) {
@@ -218,7 +218,7 @@ switch (cmd) {
           context: typeof flags.context === 'string' ? flags.context : undefined
         });
       } catch (e) {
-        print(null, String(e.message) + '\n用法：node akasha.mjs mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]');
+        print(null, String(e.message) + '\n用法：node akasha.mjs mirror compare <情境> | mirror outcome <id> --verdict 成功|部分|失败 [--rework N] | mirror import <文件> --source <出处> --era <时代> --context <语境> | mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]');
         code = 1; break;
       }
       const scopeParts = [];
@@ -237,7 +237,7 @@ switch (cmd) {
       }
       print(hits, lines.join('\n'));
     } else {
-      print(null, '用法：node akasha.mjs mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]');
+      print(null, '用法：node akasha.mjs mirror compare <情境> | mirror outcome <id> --verdict 成功|部分|失败 [--rework N] | mirror import <文件> --source <出处> --era <时代> --context <语境> | mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]');
       code = 1;
     }
     break;
@@ -529,11 +529,26 @@ switch (cmd) {
     if (sub === 'topics') {
       // (b'') 话题簇：跨会话持久 + 增量修缮 + 双时态 + 会话归属（2026-10-11 用户口径）
       let built = null;
+      let writeNote = '';
       if (flags.build) {
         built = buildTopics({ storeFile });
-        const rec = { kind: 'topic', treegen: (loadStore('session', storeFile).records.filter((r) => r.kind === 'topic').reduce((n, r) => Math.max(n, Number(r.treegen) || 0), 0)) + 1,
-          fingerprint: built.fingerprint, clusters: built.list, logged_at: new Date().toISOString() };
-        appendSegments(storeFile ?? SESSION_DEFAULTS.storeFile, [rec]);
+        // 幂等 + 防膨胀（2026-10-11 复检）：同 fingerprint ⇒ 跳过；否则写新代并在 retires 里标记旧代退役（追加不改旧行）
+        const prev = loadStore('session', storeFile).records.filter((r) => r.kind === 'topic');
+        const latest = prev.reduce((a, r) => ((Number(r.treegen) || 0) > (Number(a && a.treegen) || 0) ? r : a), null);
+        if (latest && latest.fingerprint === built.fingerprint) {
+          writeNote = '（与最新代相同 → 跳过写入，防膨胀）';
+        } else {
+          const rec = {
+            kind: 'topic',
+            treegen: (latest ? (Number(latest.treegen) || 0) : 0) + 1,
+            fingerprint: built.fingerprint,
+            clusters: built.list,
+            retires: prev.map((r) => Number(r.treegen) || 0),
+            logged_at: new Date().toISOString(),
+          };
+          appendSegments(storeFile ?? SESSION_DEFAULTS.storeFile, [rec]);
+          writeNote = '（已写第 ' + rec.treegen + ' 代；旧代 ' + rec.retires.length + ' 个标记退役）';
+        }
       }
       const list = lookupTopics({ storeFile, term: flags.term ? String(flags.term) : undefined, session: flags.session ? String(flags.session) : undefined, since: flags.since, until: flags.until });
       const lines = [];

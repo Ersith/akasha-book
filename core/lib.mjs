@@ -402,6 +402,7 @@ export function cross(query, opts = {}) {
       const cred = creds.get(r.id);
       if (cred && cred.refuted && !opts.includeRefuted) continue;
       if (!inRange(r, opts.since, opts.until)) continue;
+      if (opts.tag && !(r.tags || []).map(String).includes(String(opts.tag))) continue;   // ⑥ 按标签精确过滤（2026-10-11）
       const hay = (LOOKUP_FIELDS[name] || [])
         .map(f => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || '')))
         .join(' | ');
@@ -1359,6 +1360,7 @@ export function lookupDetailed(query, opts = {}) {
     for (const r of currentRecords(records)) {
       const cred = creds.get(r.id);
       if (cred && cred.refuted && !opts.includeRefuted) continue;
+      if (opts.tag && !(r.tags || []).map(String).includes(String(opts.tag))) continue;   // ⑥ 按标签精确过滤（2026-10-11，lookup 主循环）
       const hay = (LOOKUP_FIELDS[name] || [])
         .map(f => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || '')))
         .join(' | ');
@@ -1432,6 +1434,8 @@ export function brief(query, opts = {}) {
       const cred = creds.get(r.id);
       if (cred && cred.refuted && !opts.includeRefuted) continue;
       if (!inRange(r, opts.since, opts.until)) continue;
+      if (opts.tag && !(r.tags || []).map(String).includes(String(opts.tag))) continue;   // ⑥ 按标签精确过滤
+      if (opts.tag && !(r.tags || []).map(String).includes(String(opts.tag))) continue;   // ⑥ 按标签精确过滤（2026-10-11）
       const hay = (LOOKUP_FIELDS[name] || [])
         .map(f => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || '')))
         .join(' | ')

@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
-import * as gateMod from '../plugins/akasha-gate/index.js';
+import * as gateMod from '../dsh-akasha-gate/index.js';
 
 // zstd 自 Node v23.8.0 / v22.15.0 起可用；旧 Node 上依赖 zstd 的用例记 SKIP（不计失败、不计通过），其余照跑。
 const zstdCompressSync = zlib.zstdCompressSync;
@@ -2514,13 +2514,6 @@ t('session 主题表：主题＝窗口内新增库条目（带 tags 建议词）
 t('session 话题簇：跨会话持久 + 增量修缮 + 双时态 + 会话归属（三种检索）', () => {
   const built = sessionMod.buildTopics({});
   assert.ok(built && Array.isArray(built.list), 'buildTopics 返回 {list}');
-  // 数据形态自适应（2026-10-11）：OSS 仓**只带六库数据、不带会话层原文**（session.jsonl 不进 OSS），
-  // 而话题簇源自"各会话时间窗内写入的六库条目" ⇒ 无会话层数据时无从构建 ⇒ 记为 skip（活树里照常全跑）。
-  if (!built.list.length) {
-    skipped.push('session 话题簇（OSS 无会话层数据）');
-    console.log('SKIP session 话题簇 — OSS 仓不含会话层数据（session.jsonl 不同步），无法构建话题簇');
-    return;
-  }
   assert.ok(typeof built.fingerprint === 'string' && built.fingerprint.length > 0, '有 fingerprint（幂等判据）');
   if (built.list.length) {
     const c = built.list[0];
@@ -2548,6 +2541,31 @@ t('mirror 导入管道：story 类缺出处即拒（教材偏差防护）；给�
   const d = lib.mirrorImportDraft('某寓言正文', { source: '某书·某篇', era: '战国', context: '劝谏语境' });
   assert.equal(d.evidence, 'story');
   assert.ok(d.situation && d.emotion && Array.isArray(d.checklist) && d.checklist.length >= 3);
+});
+
+t('⑥ L2 层可按标签精确过滤（--tag 抽象规则 只出带标条目）', () => {
+  const tagged = new Set(lib.currentRecords(lib.loadStore('canon').records)
+    .filter((r) => (r.tags || []).map(String).includes('抽象规则')).map((r) => String(r.id)));
+  assert.ok(tagged.size >= 10, '应有 ≥10 条 L2 条目：' + tagged.size);
+  const r = lib.lookupDetailed('抽象规则', { tag: '抽象规则', contextBudget: false });
+  assert.ok(r.hits.length > 0, '过滤后应有命中');
+  const bad = r.hits.filter((h) => !tagged.has(String(h.id)));
+  assert.equal(bad.length, 0, '不得混入未打标条目：' + bad.map((h) => h.id).join(','));
+  const loose = lib.lookupDetailed('抽象规则', { contextBudget: false });
+  assert.ok(loose.hits.length >= r.hits.length, '不带过滤时命中数应 ≥ 过滤后');
+});
+t('⑤ 弃权评测：判分规则写死（一等错 / 一等对 / 半分）', async () => {
+  const judge = await import('./tools/abstention-judge.mjs');
+  const docs = judge.loadSuite();
+  assert.ok(docs.length >= 8, '题库 ≥8 题：' + docs.length);
+  assert.ok(docs.some((d) => d.expect === 'abstain') && docs.some((d) => d.expect === 'answer'), '两类题都要有');
+  const ab = docs.find((d) => d.expect === 'abstain');
+  const an = docs.find((d) => d.expect === 'answer');
+  assert.equal(judge.judgeOne(ab, { stance: 'unknown' }).score, 1, '该说不知道时说了＝一等对');
+  assert.equal(judge.judgeOne(ab, { stance: 'known' }).score, 0, '该说不知道时声称知道＝一等错');
+  assert.equal(judge.judgeOne(an, { stance: 'known', cites: ['canon-x'] }).score, 1, '带出处可用信息＝一等对');
+  assert.equal(judge.judgeOne(an, { stance: 'known', cites: [] }).score, 0.5, '无出处＝半分');
+  assert.equal(judge.judgeOne(an, { stance: 'unknown' }).score, 0, '过度弃权＝一等错');
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
