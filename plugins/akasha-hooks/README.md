@@ -25,3 +25,10 @@ cd <LOCAL_PATH>
 npm pack
 # 然后：plugin_manager install_bundle <tgz 绝对路径>（首次安装会 HMR 热生效；替换需重启）
 ```
+
+
+## 源与许可（Source & License）
+
+- 源仓库：https://github.com/Ersith/akasha-book
+- 本版本固定提交（pinned commit）：`5a55099586cfae4e7511ba433eaf202455d81c30`
+- 许可证：MIT

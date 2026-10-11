@@ -1,7 +1,6 @@
 {
   "name": "@akasha-book/hooks",
-  "version": "1.2.4",
-  "private": true,
+  "version": "1.2.6",
   "engines": {
     "node": ">=18"
   },
@@ -22,5 +21,16 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ersith/akasha-book.git",
+    "directory": "plugins/akasha-hooks"
+  },
+  "scripts": {
+    "test": "node selftest.test.mjs",
+    "check": "node --check lib/index.js"
+  },
+  "private": true
 }

@@ -1,7 +1,6 @@
 {
   "name": "@akasha-book/session",
-  "version": "0.3.2",
-  "private": true,
+  "version": "0.3.4",
   "engines": {
     "node": ">=22.15.0"
   },
@@ -23,5 +22,16 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ersith/akasha-book.git",
+    "directory": "plugins/akasha-session"
+  },
+  "scripts": {
+    "test": "node selftest.test.mjs",
+    "check": "node --check lib/index.js"
+  },
+  "private": true
 }

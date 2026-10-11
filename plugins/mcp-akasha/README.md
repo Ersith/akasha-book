@@ -58,3 +58,10 @@ node selftest.test.mjs
 | 独立安全审计 / 公开分发（E5） | **unverified** | 未做独立审计 |
 
 **下一道门（next gate）**：① 在 DSH 上测 streamable-http 传输（若需要）；② 若上游暴露公开的注入/工具服务接缝，评估改回"借官方服务"以省掉自研客户端；③ 补图片内容投影。
+
+
+## 源与许可（Source & License）
+
+- 源仓库：https://github.com/Ersith/akasha-book
+- 本版本固定提交（pinned commit）：`5a55099586cfae4e7511ba433eaf202455d81c30`
+- 许可证：MIT

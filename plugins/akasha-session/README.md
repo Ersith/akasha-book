@@ -29,3 +29,9 @@ npm pack
 - **实测**：热路径 `hostMs=0`；2.1MB 档案 inline 宿主阻塞 161ms → 投递 0.06ms；真实 17.53MB 档案 1267ms → 0.37ms；部署后首个真活 `via=worker ms=840 hostMs=0 lagMs=10`。
 - **测试**：`node selftest.mjs` **22/22**（含 2 条 worker 用例）；OSS 版同套 22/22。
 - 回滚：备份 `_rollback-20261010-session-v04\`；或 `indexMode: 'inline'` 即回旧路径。
+
+## 源与许可（Source & License）
+
+- 源仓库：https://github.com/Ersith/akasha-book
+- 本版本固定提交（pinned commit）：`5a55099586cfae4e7511ba433eaf202455d81c30`
+- 许可证：MIT

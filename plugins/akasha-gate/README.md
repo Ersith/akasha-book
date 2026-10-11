@@ -20,3 +20,10 @@ cd <LOCAL_PATH>
 F:\h\all\Nodejs\npm.cmd pack
 # 然后：plugin_manager install_bundle <tgz 绝对路径>（新 bundle 会 HMR 热生效）
 ```
+
+
+## 源与许可（Source & License）
+
+- 源仓库：https://github.com/Ersith/akasha-book
+- 本版本固定提交（pinned commit）：`5a55099586cfae4e7511ba433eaf202455d81c30`
+- 许可证：MIT

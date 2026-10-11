@@ -1,7 +1,6 @@
 {
   "name": "@akasha-book/gate",
-  "version": "1.3.0",
-  "private": true,
+  "version": "1.3.2",
   "engines": {
     "node": ">=18"
   },
@@ -22,5 +21,16 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ersith/akasha-book.git",
+    "directory": "plugins/akasha-gate"
+  },
+  "scripts": {
+    "test": "node selftest.test.mjs",
+    "check": "node --check lib/index.js"
+  },
+  "private": true
 }
