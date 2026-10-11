@@ -2514,6 +2514,13 @@ t('session 主题表：主题＝窗口内新增库条目（带 tags 建议词）
 t('session 话题簇：跨会话持久 + 增量修缮 + 双时态 + 会话归属（三种检索）', () => {
   const built = sessionMod.buildTopics({});
   assert.ok(built && Array.isArray(built.list), 'buildTopics 返回 {list}');
+  // 数据形态自适应（2026-10-11）：OSS 仓**只带六库数据、不带会话层原文**（session.jsonl 不进 OSS），
+  // 而话题簇源自"各会话时间窗内写入的六库条目" ⇒ 无会话层数据时无从构建 ⇒ 记为 skip（活树里照常全跑）。
+  if (!built.list.length) {
+    skipped.push('session 话题簇（OSS 无会话层数据）');
+    console.log('SKIP session 话题簇 — OSS 仓不含会话层数据（session.jsonl 不同步），无法构建话题簇');
+    return;
+  }
   assert.ok(typeof built.fingerprint === 'string' && built.fingerprint.length > 0, '有 fingerprint（幂等判据）');
   if (built.list.length) {
     const c = built.list[0];
