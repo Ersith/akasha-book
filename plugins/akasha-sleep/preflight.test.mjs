@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync, copyFileSync, readFileSync, existsSync, rmSyn
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
-const REAL = '<AKASHA_DIR>';
+const REAL = 'H:\\Harness\\akasha';
 const FIXBASE = 'H:\\Harness\\_ab\\preflight-fixture';
 // ⚠ 每轮夹具必须**换独立目录**：插件用 createRequire 加载 `lib.mjs`，而目标是 .mjs ⇒ Node 走 **ESM 加载器缓存**，
 //   `require.cache` 里没有它（清理无效）⇒ 只能换 specifier 才能拿到新桩。
@@ -25,8 +25,21 @@ function makeFixture(hooksLines, canonRecords = null) {
   ];
   if (canonRecords) {
     stub.push('const RECORDS = ' + JSON.stringify(canonRecords) + ';');
-    stub.push('export const loadStore = () => ({ records: RECORDS });');
+    stub.push("import { readFileSync as _rf } from 'node:fs'; import { join as _j } from 'node:path';");
+    // 按库名取数：session ⇒ 读夹具的 data/session.jsonl（供显式钩子）；其余 ⇒ 用 RECORDS（供约定行）
+    stub.push("export const loadStore = (name) => { try { if (name === 'session') { const t = _rf(_j("
+      + JSON.stringify(FIX) + ", 'data', 'session.jsonl'), 'utf8'); return { records: t.split('\\n').filter(Boolean).map((l) => JSON.parse(l)) }; } } catch { /* fallthrough */ } return { records: RECORDS }; };");
     stub.push('export const currentRecords = (recs) => recs;');
+    // ① 语义/显式钩子需要检索能力 ⇒ 桩提供最小 lookupDetailed。
+    //    匹配口径贴近真实：**词元 + 相邻二字回退**（真实实现是整词×1 + bigram×0.25；按整串包含会误判为"零命中"）
+    stub.push('export const lookupDetailed = (q, opts) => {'
+      + ' const s = String(q || "").toLowerCase();'
+      + ' const toks = new Set();'
+      + ' for (const w of s.split(/[\\s，。、？,.:;]+/).filter((t) => t.length >= 2)) { toks.add(w); for (let i = 0; i + 1 < w.length; i++) toks.add(w.slice(i, i + 2)); }'
+      + ' const hayOf = (r) => (String(r.claim || "") + " " + (r.tags || []).join(" ")).toLowerCase();'
+      + ' const hits = RECORDS.filter((r) => { const h = hayOf(r); for (const t of toks) if (h.includes(t)) return true; return false; })'
+      + ' .map((r) => ({ id: r.id, snippet: String(r.claim || "").slice(0, 80) }));'
+      + ' return { hits, stats: {}, knowledge: null }; };');
   }
   writeFileSync(join(FIX, 'lib.mjs'), stub.join('\n') + '\n', 'utf8');
   writeFileSync(join(FIX, 'logs', 'hooks.jsonl'), hooksLines.join('\n') + '\n', 'utf8');
@@ -188,5 +201,35 @@ const cap18b = captureRows({ akashaDir: FIX, preflightHints: false }, []);
 const convRow2 = cap18b.rows.find((r) => r.name === 'akasha:conventions');
 T('⑱ 库有 line ⇒ 渲染条目内容（改条目＝改注入）', typeof (convRow2 && convRow2.text()) === 'string' && convRow2.text().includes('测试约定行A'), String(convRow2 && convRow2.text()));
 T('⑱ ≤160 字', (convRow2.text() || '').length <= 160);
+
+// ⑲ 语义 + 显式钩子（① 2026-10-11）
+// 语义钩子：fixture 需含"与被失败工具同名"的条目，否则理应不出行（检索为空＝不出噪音）
+makeFixture([mk('edit', 24 * 60 * 60 * 1000)], [{ id: 'canon-trap-pwsh-x', claim: 'pwsh 的坑：多行脚本落文件再跑', tags: ['坑', 'pwsh'] }]);
+const cap19 = captureRows({ akashaDir: FIX, preflightHints: false }, []);
+const recRow = cap19.rows.find((r) => r.name === 'akasha:recall');
+T('⑲ 注册了 akasha:recall 行', !!recRow, JSON.stringify(cap19.rows.map((r) => r.name)));
+T('⑲ 无触发 ⇒ 静默（不制造噪音）', !!recRow && recRow.text() === null, String(recRow && recRow.text()));
+for (const fn of cap19.handlers['agent/turn-stopping'] || []) fn({ turn: 400 });
+for (const fn of cap19.handlers['tools/result'] || []) fn({ name: 'pwsh' }, { isError: true });
+const t19 = recRow.text();
+T('⑲ 有近失败且有相关条目 ⇒ 出处境检索行', typeof t19 === 'string' && t19.startsWith('[处境检索]'), String(t19));
+T('⑲ ≤120 字', (t19 || '').length <= 120);
+
+// ⑲' 显式钩子（指代）：fixture 写一份会话层，最近 intent 段含「上次」
+makeFixture([mk('edit', 24 * 60 * 60 * 1000)], [{ id: 'canon-design-2-6-20261006', claim: '定价函数：严重度 × 不可逆性 × 代价', tags: ['设计块'] }]);
+{
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  mkdirSync(join(FIX, 'data'), { recursive: true });
+  writeFileSync(join(FIX, 'data', 'session.jsonl'),
+    JSON.stringify({ kind: 'intent', session: 's-t', seq: 1, time: '2026-10-11T00:00:00Z', gist: '问上次那个定价函数怎么算的' }) + '\n',
+    'utf8');
+}
+const cap19b = captureRows({ akashaDir: FIX, preflightHints: false }, []);
+const recRow2 = cap19b.rows.find((r) => r.name === 'akasha:recall');
+const t19b = recRow2 ? recRow2.text() : null;
+T('⑲ 指代（上次）⇒ 出指代检索行', typeof t19b === 'string' && t19b.startsWith('[指代检索]'), String(t19b));
+T('⑲ 指代行 ≤120 字', (t19b || '').length <= 120);
+
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

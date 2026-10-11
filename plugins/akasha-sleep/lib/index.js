@@ -449,6 +449,51 @@ export function apply(ctx, config = {}) {
     });
   }
 
+  // ① 语义钩子 + 显式钩子（2026-10-11 用户令「开搞」；补设计稿 §2.4 五类钩子中缺的两类）
+  //   · **显式钩子**（"上次那个"）：读**本会话最近 intent 段**（会话层＝用户消息的摘要）⇒ 检测指代词 ⇒ 检索六库 ⇒ **一行**指路。
+  //     ⚠ 已知限制（如实）：数据源是**摘要**而非原话，摘要可能丢掉指代词 ⇒ **宁可漏触发不误触发**；
+  //       若要原话级，需让 hooks 侧记录 user-message 行（待办）。
+  //   · **语义钩子**（"当前处境作为查询"）：本会话近 30 分钟内有工具失败 ⇒ 用工具名检索六库 ⇒ **一行**指路。
+  //   两钩子**每回合最多出一行**，优先级 显式 > 语义；都无触发 ⇒ **静默**（不制造噪音）；可关 `recallHook:false`。
+  if (cfg.recallHook !== false) {
+    const PRONOUN = /(上次|之前|上回|那天|那个|说过|记得|当时|前面说|前面提)/;
+    const recentIntentGist = () => {
+      try {
+        const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
+        const rows = lib.loadStore('session').records.filter((r) => r.kind === 'intent');
+        const last = rows[rows.length - 1];
+        return last ? String(last.gist || '') : '';
+      } catch { return ''; }
+    };
+    const clip120 = (s) => (s.length <= 120 ? s : s.slice(0, 119) + '…');
+    ctx.systemPrompt.context({
+      name: 'akasha:recall',
+      order: (cfg.pulseOrder ?? 132) + 5,
+      text: () => {
+        try {
+          const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
+          // 显式钩子（指代）
+          const gist = recentIntentGist();
+          if (gist && PRONOUN.test(gist)) {
+            // 去掉**所有**指代词（2026-10-11 修：replace 无 g 标志时只替一次，残留「那个」会污染查询）
+            const q = gist.replace(new RegExp(PRONOUN.source, 'g'), ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || gist.slice(0, 60);
+            const r = lib.lookupDetailed(q, { limit: 2, contextBudget: false });
+            const ids = (r.hits || []).map((h) => String(h.id)).slice(0, 2).join(' · ');
+            if (ids) return clip120('[指代检索] 像是问旧事 → 先看：' + ids);
+          }
+          // 语义钩子（近失败）
+          const f = recentFailures[recentFailures.length - 1];
+          if (f && obs.turn && Date.now() - f.ts < 30 * 60 * 1000) {
+            const r = lib.lookupDetailed(String(f.tool || ''), { limit: 2, contextBudget: false });
+            const top = (r.hits || [])[0];
+            if (top) return clip120('[处境检索] ' + f.tool + ' 近 30 分钟内失败过 → 相关条目 ' + top.id + '：' + String(top.snippet || '').slice(0, 42));
+          }
+          return null;
+        } catch { return null; }
+      }
+    });
+  }
+
   // 空闲触发（事件失败开放）。
   ctx.on('agent/status', (payload) => {
     try { if (payload?.status === 'idle') maybeSleep('idle'); } catch { /* 静默 */ }
