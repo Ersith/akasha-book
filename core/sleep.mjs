@@ -19,6 +19,9 @@ export const SLEEP_DEFAULTS = {
 export function distillHooks(lines) {
   const counters = { lines: 0, turns: 0, tools: 0, toolErrors: 0, denials: 0, agentErrors: 0, byTool: {} };
   const notes = [];
+  // 2026-10-11：三类候选**统一带样本**（此前只有 tool-error 带；gate-denied / agent-error 只有固定文案
+  // ⇒ 转正成孤案后内容薄、无钩子可言）。样本按 code 分组，各留 3 条；`notes` 保持原样（兼容既有报告口径）。
+  const samples = { 'tool-error': [], 'gate-denied': [], 'agent-error': [] };
   const parsed = [];
   for (const raw of lines) {
     const text = String(raw ?? '').trim();
@@ -34,10 +37,17 @@ export function distillHooks(lines) {
       counters.byTool[tool] = (counters.byTool[tool] ?? 0) + 1;
       if (rec.ok === false) {
         counters.toolErrors++;
-        if (notes.length < 5) notes.push(redact(`工具失败 ${tool}: ${String(rec.message ?? '').slice(0, 120)}`));
+        const s = redact(`工具失败 ${tool}: ${String(rec.message ?? '').slice(0, 120)}`);
+        if (notes.length < 5) notes.push(s);
+        if (samples['tool-error'].length < 3) samples['tool-error'].push(s);
       }
-    } else if (rec.kind === 'gate-denied') counters.denials++;
-    else if (rec.kind === 'agent-error') counters.agentErrors++;
+    } else if (rec.kind === 'gate-denied') {
+      counters.denials++;
+      if (samples['gate-denied'].length < 3) samples['gate-denied'].push(redact(`门控拦截 ${String(rec.tool ?? '?')}: ${String(rec.message ?? rec.rule ?? '').slice(0, 120)}`));
+    } else if (rec.kind === 'agent-error') {
+      counters.agentErrors++;
+      if (samples['agent-error'].length < 3) samples['agent-error'].push(redact(`agent 错误: ${String(rec.message ?? rec.error ?? '').slice(0, 120)}`));
+    }
   }
   // B2（wave1）：召回失败信号——失败回合里「失败前没查库」的计数（口径见 lib.recallSignals）。
   const rs = recallSignals(parsed);
@@ -45,15 +55,19 @@ export function distillHooks(lines) {
   counters.recalledBefore = rs.recalledBefore;
   counters.recallMisses = rs.misses;
   counters.lateRecall = rs.lateRecall;
-  return { counters, notes, recall: rs };
+  return { counters, notes, samples, recall: rs };
 }
 
 /**
  * 生成待办（纯函数）：audit 警告 → review；工具失败 / 门控拦截 / agent 错误 → orphan-candidate；
  * 召回漏（失败前未查库的回合，wave1.1）→ review `recall-miss`（复盘项，不自动转孤案——「本该查到什么」是语义判断）。
  */
-export function buildTodos(counters, notes, audit, recall) {
+export function buildTodos(counters, notes, audit, recall, samples) {
   const todo = [];
+  const sampleOf = (code, fallbackNote) => {
+    const s = (samples && Array.isArray(samples[code])) ? samples[code].slice(0, 3) : [];
+    return s.length ? s : (fallbackNote ? [fallbackNote] : []);
+  };
   const findings = Array.isArray(audit?.findings) ? audit.findings : [];
   for (const finding of findings) {
     todo.push({
@@ -64,13 +78,13 @@ export function buildTodos(counters, notes, audit, recall) {
     });
   }
   if ((counters?.toolErrors ?? 0) > 0) {
-    todo.push({ kind: 'orphan-candidate', code: 'tool-error', count: counters.toolErrors, note: String(notes?.[0] ?? ''), samples: (notes ?? []).slice(0, 3) });
+    todo.push({ kind: 'orphan-candidate', code: 'tool-error', count: counters.toolErrors, note: String(notes?.[0] ?? ''), samples: sampleOf('tool-error', String(notes?.[0] ?? '')) });
   }
   if ((counters?.denials ?? 0) > 0) {
-    todo.push({ kind: 'orphan-candidate', code: 'gate-denied', count: counters.denials, note: '被门控拦截的写入尝试（失败回查候选，见 gate-denied 明细）' });
+    todo.push({ kind: 'orphan-candidate', code: 'gate-denied', count: counters.denials, note: '被门控拦截的写入尝试（失败回查候选）', samples: sampleOf('gate-denied', '被门控拦截的写入尝试') });
   }
   if ((counters?.agentErrors ?? 0) > 0) {
-    todo.push({ kind: 'orphan-candidate', code: 'agent-error', count: counters.agentErrors, note: 'agent 级错误（失败回查候选）' });
+    todo.push({ kind: 'orphan-candidate', code: 'agent-error', count: counters.agentErrors, note: 'agent 级错误（失败回查候选）', samples: sampleOf('agent-error', 'agent 级错误') });
   }
   const misses = Number(counters?.recallMisses ?? 0);
   if (misses > 0) {
@@ -158,7 +172,7 @@ export function sleepRun(opts = {}) {
       end = nl >= fromByte ? nl + 1 : fromByte;
     }
     const slice = buf.subarray(fromByte, end).toString('utf8').split(/\r?\n/).filter(Boolean);
-    const { counters, notes, recall } = distillHooks(slice);
+    const { counters, notes, samples, recall } = distillHooks(slice);
     // 对外仍以「条」计（CLI / 旧测试）；字节水位只进 state.processedBytes。
     const lineFrom = truncated ? 0 : (Number.isInteger(state.processedLines) ? state.processedLines : 0);
     const lineTo = lineFrom + slice.length;
@@ -173,7 +187,7 @@ export function sleepRun(opts = {}) {
 
     const stamp = now.toISOString();
     const date = stamp.slice(0, 10);
-    const todo = buildTodos(counters, notes, auditResult, recall);
+    const todo = buildTodos(counters, notes, auditResult, recall, samples);
     // §3：refuted 进复审、高频 T5 进 verify-candidate。只追加待办，不改六库。扫描失败不拖垮睡眠。
     try {
       const extra = credibilityTodos({ files: opts.files, log: logPath, today: date, verifyUsageMin: opts.verifyUsageMin });

@@ -2604,6 +2604,25 @@ t('④ 历史回放：可运行且给出汇总（可预防/缺口）与纪律行
   assert.ok(/可预防\s*\d+\s*·\s*缺口\s*\d+/.test(out), '有汇总（可预防/缺口）：' + out.split('\n')[1]);
   assert.ok(/不得.*裁决|须人工结合证据判定/.test(out), '有"机械不裁决"的纪律行');
 });
+t('inbox 候选三类统一带样本（sleep.distillHooks + buildTodos）', async () => {
+  const sleepMod = await import('./sleep.mjs');
+  const lines = [
+    JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, message: 'old_string was not found' }),
+    JSON.stringify({ kind: 'gate-denied', tool: 'write', message: '拒绝直写 data/canon.jsonl' }),
+    JSON.stringify({ kind: 'agent-error', message: 'tool input is invalid JSON' }),
+  ];
+  const c = sleepMod.distillHooks(lines);
+  assert.ok(c.samples && c.samples['tool-error'].length === 1, 'tool-error 有样本：' + JSON.stringify(c.samples));
+  assert.ok(c.samples['gate-denied'].length === 1, 'gate-denied 有样本');
+  assert.ok(c.samples['agent-error'].length === 1, 'agent-error 有样本');
+  const todos = sleepMod.buildTodos(c, c.samples['tool-error'], null, null, c.samples).filter((t) => t.kind === 'orphan-candidate');
+  for (const code of ['tool-error', 'gate-denied', 'agent-error']) {
+    const item = todos.find((t) => t.code === code);
+    assert.ok(item, '应有 ' + code + ' 候选');
+    assert.ok(Array.isArray(item.samples) && item.samples.length >= 1, code + ' 候选须带样本（否则转正后无钩子可言）');
+  }
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');
