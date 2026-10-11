@@ -408,59 +408,151 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   return { hits: ranked, matched, sessionTotal: scopeTotal, offset: off, nextOffset, exhausted: nextOffset >= matched };
 }
 
-/** (b) 主题簇（**词频簇，不是语义簇**——如实标注；2026-10-11 用户裁定 abc 皆做）。
- *  做法：对结论段（默认）取中文相邻二字 + ASCII ≥3 词，去停用词，按段内最高频词归簇；输出簇名/段数/样本 id。 */
 /** 薄封装：解析会话名前缀（供 renderSessionContext / sessionClusters 用）。 */
 function resolvedSess(records, session) { return resolveSessionPrefix(records, session); }
 
-export function sessionClusters({ storeFile = SESSION_DEFAULTS.storeFile, session, kind = 'conclusion', topN = 12, minCount = 3, limit = 4 } = {}) {
-  // (3) 2026-10-11：扩停用词——实测发现"全绿/终验/留痕/继续/验证/修复/文档"这类**工程口头语**会霸占簇名，
-  //     使簇不反映主题。停用词分三类：虚词、工程流程词、元叙述词。
-  const STOP = new Set([
-    '的', '了', '是', '在', '我', '你', '他', '它', '和', '与', '就', '都', '也', '不', '要', '这', '那', '有', '没', '个', '上', '下', '里', '到', '把', '被', '而', '但', '还', '会', '能', '可以', '我们', '什么', '怎么', 'the', 'and', 'for', 'with', 'that', 'this',
-    '全绿', '终验', '留痕', '继续', '验证', '修复', '修正', '文档', '测试', '结果', '完成', '确认', '检查', '切片', '全部', '时间', '第一', '第二', '第三', '现在', '然后', '所以', '已经', '进行', '需要', '应该', '问题', '部分', '内容', '方式', '情况', '通过', '新增', '落地', '启动', '看一下', '看一下', '接着', '同时', '另外' ]);
+/** (b) 主题簇（2026-10-11 二改，按用户口径「根据每个会话的主题与主要对话修缮」）：
+ *  ① 语料＝**本会话**段落；**intent（用户说的话）权重 ×2** —— "主要对话"是主题的来源；
+ *  ② 候选＝中文 **3–6 字连续短语**（最长优先、丢弃被更长高频短语包含的）+ 英文专名（≥4 字符）；
+ *  ③ 黑名单＝工具名 / 文件类型 / 流程词（edit、grep、read、write、pwsh、apply_patch、selftest、gate、promote、
+ *     staging、README、json、md、检查、验证、修复、落位、全绿…）——这些是"我们干了什么"，不是"在谈什么"；
+ *  ④ 归簇＝**最长匹配**（互斥）；未匹配段落计入 arr.unassigned（如实报告覆盖）。 */
+export function sessionClusters({ storeFile = SESSION_DEFAULTS.storeFile, session, topN = 12, minCount = 3, limit = 3, source = 'both' } = {}) {
   const allRecords = loadStore('session', storeFile).records;
   const sess = resolvedSess(allRecords, session);
-  const records = allRecords
-    .filter((r) => r.kind === kind && (!sess || r.session === sess));
-  const terms = (s) => {
-    const out = [];
-    for (const run of String(s).match(/[\u4e00-\u9fff]+/g) || []) for (let i = 0; i + 1 < run.length; i++) out.push(run.slice(i, i + 2));
-    for (const w of String(s).toLowerCase().match(/[a-z0-9._-]{3,}/g) || []) out.push(w);
-    return out.filter((t) => !STOP.has(t) && !/^\d+$/.test(t));
-  };
-  const groups = new Map();
-  for (const r of records) {
-    const cnt = new Map();
-    for (const t of terms(r.gist)) cnt.set(t, (cnt.get(t) || 0) + 1);
-    if (!cnt.size) continue;
-    // 簇名取"最长的 Top3 候选"里的最高频者：长词更像主题（≥3 汉字或 ≥4 ASCII），短词多是口水
-    const cands = [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
-      .filter(([t]) => (/^[\u4e00-\u9fff]{3,}$/.test(t) || /^[a-z0-9._-]{4,}$/.test(t)));
-    if (!cands.length) continue;
-    // 用"长词"做簇名：在候选中优先选能作为其它候选子串的长词（更概括），否则取最高频
-    const longCands = cands.filter(([t]) => cands.some(([o]) => o !== t && o.includes(t)));
-    const top = (longCands[0] ?? cands[0])[0];
-    const g = groups.get(top) ?? { term: top, count: 0, samples: [], chars: 0 };
-    g.count += 1; g.chars += String(r.gist || '').length;
-    if (g.samples.length < limit) g.samples.push({ id: r.id, turn: r.turn ?? null, gist: String(r.gist || '').slice(0, 90) });
-    groups.set(top, g);
-  }
-  // (3)' 种子词优先：lexicon 里的术语（数据驱动，不硬编码主题）排在纯频次簇之前
-  let seeds = new Set();
+  const kinds = source === 'intent' ? ['intent'] : (source === 'conclusion' ? ['conclusion'] : ['intent', 'conclusion']);
+  // 脚手架过滤（2026-10-11 实测）：intent 段里混着系统提示/注入块（<system-reminder>、<hindsight_knowledge>、
+  // 【起床包】、runtime context…）——那是脚手架不是对话，会把簇带成 prompt/memory/search。
+  const SCAFFOLD = /<system-reminder>|<hindsight_knowledge|<openviking-context|Current runtime context|【阿卡夏·起床包】|阿卡夏·睡眠：|阿卡夏·库脉搏|阿卡夏·称呼：|小阿卡夏·会话层：|\[极限观测|\[约定\]|\[坑前提示|<memory uri=|This is an automatically generated checkpoint/;
+  const allScoped = allRecords.filter((r) => kinds.includes(r.kind) && (!sess || r.session === sess));
+  const recs = allScoped.filter((r) => !SCAFFOLD.test(String(r.gist || '')));
+  const skippedScaffold = allScoped.length - recs.length;
+  const BLACK = new Set(['edit', 'grep', 'read', 'write', 'pwsh', 'bash', 'apply_patch', 'apply', 'patch', 'node', 'json', 'jsonl', 'md', 'zstd', 'html', 'yaml',
+    'readme', 'selftest', 'gate', 'hooks', 'sleep', 'mcp', 'cli', 'api', 'http', 'https', 'github', 'npm', 'pnpm', 'stage', 'staging',
+    '检查', '验证', '修复', '落位', '全绿', '通过', '完成', '确认', '结果', '文档', '测试', '一次', '两次', '这一', '那个', '这个', '什么', '时候', '现在', '然后', '所以', '已经', '需要',
+    '问题', '部分', '内容', '方式', '情况', '新增', '落地', '继续', '第一', '第二', '第三', '第四', '第六条', '残留', '第二批', '第二轮', '第二轮']);
+
+  // ①' 会话主题种子（2026-10-11 用户口径「根据每个会话的主题」）：取**该会话时间窗内写入的六库条目的 tags**——
+  //     "这个会话谈出了什么"比词频更能定义主题；窗口＝本会话段落时间的 [min, max]（±1 天余量）。
+  let seedHits = 0;
+  const sessionSeeds = new Set();
   try {
-    for (const r of loadStore('lexicon').records) {
-      const t = String(r.term ?? '').trim();
-      if (t) seeds.add(t);
+    let minT = Infinity, maxT = -Infinity;
+    for (const r of recs) {
+      const t = Date.parse(String(r.time || '')) || null;
+      if (t) { if (t < minT) minT = t; if (t > maxT) maxT = t; }
     }
-  } catch { /* lexicon 不可读则只用频次 */ }
-  return [...groups.values()]
-    .filter((g) => g.count >= minCount)
-    .sort((a, b) => (seeds.has(b.term) ? 1 : 0) - (seeds.has(a.term) ? 1 : 0) || b.count - a.count)
-    .slice(0, topN);
+    if (Number.isFinite(minT)) {
+      const lo = minT - 86400000, hi = maxT + 86400000;
+      for (const store of ['canon', 'frontier', 'mirror', 'orphan', 'pricing', 'lexicon']) {
+        try {
+          for (const r of loadStore(store).records) {
+            const t = Date.parse(String(r.logged_at || r.event_time || '')) || null;
+            if (!t || t < lo || t > hi) continue;
+            for (const tag of (r.tags ?? [])) {
+              const s2 = String(tag).trim();
+              if (s2.length >= 2 && s2.length <= 12 && !BLACK.has(s2)) { sessionSeeds.add(s2); seedHits += 1; }
+            }
+          }
+        } catch { /* 单库失败不影响 */ }
+      }
+    }
+  } catch { /* 种子不可用时退化为纯短语提取 */ }
+
+  // 中文连续串切分（标点/ASCII 为界）
+  const runsOf = (t) => String(t).match(/[\u4e00-\u9fff]+/g) || [];
+  const asciiOf = (t) => String(t).toLowerCase().match(/[a-z][a-z0-9_-]{3,}/g) || [];
+
+  // ① 候选短语计数（intent 权重 2）
+  const cnt = new Map();
+  for (const r of recs) {
+    const w = r.kind === 'intent' ? 2 : 1;
+    const seen = new Set();
+    for (const run of runsOf(r.gist)) {
+      for (let L = 6; L >= 3; L--) {
+        for (let k = 0; k + L <= run.length; k++) {
+          const p = run.slice(k, k + L);
+          if (!BLACK.has(p)) seen.add(p);
+        }
+      }
+    }
+    for (const w2 of asciiOf(r.gist)) if (!BLACK.has(w2)) seen.add(w2);
+    for (const p of seen) cnt.set(p, (cnt.get(p) || 0) + w);
+  }
+
+  // ② 最长优先 + 去被包含者：长度 6→3，若短串被已选长串包含则丢弃
+  const kept = [];
+  for (const L of [6, 5, 4, 3]) {
+    const cands = [...cnt.entries()].filter(([p, c]) => p.length === L && c >= minCount).filter(([p]) => !/^[a-z0-9._-]+$/.test(p) || L >= 4)
+      .sort((a, b) => b[1] - a[1]);
+    for (const [p, c] of cands) {
+      if (kept.some((k) => k.includes(p) || p.includes(k))) continue;
+      kept.push(p);
+    }
+  }
+  // 会话种子优先并入候选（保证"这个会话的主题"一定在场）
+  const merged = new Set([...sessionSeeds, ...kept]);
+  const terms = [...merged].sort((a, b) => (cnt.get(b) || 0) - (cnt.get(a) || 0)).slice(0, Math.max(topN * 3, 30));
+  const termList = terms.sort((a, b) => b.length - a.length);   // 归簇用最长匹配
+
+  // ③ 归簇
+  const groups = new Map();
+  let unassigned = 0;
+  for (const r of recs) {
+    const gist = String(r.gist ?? '');
+    const hit = termList.find((t) => gist.includes(t));
+    if (!hit) { unassigned += 1; continue; }
+    const g = groups.get(hit) ?? { term: hit, count: 0, samples: [], chars: 0 };
+    g.count += 1;
+    g.chars += gist.length;
+    if (g.samples.length < limit) g.samples.push({ id: r.id, turn: r.turn ?? null, kind: r.kind, gist: gist.slice(0, 80) });
+    groups.set(hit, g);
+  }
+  const out = [...groups.values()].filter((g) => g.count >= minCount).sort((a, b) => b.count - a.count).slice(0, topN);
+  out.unassigned = unassigned;
+  out.termTotal = termList.length;
+  out.matchedTotal = recs.length - unassigned;
+  out.corpus = recs.length;
+  out.skippedScaffold = skippedScaffold;
+  out.sessionSeeds = sessionSeeds.size;
+  return out;
 }
 
-/** 注入块渲染（小体积；≤budget 字符，命令提示始终保底）。 */
+/** (b') 会话主题表（2026-10-11 定案，替代词频簇）：**主题＝该会话时间窗内写进六库的条目**——
+ *  "这个会话谈了什么"最可靠的证据，是它为此**存下了什么**（而不是对话里哪个词频次高；词频簇四轮迭代未达标，降为实验件）。
+ *  返回：{ themes: [{store,id,tags,headline,loggedAt}], suggested: [{term,count}], window:{lo,hi}, counts:{...} } */
+export function sessionThemes({ storeFile = SESSION_DEFAULTS.storeFile, session, limit = 60, seedTopN = 12 } = {}) {
+  const allRecords = loadStore('session', storeFile).records;
+  const sess = resolvedSess(allRecords, session);
+  const segs = allRecords.filter((r) => (!sess || r.session === sess));
+  let lo = Infinity, hi = -Infinity;
+  for (const r of segs) {
+    const t = Date.parse(String(r.time || '')) || null;
+    if (t) { if (t < lo) lo = t; if (t > hi) hi = t; }
+  }
+  if (!Number.isFinite(lo)) return { themes: [], suggested: [], window: null, counts: {} };
+  lo -= 3600000; hi += 3600000;   // ±1h 余量（条目写入常紧随会话）
+  const themes = [];
+  const tagCount = new Map();
+  for (const store of ['canon', 'frontier', 'mirror', 'orphan', 'pricing', 'lexicon']) {
+    try {
+      for (const r of loadStore(store).records) {
+        const t = Date.parse(String(r.logged_at || r.event_time || '')) || null;
+        if (!t || t < lo || t > hi) continue;
+        const tags = (r.tags ?? []).map((x) => String(x).trim()).filter(Boolean);
+        for (const tag of tags) tagCount.set(tag, (tagCount.get(tag) || 0) + 1);
+        themes.push({ store, id: r.id, tags, loggedAt: String(r.logged_at || '').slice(0, 10), headline: String(r.claim ?? '').slice(0, 70) });
+      }
+    } catch { /* 单库失败不影响 */ }
+  }
+  themes.sort((a, b) => String(a.loggedAt).localeCompare(String(b.loggedAt)));
+  const suggested = [...tagCount.entries()].filter(([t]) => t.length >= 2 && t.length <= 12)
+    .sort((a, b) => b[1] - a[1]).slice(0, seedTopN).map(([term, count]) => ({ term, count }));
+  const counts = {};
+  for (const x of themes) counts[x.store] = (counts[x.store] || 0) + 1;
+  return { themes: themes.slice(0, limit), suggested, window: { lo: new Date(lo).toISOString().slice(0, 10), hi: new Date(hi).toISOString().slice(0, 10) }, counts, total: themes.length };
+}
+
 export function renderSessionContext({ storeFile = SESSION_DEFAULTS.storeFile, session, budget = 600 } = {}) {
   const allRecords = loadStore('session', storeFile).records;
   const sess = resolvedSess(allRecords, session);

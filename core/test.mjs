@@ -2495,6 +2495,19 @@ t('session context：真按预算装料（更大预算装得更多且不超预�
   assert.ok(/装载 \d+\/\d+ 条结论/.test(big), '应带装载行：' + big.slice(-80));
 });
 
+t('session 主题表：主题＝窗口内新增库条目（带 tags 建议词），替代词频簇', () => {
+  const t2 = sessionMod.sessionThemes({});
+  assert.ok(t2 && typeof t2 === 'object', 'themes 返回对象');
+  assert.ok(Array.isArray(t2.themes), 'themes 是数组');
+  assert.ok(Array.isArray(t2.suggested), 'suggested 是数组');
+  if (t2.total > 0) {
+    assert.ok(t2.window && t2.window.lo && t2.window.hi, '窗口非空：' + JSON.stringify(t2.window));
+    const x = t2.themes[0];
+    assert.ok(x.store && x.id, '条目含 store/id');
+    assert.ok(Array.isArray(x.tags), '条目含 tags');
+  }
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

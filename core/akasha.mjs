@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS } from './lib.mjs';
 import { replayHistory, sleepPlan, sleepRun } from './sleep.mjs';
-import { indexSession, lookupSegments, lookupSegmentsDetailed, sessionClusters, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
+import { indexSession, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -421,7 +421,8 @@ switch (cmd) {
     const helpLines = [
       '会话层（session layer）用法：',
       '  node akasha.mjs session index <sessionId|文件路径> [--session ID] [--root D] [--store F] [--meta F] [--full]',
-      '  node akasha.mjs session clusters [--session ID] [--top N] [--expand 词]   # 主题簇（词频簇）导航',
+      '  node akasha.mjs session themes [--session ID] [--limit N]      # ★会话主题表（主题＝本会话窗口内新增的库条目 + tags 建议词）',
+      '  node akasha.mjs session clusters [--session ID] [--top N]      # ⚠实验件：词频/种子簇四轮迭代未达标，结果仅作词频参考，导航请用 themes',
       '  node akasha.mjs session lookup <词> [--session ID] [--kind a,b] [--level nodes|segs] [--since D] [--until D] [--offset N] [--process] [--all] [--limit N] [--store F] [--json]',
       '  node akasha.mjs session promote <segId> --to <store> [--data \'<json>\'] [--confirm-replay] [--apply] [--repair] [--store F] [--target F]',
       '    默认只预览；--apply 才写。--to 必填（拿不准就 --to orphan）。复现必须 --confirm-replay（段里没有成败，不能代核）。',
@@ -492,6 +493,21 @@ switch (cmd) {
       lines.push('[覆盖] 主题命中 ' + d.matched + ' 段 / 作用域内 ' + d.sessionTotal + ' 段 · 本页 ' + hits.length + ' 段'
         + (d.exhausted ? ' · 已到末尾（拿全）' : ' · 未拿全，续取 --offset ' + d.nextOffset));
       print(flags.json ? d : hits, lines.join('\n'));
+      break;
+    }
+    if (sub === 'themes') {
+      // (b') 会话主题表：主题＝本会话窗口内新增的六库条目（2026-10-11 定案，替代词频簇）
+      const t = sessionThemes({ storeFile, session: flags.session ? String(flags.session) : undefined, limit: Number(flags.limit) || 60 });
+      const lines = [];
+      lines.push('会话主题表（主题＝本会话窗口内新增的库条目）：窗口 ' + (t.window ? t.window.lo + ' ~ ' + t.window.hi : '?')
+        + ' · 共 ' + t.total + ' 条 ' + JSON.stringify(t.counts || {}));
+      lines.push('建议查询词：' + (t.suggested || []).map((x) => x.term + '(' + x.count + ')').join(' '));
+      let last = null;
+      for (const x of t.themes) {
+        if (x.store !== last) { lines.push('  ── ' + x.store); last = x.store; }
+        lines.push('   · ' + x.id + ' ｜ ' + (x.tags.slice(0, 4).join('/') || '-') + ' ｜ ' + x.headline);
+      }
+      print(t, lines.join('\n'));
       break;
     }
     if (sub === 'clusters') {
