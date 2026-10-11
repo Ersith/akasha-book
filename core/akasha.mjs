@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS } from './lib.mjs';
 import { replayHistory, sleepPlan, sleepRun } from './sleep.mjs';
-import { indexSession, lookupSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
+import { indexSession, lookupSegments, lookupSegmentsDetailed, sessionClusters, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -421,7 +421,8 @@ switch (cmd) {
     const helpLines = [
       '会话层（session layer）用法：',
       '  node akasha.mjs session index <sessionId|文件路径> [--session ID] [--root D] [--store F] [--meta F] [--full]',
-      '  node akasha.mjs session lookup <词> [--session ID] [--kind a,b] [--level nodes|segs] [--since D] [--until D] [--process] [--all] [--limit N] [--store F] [--json]',
+      '  node akasha.mjs session clusters [--session ID] [--top N] [--expand 词]   # 主题簇（词频簇）导航',
+      '  node akasha.mjs session lookup <词> [--session ID] [--kind a,b] [--level nodes|segs] [--since D] [--until D] [--offset N] [--process] [--all] [--limit N] [--store F] [--json]',
       '  node akasha.mjs session promote <segId> --to <store> [--data \'<json>\'] [--confirm-replay] [--apply] [--repair] [--store F] [--target F]',
       '    默认只预览；--apply 才写。--to 必填（拿不准就 --to orphan）。复现必须 --confirm-replay（段里没有成败，不能代核）。',
       '  node akasha.mjs session context [--session ID] [--budget N] [--store F]',
@@ -467,7 +468,8 @@ switch (cmd) {
     }
     if (sub === 'lookup') {
       const q = rest.slice(1).join(' ');
-      const hits = lookupSegments(q, {
+      // (a) 2026-10-11：走 detailed 版 ⇒ 返回覆盖度（主题命中 M / 作用域内 X 段 / 本页 N / 续取 offset）
+      const d = lookupSegmentsDetailed(q, {
         storeFile,
         session: flags.session ? String(flags.session) : undefined,
         kind: flags.kind,
@@ -476,14 +478,37 @@ switch (cmd) {
         until: flags.until,
         includeProcess: !!flags.process,
         all: !!flags.all,
+        offset: Number(flags.offset) || 0,
         limit: Number(flags.limit) || 10
       });
+      const hits = d.hits;
       const lines = hits.length
         ? hits.map((h) => (h.kind === 'node'
           ? `[node L${h.level}] ${h.id}（${h.score}）${(h.children ?? []).length} 孩子 · ${String(h.gist).slice(0, 160)}`
           : `[${h.kind}] ${h.id}（${h.score}）turn ${h.turn ?? '?'} · ${String(h.gist).slice(0, 160)}`))
         : ['（无命中——默认不含过程段；需要时加 --process）'];
-      print(hits, lines.join('\n'));
+      lines.push('[覆盖] 主题命中 ' + d.matched + ' 段 / 作用域内 ' + d.sessionTotal + ' 段 · 本页 ' + hits.length + ' 段'
+        + (d.exhausted ? ' · 已到末尾（拿全）' : ' · 未拿全，续取 --offset ' + d.nextOffset));
+      print(flags.json ? d : hits, lines.join('\n'));
+      break;
+    }
+    if (sub === 'clusters') {
+      // (b) 主题簇导航（词频簇，非语义簇——如实标注）
+      const cl = sessionClusters({
+        storeFile,
+        session: flags.session ? String(flags.session) : undefined,
+        topN: Number(flags.top) || 12,
+        minCount: Number(flags.min) || 3
+      });
+      const expand = typeof flags.expand === 'string' ? flags.expand : null;
+      const lines = [];
+      lines.push('主题簇（词频簇，非语义簇）：' + cl.length + ' 个' + (expand ? '（只展开：' + expand + '）' : ''));
+      for (const c of cl) {
+        if (expand && c.term !== expand) continue;
+        lines.push(c.term + ' ×' + c.count + '（均 ' + Math.round(c.chars / c.count) + ' 字/段）');
+        for (const s of c.samples) lines.push('   · ' + s.id + ' turn ' + (s.turn ?? '?') + ' · ' + s.gist);
+      }
+      print(cl, lines.join('\n'));
       break;
     }
     if (sub === 'promote') {

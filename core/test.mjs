@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
-import * as gateMod from '../plugins/akasha-gate/index.js';
+import * as gateMod from '../dsh-akasha-gate/index.js';
 
 // zstd 自 Node v23.8.0 / v22.15.0 起可用；旧 Node 上依赖 zstd 的用例记 SKIP（不计失败、不计通过），其余照跑。
 const zstdCompressSync = zlib.zstdCompressSync;
@@ -104,7 +104,7 @@ if (lib) {
     const s = lib.stats();
     assert.equal(s.canon.total, lib.currentRecords(lib.loadStore('canon').records).length);
     assert.equal(Object.values(s.canon.by_source).reduce((a, b) => a + b, 0), s.canon.total);
-    assert.ok(s.canon.by_source['复现'] >= 2, '示例库来源分布：' + JSON.stringify(s.canon.by_source));
+    assert.ok(s.canon.by_source['官方'] >= 2);
     assert.ok(s.frontier.total >= 68);
     assert.equal(Object.values(s.frontier.by_status).reduce((a, b) => a + b, 0), s.frontier.total);
     assert.ok(s.frontier.by_status['高引用'] >= 1);
@@ -196,12 +196,12 @@ if (lib) {
     assert.ok(s.newest === null || typeof s.newest.ageText === 'string', JSON.stringify(s.newest));
   });
   t('show：按 id 直读（旧版本＝所查版本全文 + 链尾附注；不自动跳转）', () => {
-    // 示例库自带一条修订链：canon-akasha-self → canon-akasha-self-r1（根 = 旧版本，链尾 = 当前版本）
-    const tipNow = lib.currentRecords(lib.loadStore('canon').records).find(r => r.id.startsWith('canon-akasha-self'));
-    assert.ok(tipNow, '示例库应含 canon-akasha-self 链尾');
-    const root = lib.show('canon-akasha-self');
+    // 示例库自带一条修订链：canon-akasha-usage → canon-akasha-usage-r1（根 = 旧版本，链尾 = 当前版本）
+    const tipNow = lib.currentRecords(lib.loadStore('canon').records).find(r => r.id.startsWith('canon-akasha-usage'));
+    assert.ok(tipNow, '示例库应含 canon-akasha-usage 链尾');
+    const root = lib.show('canon-akasha-usage'); // 根 id：必然已被修订（链上）——断言全自洽，不写死修订数
     assert.equal(root.found, false, '根 id 指向链尾而非当前版本');
-    assert.equal(root.record.id, 'canon-akasha-self');
+    assert.equal(root.record.id, 'canon-akasha-usage');
     assert.ok(String(root.note).includes(tipNow.id), '旧版本应指向当前链尾：' + root.note);
     assert.ok(String(root.note).includes('所查版本全文'), 'note 应明示内容＝所查版本全文：' + root.note);
     const live = lib.show(tipNow.id);
@@ -235,13 +235,13 @@ if (lib) {
   t('镜像匹配：场景词命中 mirror-langlaile 且排第一；空查询空结果', () => {
     const hits = lib.mirrorMatch('虚构 危险 无人 相信');
     assert.ok(hits.length >= 1, JSON.stringify(hits));
-    assert.ok(hits[0].id.startsWith('mirror-langlaile'), String(hits[0].id));
+    assert.ok(hits[0].id.startsWith('mirror-langlaile'), String(hits[0].id), );
     assert.ok(hits[0].score >= 4, '分数下界：' + hits[0].score);
     assert.deepEqual(lib.mirrorMatch(''), []);
   });
   t('输出审计：真 id 入 ids、假 id 入 unknownIds、四标签计数', () => {
-    const a = lib.auditText('按 记得·库内 的说法见 canon-akasha-usage；另有一个 canon-no-such-thing-xyz 不存在。');
-    assert.ok(a.ids.includes('canon-akasha-usage'), JSON.stringify(a));
+    const a = lib.auditText('按 记得·库内 的说法见 canon-akasha-usage-r10；另有一个 canon-no-such-thing-xyz 不存在。');
+    assert.ok(a.ids.includes('canon-akasha-usage-r10'), JSON.stringify(a));
     assert.ok(a.unknownIds.includes('canon-no-such-thing-xyz'), JSON.stringify(a));
     assert.equal(a.tagged, 1);
     assert.deepEqual(lib.auditText('没有 id 的普通句子。'), { ids: [], unknownIds: [], tagged: 0 });
@@ -410,14 +410,14 @@ if (lib) {
     rmSync(dir, { recursive: true, force: true });
   });
   t('cross：对位比较（分组 + 同题多源提示 + perStore 截断）', () => {
-    const c = lib.cross('记忆');
+    const c = lib.cross('换盘');
     assert.ok(c.groups.length >= 2, JSON.stringify(c.groups.map((g) => [g.store, g.total])));
     assert.ok(c.total >= 2, 'total=' + c.total);
     assert.ok(c.groups.every((g) => g.items.every((i) => typeof i.id === 'string' && typeof i.line === 'string' && i.line.length > 0)), JSON.stringify(c.groups));
-    const cM = lib.cross('示例');
+    const cM = lib.cross('重启');
     assert.ok(cM.groups.some((g) => g.total >= 2), JSON.stringify(cM.groups.map((g) => [g.store, g.total])));
     assert.ok(typeof cM.hint === 'string' && cM.hint.includes('对位'), 'multi-source hint: ' + cM.hint);
-    const c2 = lib.cross('示例', { perStore: 1 });
+    const c2 = lib.cross('重启', { perStore: 1 });
     assert.ok(c2.groups.every((g) => g.items.length <= 1), JSON.stringify(c2.groups.map((g) => [g.store, g.items.length])));
     const c3 = lib.cross('');
     assert.equal(c3.total, 0);
@@ -817,9 +817,9 @@ t('CLI：summary 可运行（exit 0，含全库摘要）', () => {
   assert.ok((r.stdout || '').includes('全库摘要'), (r.stdout || '').slice(0, 200));
 });
 t('CLI：show 可运行（exit 0，含 id）', () => {
-  const r = cli(['show', 'canon-akasha-usage']);
+  const r = cli(['show', 'canon-search-fallback-20261007']);
   assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || ''));
-  assert.ok((r.stdout || '').includes('canon-akasha-usage'), (r.stdout || '').slice(0, 200));
+  assert.ok((r.stdout || '').includes('canon-search-fallback-20261007'), (r.stdout || '').slice(0, 200));
 });
 t('CLI：session index 拒绝非规范路径（防「路径造伪会话」）', () => {
   const dir = mkdtempSync(join(SCRATCH, 'tmp-noncanon-'));
@@ -1130,7 +1130,7 @@ t('loop-detect：块重复/变体重复/标点串/零误报（文献方法论机
 });
 t('loop-detect：punctRuns 不含空白（列表不误报）+ 奇周期循环（step=1 回归哨兵）', () => {
   assert.ok(loopDetect, 'loop-detect 模块缺失');
-  // 2026-10-07 复查：punctRuns 原字符类含 \s —— markdown 列表（：\n  -）被误判为标点串（试运行试用 5 条命中全为误报）
+  // 2026-10-07 复查：punctRuns 原字符类含 \s —— markdown 列表（：\n  -）被误判为标点串（阿巴阿巴试用 5 条命中全为误报）
   const md = '核对清单：\n  - 甲项\n  - 乙项\n  - 丙项\n  - 丁项';
   assert.equal(loopDetect.punctRuns(md).length, 0, '列表符号不得成串：' + JSON.stringify(loopDetect.punctRuns(md)));
   const tpl = '——：——：——：——';
@@ -1556,6 +1556,37 @@ t('plan：K 上限截断、basis 变 ⇒ planId 变、无日志不判「从未�
     assert.equal(sleepMod.sleepPlan({ ...base, theta: 0 }).ok, false);
     assert.equal(sleepMod.sleepPlan({ ...base, today: '2026-13-99' }).ok, false);
   } finally { rmSync(fx.dir, { recursive: true, force: true }); }
+});
+
+t('plan：ops 为空时给近失报告（可解释的 0；nearMiss 不影响 planId）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-plan-near-'));
+  try {
+    const J = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    const files = Object.fromEntries(lib.STORES.map((s) => [s, join(dir, s + '.jsonl')]));
+    const src = { type: '官方', ref: 'fixture' };
+    writeFileSync(files.canon, J([
+      { id: 'canon-near-a', claim: 'build cache clear after toolchain upgrade', source: src, last_reviewed: '2026-10-05' },
+      { id: 'canon-near-b', claim: 'build cache clear after toolchain upgrade and rebuild', source: src, last_reviewed: '2026-10-05' }
+    ]));
+    for (const s of ['mirror', 'lexicon', 'pricing', 'frontier']) writeFileSync(files[s], J([]));
+    writeFileSync(files.orphan, J([
+      { id: 'orphan-near-a', summary: 'young orphan instance', observed: 'o', hypothesis: 'h', would_confirm: 'c', would_refute: 'r', severity: '低', created: '2026-10-05' }
+    ]));
+    const log = join(dir, 'hooks.jsonl');
+    writeFileSync(log, '');
+    const base = { files, log, today: '2026-10-08', out: false, now: new Date('2026-10-08T01:00:00Z') };
+    const p = sleepMod.sleepPlan(base).plan;
+    assert.equal(p.ops.length, 0, '年轻库不应有 op：' + JSON.stringify(p.ops));
+    const o = p.nearMiss.discard['orphan-aging'];
+    assert.equal(o.oldest[0].ageDays, 3, JSON.stringify(o));
+    assert.equal(o.thresholdDays, 90);
+    const top = p.nearMiss.merge.canon.top[0];
+    assert.ok(top && top.jaccard > 0 && top.jaccard < 0.8, '应给出 < θ 的最接近对：' + JSON.stringify(top));
+    assert.equal(p.nearMiss.discard['snapshot-superseded'].stemsWithMultiple, 0);
+    const again = sleepMod.sleepPlan(base).plan;
+    assert.equal(again.planId, p.planId, 'nearMiss 不应改变 planId');
+    assert.equal(again.nearMiss.merge.canon.top[0].jaccard, top.jaccard, '诊断应确定性');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 t('CLI：sleep --plan 只写 --out、不动六库与水位线、两次 planId 相同；--apply 未实现即拒', () => {
@@ -2403,10 +2434,9 @@ t('A2：budgetSignalsFromRecords；CLI budget --enable / --phase-check 报 gap',
 });
 
 
-
 // ---- C2（2026-10-10）：分层度量——按工具 + 可预防口径；结构性豁免不判可预防 ----
 t('B2/C2 recallSignals：byTool 分层 + preventable（结构性工具豁免）', () => {
-  const mk = (kind, extra) => ({ ts: '2026-10-10T00:00:00Z', kind, ...extra });
+  const mk = (kind, extra, ts) => ({ ts: ts ?? '2026-10-10T00:00:00Z', kind, ...extra });
   const recs = [
     mk('tool', { tool: 'edit', ok: false }),
     mk('turn-end', { session: 's1' }),
@@ -2416,17 +2446,60 @@ t('B2/C2 recallSignals：byTool 分层 + preventable（结构性工具豁免）'
     mk('turn-end', { session: 's1' }),
   ];
   const r = lib.recallSignals(recs, { toolTraps: new Set(['edit']) });
-  assert.equal(r.byTool.edit.fails >= 1, true, 'edit 分层计数存在');
+  assert.equal(r.byTool.edit.fails >= 1, true, 'edit 分层计数存在：' + JSON.stringify(r.byTool));
   assert.equal(typeof r.byTool.pwsh, 'object', 'pwsh 亦进分层');
-  assert.equal(r.preventable.fails, 1, '仅 edit 计入可预防');
+  assert.equal(r.preventable.fails, 1, '仅 edit 计入可预防（toolTraps 只含 edit）');
   assert.equal(r.preventable.missRate >= 0 && r.preventable.missRate <= 1, true, '可预防率在 [0,1]');
   assert.equal(lib.RECALL_STRUCTURAL_TOOLS.includes('web_fetch'), true, 'web_fetch 结构性豁免在册');
-  assert.equal(lib.recallToolTraps().has('web_fetch'), false, '结构性工具不得进已知坑集');
+  const traps = lib.recallToolTraps();
+  assert.equal(traps.has('web_fetch'), false, '结构性工具不得进已知坑集');
+});
+
+
+t('C2/口径：门控拒绝（guard-denied）不得计入任务失败', () => {
+  const recs = [
+    { ts: '2026-10-10T00:00:00Z', kind: 'tool', tool: 'edit', ok: false, message: '阿卡夏门控：拒绝 edit 直接写 H:\\x\\data\\canon.jsonl' },
+    { ts: '2026-10-10T00:01:00Z', kind: 'turn-end' },
+  ];
+  const r = lib.recallSignals(recs);
+  assert.equal(r.failureTurns, 0, '门控拒绝不算失败：' + JSON.stringify(r));
+});
+
+// —— 会话层 abc（2026-10-11 用户裁定「abc 都需要」）——
+t('session 覆盖度：detailed 返回 matched/sessionTotal/nextOffset；分页不重不漏；旧接口零破坏', () => {
+  const d1 = sessionMod.lookupSegmentsDetailed('记忆', { limit: 3 });
+  assert.ok(d1.matched >= d1.hits.length, 'matched 应 ≥ 本页条数');
+  assert.ok(d1.sessionTotal >= d1.matched, '作用域总数应 ≥ 主题命中');
+  assert.equal(d1.offset, 0);
+  if (d1.matched > 3) {
+    const d2 = sessionMod.lookupSegmentsDetailed('记忆', { limit: 3, offset: 3 });
+    const ids1 = new Set(d1.hits.map((h) => h.id));
+    assert.ok(d2.hits.every((h) => !ids1.has(h.id)), '第二页不应与第一页重复');
+    assert.equal(d2.offset, 3);
+  }
+  assert.ok(Array.isArray(sessionMod.lookupSegments('记忆', { limit: 3 })), '旧接口仍返回数组');
+});
+t('session 主题簇：簇名/段数/样本（词频簇，如实标注）', () => {
+  const cl = sessionMod.sessionClusters({ topN: 5, minCount: 2 });
+  assert.ok(Array.isArray(cl));
+  if (cl.length) {
+    assert.ok(cl[0].count >= 2, '簇段数应 ≥ minCount');
+    assert.ok(Array.isArray(cl[0].samples) && cl[0].samples.length >= 1, '簇应带样本');
+  }
+});
+t('session context：真按预算装料（更大预算装得更多且不超预算，带装载行）', () => {
+  const small = sessionMod.renderSessionContext({ budget: 400 });
+  const big = sessionMod.renderSessionContext({ budget: 4000 });
+  assert.ok(big.length >= small.length, '更大预算不应装得更少');
+  assert.ok(big.length <= 4000, '不得超过预算');
+  assert.ok(/装载 \d+\/\d+ 条结论/.test(big), '应带装载行：' + big.slice(-80));
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');
-  for (const [name, e] of failures) console.log(' -', name, ':', e.message);
+  for (const [name, e] of failures) 
+
+console.log(' -', name, ':', e.message);
 }
 process.exit(failures.length ? 1 : 0);

@@ -1,5 +1,7 @@
 // 阿卡夏之书 · 会话层（session layer）—— 单会话记忆（读取 / 抽取 / 索引 / 检索）。
-// 会话层 v0：会话档案读取 / 段抽取 / 索引 / 检索（单会话记忆）；多帧 zstd 容器按魔数逐帧解压。
+// 设计稿：docs\superpowers\specs\2026-10-07-session-akasha-design.md（v0.4）
+// 计划：docs\superpowers\plans\2026-10-07-session-layer-v0.md（阶段 1）
+// 读取器移植自 ..\tools\session-scan.mjs（多帧 zstd 容器：按魔数 28 B5 2F FD 逐帧解压）。
 import { readFileSync, appendFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import * as zlib from 'node:zlib';
@@ -9,7 +11,7 @@ import { ROOT, STORES, loadStore, storePath, tokenize, scoreTokens, redact, writ
 export const SESSION_DEFAULTS = {
   storeFile: join(ROOT, 'data', 'session.jsonl'),
   metaFile: join(ROOT, 'data', 'session-meta.json'),
-  sessionsRoot: join(homedir(), '.dsh', 'sessions')  // 按你的宿主实际会话目录配置
+  sessionsRoot: 'H:\\Harness\\official-home\\sessions'
 };
 
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
@@ -301,11 +303,27 @@ export function collapseActionVersions(records) {
 
 /** 会话层检索：默认 意图/动作/结论/节点（结论 +1.0 优先）；process 仅 includeProcess 或显式 kind；level='nodes'|'segs' 过滤；节点只取当前代。
  *  all=true：动作不做版本归并（用于看历史版本）。 */
-export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, limit = 10, level, all = false, storeRecords = null } = {}) {
+/** 会话名前缀解析（2026-10-11）：f362b992 → 完整 id。唯一匹配才展开；多义/无匹配原样返回（不猜）。 */
+export function resolveSessionPrefix(records, session) {
+  const s = String(session ?? '').trim();
+  if (!s) return s;
+  const ids = new Set(records.map((r) => String(r.session ?? '')));
+  if (ids.has(s)) return s;
+  const matches = [...ids].filter((id) => id.startsWith(s));
+  return matches.length === 1 ? matches[0] : s;
+}
+
+export function lookupSegments(query, opts = {}) {
+  return lookupSegmentsDetailed(query, opts).hits;
+}
+
+/** (a) 带覆盖度的会话层检索（2026-10-11）：返回 {hits, matched, sessionTotal, offset, nextOffset, exhausted}
+ *  —— matched = 主题相关段总数（裁剪前），sessionTotal = 本次作用域内段总数（用户可据此知道自己看了多少）。 */
+export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, limit = 10, offset = 0, level, all = false, storeRecords = null } = {}) {
   const q = String(query ?? '').trim();
-  if (!q) return [];
+  if (!q) return { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true };
   const tokens = tokenize(q);
-  if (!tokens.length) return [];
+  if (!tokens.length) return { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true };
   const SEG_KINDS = ['intent', 'action', 'conclusion', ...(includeProcess ? ['process'] : [])];
   let kinds;
   if (kind != null) kinds = (Array.isArray(kind) ? kind : String(kind).split(',')).map((x) => String(x).trim()).filter(Boolean);
@@ -313,18 +331,19 @@ export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, 
   else if (level === 'segs') kinds = SEG_KINDS;
   else kinds = [...SEG_KINDS, 'node'];
   const records = loadStore('session', storeFile).records;
+  const sess = resolveSessionPrefix(records, session);
   const view = all ? records : collapseActionVersions(records);
   let genBy = null;
   if (kinds.includes('node')) {
     genBy = new Map(); // 各会话各取最新代——跨会话查询不得互相遮挡（终局复核 F1）
     for (const r of records) {
-      if (r.kind !== 'node' || (session && r.session !== session)) continue;
+      if (r.kind !== 'node' || (sess && r.session !== sess)) continue;
       genBy.set(r.session, Math.max(genBy.get(r.session) ?? -1, Number(r.treegen) || 0));
     }
   }
   const hits = [];
   for (const r of view) {
-    if (session && r.session !== session) continue;
+    if (sess && r.session !== sess) continue;
     if (!kinds.includes(r.kind)) continue;
     if (r.kind === 'node' && (Number(r.treegen) || 0) !== genBy.get(r.session)) continue; // 旧代不参与检索
     if (since || until) {
@@ -349,7 +368,16 @@ export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, 
     }
     hits.push(hit);
   }
-  const ranked = hits.sort((a, b) => b.weight - a.weight || a.seq - b.seq).slice(0, limit);
+  let scopeTotal = 0;
+  for (const r of view) {
+    if (sess && r.session !== sess) continue;
+    if (!kinds.includes(r.kind)) continue;
+    scopeTotal += 1;
+  }
+  const matched = hits.length;
+  const off = Math.max(0, Math.floor(offset) || 0);
+  const rankedAll = hits.sort((a, b) => b.weight - a.weight || a.seq - b.seq);
+  const ranked = rankedAll.slice(off, off + limit);
   // wave2 §1：promotion 标记折叠到段命中上（不参与计分、不改 strong）。
   const bySeg = new Map();
   for (const r of records) {
@@ -373,23 +401,68 @@ export function lookupSegments(query, { storeFile = SESSION_DEFAULTS.storeFile, 
       if (list && list.length) h.promoted_to = list.map((x) => ({ store: x.store, id: x.id, retired: isRetired(x.store, x.id) }));
     }
   }
-  return ranked;
+  const nextOffset = off + ranked.length;
+  return { hits: ranked, matched, sessionTotal: scopeTotal, offset: off, nextOffset, exhausted: nextOffset >= matched };
+}
+
+/** (b) 主题簇（**词频簇，不是语义簇**——如实标注；2026-10-11 用户裁定 abc 皆做）。
+ *  做法：对结论段（默认）取中文相邻二字 + ASCII ≥3 词，去停用词，按段内最高频词归簇；输出簇名/段数/样本 id。 */
+/** 薄封装：解析会话名前缀（供 renderSessionContext / sessionClusters 用）。 */
+function resolvedSess(records, session) { return resolveSessionPrefix(records, session); }
+
+export function sessionClusters({ storeFile = SESSION_DEFAULTS.storeFile, session, kind = 'conclusion', topN = 12, minCount = 3, limit = 4 } = {}) {
+  const STOP = new Set(['的', '了', '是', '在', '我', '你', '他', '它', '和', '与', '就', '都', '也', '不', '要', '这', '那', '有', '没', '个', '上', '下', '里', '到', '把', '被', '而', '但', '还', '会', '能', '可以', '我们', '什么', '怎么', 'the', 'and', 'for', 'with', 'that', 'this']);
+  const allRecords = loadStore('session', storeFile).records;
+  const sess = resolvedSess(allRecords, session);
+  const records = allRecords
+    .filter((r) => r.kind === kind && (!sess || r.session === sess));
+  const terms = (s) => {
+    const out = [];
+    for (const run of String(s).match(/[\u4e00-\u9fff]+/g) || []) for (let i = 0; i + 1 < run.length; i++) out.push(run.slice(i, i + 2));
+    for (const w of String(s).toLowerCase().match(/[a-z0-9._-]{3,}/g) || []) out.push(w);
+    return out.filter((t) => !STOP.has(t) && !/^\d+$/.test(t));
+  };
+  const groups = new Map();
+  for (const r of records) {
+    const cnt = new Map();
+    for (const t of terms(r.gist)) cnt.set(t, (cnt.get(t) || 0) + 1);
+    if (!cnt.size) continue;
+    const top = [...cnt.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    const g = groups.get(top) ?? { term: top, count: 0, samples: [], chars: 0 };
+    g.count += 1; g.chars += String(r.gist || '').length;
+    if (g.samples.length < limit) g.samples.push({ id: r.id, turn: r.turn ?? null, gist: String(r.gist || '').slice(0, 90) });
+    groups.set(top, g);
+  }
+  return [...groups.values()].filter((g) => g.count >= minCount).sort((a, b) => b.count - a.count).slice(0, topN);
 }
 
 /** 注入块渲染（小体积；≤budget 字符，命令提示始终保底）。 */
 export function renderSessionContext({ storeFile = SESSION_DEFAULTS.storeFile, session, budget = 600 } = {}) {
-  const records = loadStore('session', storeFile).records.filter((r) => r.kind !== 'promotion' && (!session || r.session === session));
+  const allRecords = loadStore('session', storeFile).records;
+  const sess = resolvedSess(allRecords, session);
+  const records = allRecords.filter((r) => r.kind !== 'promotion' && (!sess || r.session === sess));
   const counts = { conclusion: 0, action: 0, intent: 0, process: 0 };
   for (const r of records) if (counts[r.kind] !== undefined) counts[r.kind] += 1;
   const sid8 = String(session ?? '').slice(0, 8) || 'all';
-  const latest = records.filter((r) => r.kind === 'conclusion').slice(-2).map((r) => String(r.gist).slice(0, 120));
   const head = `小阿卡夏·会话层（${sid8}）：共 ${records.length} 段（结论 ${counts.conclusion} · 动作 ${counts.action} · 意图 ${counts.intent} · 过程 ${counts.process}）`;
-  const mid = latest.length ? `；最近结论：${latest.join('；')}` : '';
+  // (c) 2026-10-11：真按 budget 装料——把最近结论按"最近优先"塞进剩余预算，而不是固定只取 2 条。
   const tail = '；查详情：node akasha.mjs session lookup <词>';
-  let text = head + mid + tail;
+  const conclusions = records.filter((r) => r.kind === 'conclusion');
+  const used = () => head.length + pack.length + tail.length + 24;   // 24＝装载行留白
+  let pack = '';
+  const packParts = [];
+  for (let i = conclusions.length - 1; i >= 0; i--) {
+    const piece = '；' + String(conclusions[i].gist).slice(0, 140);
+    if (used() + piece.length > budget) break;
+    packParts.unshift(String(conclusions[i].gist).slice(0, 140));
+    pack = packParts.length ? '；最近结论：' + packParts.join('；') : '';
+    if (used() >= budget) break;
+  }
+  const loadLine = '｜装载 ' + packParts.length + '/' + conclusions.length + ' 条结论 · ' + (head.length + pack.length + tail.length) + '/' + budget + ' 字符';
+  let text = head + pack + loadLine + tail;
   if (text.length > budget) {
-    const room = Math.max(0, budget - tail.length - 1);
-    text = (head + mid).slice(0, room) + '…' + tail;
+    const room = Math.max(0, budget - tail.length - loadLine.length - 1);
+    text = (head + pack).slice(0, room) + '…' + loadLine + tail;
   }
   return text;
 }
