@@ -28,7 +28,7 @@ const walk = (dir) => {
 // 排除非"我们的源头产出"（2026-10-11 修正）：第三方快照 / vendor / node_modules / 依赖内置文档。
 // 范围（同日修正）：**只审阿卡夏/记忆架构相关的源头材料**——别的项目（dsh-tavern、plugin-top20 等）的文档不属本库回填对象。
 const norm = (p) => String(p).replace(/\\/g, '/');
-const EXCLUDE = /(node_modules|\/vendor\/|top20\/sources\/|awesome-|\/upstream\/|third[_-]?party|\.min\.)/i;
+const EXCLUDE = /(node_modules|\/vendor\/|top20\/sources\/|awesome-|\/upstream\/|dsh-tavern|history\/AGENTS-|third[_-]?party|\.min\.)/i;
 const IN_SCOPE = /(akasha|memory-architecture|session-layer|superpowers\/plans|history\/akasha|PROTOCOL|MEMORY-TEST|mirror|lexicon|frontier)/i;
 const files = [...walk('H:/Harness/research'), ...walk('H:/Harness/docs')]
   .filter((x) => !EXCLUDE.test(norm(x.p)) && IN_SCOPE.test(norm(x.p)))
