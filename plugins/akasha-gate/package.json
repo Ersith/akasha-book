@@ -1,38 +1,26 @@
 {
-    "name":  "@akasha-book/gate",
-    "version":  "1.3.0",
-    "repository":  {
-                       "type":  "git",
-                       "url":  "https://github.com/Ersith/akasha-book.git",
-                       "directory":  "plugins/akasha-gate"
-                   },
-    "engines":  {
-                    "node":  "\u003e=18"
-                },
-    "license":  "MIT",
-    "type":  "module",
-    "description":  "阿卡夏之书门控：数据目录写入守卫（只许经校验写入）+ 系统提示注入：来源态约定（akasha:protocol）与自我层（akasha:self，每会话自动核对「我是谁」）",
-    "exports":  {
-                    ".":  "./index.js"
-                },
-    "files":  [
-                  "index.js",
-                  "cordis.patch.yml",
-                  "README.md"
-              ],
-    "scripts":  {
-                    "test":  "node selftest.test.mjs"
-                },
-    "dsh":  {
-                "bundle":  {
-                               "patch":  "./cordis.patch.yml"
-                           },
-                "compatibility":  {
-                                      "dshReleases":  {
-                                                          "0.2.0-rc.2":  "compatible",
-                                                          "0.2.1-alpha.1":  "compatible",
-                                                          "0.2.1-alpha.2":  "compatible"
-                                                      }
-                                  }
-            }
+  "name": "@akasha-book/gate",
+  "version": "1.3.0",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module",
+  "description": "阿卡夏之书门控：数据目录写入守卫（规则工厂 + ruleId + 试匹配同源）+ 系统提示注入来源态约定（akasha:protocol）+ 自我层（akasha:self，每会话自动核对「我是谁」）",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

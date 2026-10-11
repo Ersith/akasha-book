@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
-import * as gateMod from '../dsh-akasha-gate/index.js';
+import * as gateMod from '../plugins/akasha-gate/index.js';
 
 // zstd 自 Node v23.8.0 / v22.15.0 起可用；旧 Node 上依赖 zstd 的用例记 SKIP（不计失败、不计通过），其余照跑。
 const zstdCompressSync = zlib.zstdCompressSync;

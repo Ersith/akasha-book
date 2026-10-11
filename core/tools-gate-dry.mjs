@@ -20,9 +20,9 @@ const has = (n) => argv.includes(n);
 async function loadGate() {
   const cands = [
     process.env.AKASHA_GATE_DIR,
-    join(HERE, '..', '..', 'dsh-akasha-gate'),
+    join(HERE, '..', 'plugins', 'akasha-gate'),
     join(HERE, '..', '..', 'plugins', 'akasha-gate'),
-    join(HERE, '..', 'dsh-akasha-gate')
+    join(HERE, '..', 'plugins', 'akasha-gate')
   ].filter(Boolean);
   for (const d of cands) {
     const p = join(d, 'index.js');

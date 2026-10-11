@@ -51,6 +51,13 @@ const CODE_MAP = [
   // 占位符后的分隔符统一成正斜杠（与仓内既有约定一致）
   [/<AKASHA_DIR>\\\\/g, '<AKASHA_DIR>/'],
   [/<AKASHA_DIR>\\/g, '<AKASHA_DIR>/'],
+  // ── core 侧"插件路径"映射（2026-10-11 复检补）：活树布局 → OSS 布局（plugins/ 下）
+  //    例：'../dsh-akasha-gate/index.js' → '../plugins/akasha-gate/index.js'
+  //    例：join(HERE, '..', 'dsh-akasha-gate') → join(HERE, '..', 'plugins', 'akasha-gate')
+  [/'\.\.\/dsh-akasha-([a-z]+)\//g, "'../plugins/akasha-$1/"],
+  [/'dsh-mcp-akasha\//g, "'plugins/mcp-akasha/"],
+  [/join\(HERE, '\.\.', '\.\.', 'dsh-akasha-([a-z]+)'\)/g, "join(HERE, '..', 'plugins', 'akasha-$1')"],
+  [/join\(HERE, '\.\.', 'dsh-akasha-([a-z]+)'\)/g, "join(HERE, '..', 'plugins', 'akasha-$1')"],
 ];
 // 注释/文档类清洗（不碰代码语义：仅用于 .md/.txt 与注释行）
 function scrubText(text) {
