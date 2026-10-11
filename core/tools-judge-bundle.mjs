@@ -4,7 +4,11 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const PACK = 'H:\\Harness\\_ab\\review-pack';
+const args = process.argv.slice(2);
+const pi = args.indexOf('--pack');
+const PACK = pi >= 0 ? args[pi + 1] : '<LOCAL_PATH>';
+const si = args.indexOf('--seed');
+const SEED = si >= 0 ? Number(args[si + 1]) : 20261011;
 const A = join(PACK, 'answers', 'arm-A.md');
 const B = join(PACK, 'answers', 'arm-B.md');
 
@@ -24,8 +28,8 @@ const b = parseArm(readFileSync(B, 'utf8'));
 const ids = [...a.keys()].filter((k) => b.has(k)).sort();
 if (!ids.length) { console.error('两臂没有可对齐的 case 小节，检查 answers/*.md 格式'); process.exit(2); }
 
-// 逐案掷硬币决定呈现顺序；映射另存
-let seed = 20261011;
+// 逐案掷硬币决定呈现顺序；映射另存。seed 可传（v4 起）——换种子=换顺序，避免复现同一顺序效应。
+let seed = SEED;
 const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
 
 mkdirSync(join(PACK, 'judge'), { recursive: true });

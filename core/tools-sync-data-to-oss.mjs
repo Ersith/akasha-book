@@ -5,8 +5,8 @@
 //   **脱敏**：路径替换为占位符（与 oss-sync 同口径）：<AKASHA_DIR> / <LOCAL_PATH> / <DSH_INSTALL> / <USER_HOME>。
 import { readdirSync, readFileSync, writeFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
 
-const SRC = 'H:/Harness/akasha/data';
-const DST = 'H:/Harness/dist/akasha-oss/core/data';
+const SRC = '<AKASHA_DIR>/data';
+const DST = '<LOCAL_PATH>';
 const SKIP = new Set(['session.jsonl']);   // 会话层原文不进 OSS
 
 const SECRET_PATTERNS = [

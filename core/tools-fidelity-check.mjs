@@ -11,7 +11,7 @@ import { currentRecords, loadStore } from '../lib.mjs';
 const args = process.argv.slice(2);
 const flag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const PACK = flag('--pack');
-const RUBRIC_SRC = flag('--rubric', 'H:\\Harness\\_ab\\review-pack-v2run\\pack.json');
+const RUBRIC_SRC = flag('--rubric', '<LOCAL_PATH>');
 if (!PACK) { console.error('用法：--pack <目录>'); process.exit(2); }
 
 const canon = currentRecords(loadStore('canon').records);

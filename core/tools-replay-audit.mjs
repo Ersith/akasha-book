@@ -4,7 +4,7 @@
 //   **现行规则**＝canon 中 tags 含「抽象规则」（L2 层，⑥ 已打标）∪ 含 {纪律,红线,判据,坑} 的条目 ∪ RECALL_TRAP_MAP（工具坑表）。
 //   判定（机械可复核）：事故的"触发词"（工具名/路径片段/关键词）能匹配到 ≥1 条现行规则 ⇒ **可预防**；否则 ⇒ **缺口**；
 //   规则触发词过度宽泛（仅 1 个 ≤2 字常见词）⇒ 标 **可能误杀**。
-import { currentRecords, loadStore, recallToolTraps } from 'file:///H:/Harness/akasha/lib.mjs';
+import { currentRecords, loadStore, recallToolTraps } from 'file:///<AKASHA_DIR>/lib.mjs';
 
 const INCIDENT_TAGS = new Set(['坑', '事故', '失败', '教训', 'trap']);
 const RULE_TAGS = new Set(['抽象规则', '纪律', '红线', '判据', '坑', '方法论']);

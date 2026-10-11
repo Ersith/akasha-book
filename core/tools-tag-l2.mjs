@@ -2,7 +2,7 @@
 //   判据（确定性、可核对）：条目的 tags 含 {纪律, 原则, 判据, 红线, 方法论, 行为规格, 约定, 规范} 之一 ⇒ 视为**抽象规则**，
 //   追加 tag `抽象规则`（保留原 tags；经修订链写入、不改原文）。canon 的检索字段已含 tags ⇒ 打标后即可被检索与过滤。
 //   幂等：已含「抽象规则」则跳过。逐条打印（可人工核对）。
-import { currentRecords, loadStore, revise } from 'file:///H:/Harness/akasha/lib.mjs';
+import { currentRecords, loadStore, revise } from 'file:///<AKASHA_DIR>/lib.mjs';
 
 const L2_TAGS = ['纪律', '原则', '判据', '红线', '方法论', '行为规格', '约定', '规范'];
 const cur = currentRecords(loadStore('canon').records);

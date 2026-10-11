@@ -11,7 +11,7 @@ import { ROOT, STORES, loadStore, storePath, tokenize, scoreTokens, redact, writ
 export const SESSION_DEFAULTS = {
   storeFile: join(ROOT, 'data', 'session.jsonl'),
   metaFile: join(ROOT, 'data', 'session-meta.json'),
-  sessionsRoot: 'H:\\Harness\\official-home\\sessions'
+  sessionsRoot: '<LOCAL_PATH>'
 };
 
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];

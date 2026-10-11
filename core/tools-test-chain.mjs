@@ -1,7 +1,7 @@
 // test-chain.mjs —— 「取全 + 验真」四步链条实测（只读）：topics → lookup（翻页到拿全）→ seq 回原档 → 答案比对。
 // 目标会话＝推演出阿卡夏之书的那段（f362b992，2026-10-06/07）。两个可判对错的问题：
 //   ① 定价函数是什么？ ② 孤案的默认权重与热载通道？
-import * as s from 'file:///H:/Harness/akasha/session.mjs';
+import * as s from 'file:///<AKASHA_DIR>/session.mjs';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 

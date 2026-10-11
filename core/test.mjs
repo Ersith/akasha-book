@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
-import * as gateMod from '../dsh-akasha-gate/index.js';
+import * as gateMod from '../plugins/akasha-gate/index.js';
 
 // zstd 自 Node v23.8.0 / v22.15.0 起可用；旧 Node 上依赖 zstd 的用例记 SKIP（不计失败、不计通过），其余照跑。
 const zstdCompressSync = zlib.zstdCompressSync;
@@ -2514,6 +2514,14 @@ t('session 主题表：主题＝窗口内新增库条目（带 tags 建议词）
 t('session 话题簇：跨会话持久 + 增量修缮 + 双时态 + 会话归属（三种检索）', () => {
   const built = sessionMod.buildTopics({});
   assert.ok(built && Array.isArray(built.list), 'buildTopics 返回 {list}');
+  // 数据形态自适应（2026-10-11）：OSS 仓**只带六库数据、不带会话层原文**（session.jsonl 不同步）⇒
+  // 无会话层数据时无从构建话题簇 ⇒ 记 skip（活树有数据时照常全跑）。**这条守卫放在活树版里**，
+  // 这样同步到 OSS 也自适应（core/ 未纳入 oss-sync，手工同步不能再把适配冲掉）。
+  if (!built.list.length) {
+    skipped.push('session 话题簇（无会话层数据）');
+    console.log('SKIP session 话题簇 — 无会话层数据，无法构建话题簇');
+    return;
+  }
   assert.ok(typeof built.fingerprint === 'string' && built.fingerprint.length > 0, '有 fingerprint（幂等判据）');
   if (built.list.length) {
     const c = built.list[0];

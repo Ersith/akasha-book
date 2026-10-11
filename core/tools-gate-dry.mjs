@@ -2,8 +2,8 @@
 // 为什么需要它：改规则 / 修假阳性时，"这条到底会不会被拦"必须能离线问清楚（2026-10-10 曾被假阳性来回折腾）。
 // **与门控同源**：本工具 import 的是门控自己的规则工厂 createGateRules（gate-dry 说会拦 ⇒ 运行时就一定拦）。
 // 用法：
-//   node tools/gate-dry.mjs --tool edit  --json '{"file_path":"H:\\Harness\\akasha\\data\\canon.jsonl"}'
-//   node tools/gate-dry.mjs --tool pwsh  --command "echo x >> H:\Harness\akasha\data\canon.jsonl"
+//   node tools/gate-dry.mjs --tool edit  --json '{"file_path":"<AKASHA_DIR>\\data\\canon.jsonl"}'
+//   node tools/gate-dry.mjs --tool pwsh  --command "echo x >> <AKASHA_DIR>\data\canon.jsonl"
 //   node tools/gate-dry.mjs --tool codex_exec --prompt "把 akasha\data\canon.jsonl 追加一行"
 //   echo '{"name":"write","arguments":{"file_path":"..."}}' | node tools/gate-dry.mjs --stdin
 // 可选：--data-dir <路径>（默认 AKASHA_DIR/data，其次 <脚本>/../data）
@@ -20,9 +20,9 @@ const has = (n) => argv.includes(n);
 async function loadGate() {
   const cands = [
     process.env.AKASHA_GATE_DIR,
-    join(HERE, '..', 'plugins', 'akasha-gate'),
+    join(HERE, '..', '..', 'dsh-akasha-gate'),
     join(HERE, '..', '..', 'plugins', 'akasha-gate'),
-    join(HERE, '..', 'plugins', 'akasha-gate')
+    join(HERE, '..', 'dsh-akasha-gate')
   ].filter(Boolean);
   for (const d of cands) {
     const p = join(d, 'index.js');

@@ -7,7 +7,7 @@
 //   作答 JSON 形状：[{ id, stance: 'known'|'uncertain'|'unknown', cites: ['canon-…'], text? }]
 import { readFileSync } from 'node:fs';
 
-const SUITE = 'H:/Harness/akasha/tests/abstention.jsonl';
+const SUITE = '<AKASHA_DIR>/tests/abstention.jsonl';
 
 export function loadSuite(path = SUITE) {
   return readFileSync(path, 'utf8').split('\n')

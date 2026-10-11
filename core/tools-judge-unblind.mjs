@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 const pi = args.indexOf('--pack');
-const PACK = pi >= 0 ? args[pi + 1] : 'H:\\Harness\\_ab\\review-pack-v2run';
+const PACK = pi >= 0 ? args[pi + 1] : '<LOCAL_PATH>';
 const SCORE = { A: 2, B: 1, C: 0, D: -1 };
 
 const mapping = JSON.parse(readFileSync(join(PACK, 'judge', '_mapping.json'), 'utf8'));

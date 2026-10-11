@@ -9,7 +9,7 @@ import { join, relative, extname } from 'node:path';
 
 const DRY = process.argv.includes('--dry');
 const SRC_ROOT = 'H:\\Harness';
-const REPO = 'H:\\Harness\\dist\\akasha-oss';
+const REPO = '<LOCAL_PATH>';
 const DST_ROOT = join(REPO, 'plugins');
 
 const PACKS = [
@@ -41,18 +41,18 @@ const CODE_MAP = [
   // 命令与路径（JS 双反斜杠形态 + YAML/文本单反斜杠形态）
   [/F:\\\\h\\\\all\\\\Nodejs\\\\node\.exe/g, 'node'],
   [/F:\\h\\all\\Nodejs\\node\.exe/g, 'node'],
-  [/H:\\\\Harness\\\\akasha/g, '<AKASHA_DIR>'],
-  [/H:\\Harness\\akasha/g, '<AKASHA_DIR>'],
-  [/'H:\\Harness\\akasha'/g, "'<AKASHA_DIR>'"],
-  [/"H:\\Harness\\akasha"/g, '"<AKASHA_DIR>"'],
+  [/<AKASHA_DIR>/g, '<AKASHA_DIR>'],
+  [/<AKASHA_DIR>/g, '<AKASHA_DIR>'],
+  [/'<AKASHA_DIR>'/g, "'<AKASHA_DIR>'"],
+  [/"<AKASHA_DIR>"/g, '"<AKASHA_DIR>"'],
   // 宿主应用模块默认目录：仓里不留本机路径（置空字符串 → 契约测试自动 SKIP，可用 AKASHA_DSH_MODULES 指定）
   // ⚠ 必须连**引号一起**替换（2026-10-11 踩过：只换路径会留下 `''''` ⇒ 语法错误）
-  [/'D:\\\\DSHHarness\\\\resources\\\\app\\\\dsh\\\\node_modules'/g, "''"],
+  [/'<DSH_INSTALL>'/g, "''"],
   // 占位符后的分隔符统一成正斜杠（与仓内既有约定一致）
   [/<AKASHA_DIR>\\\\/g, '<AKASHA_DIR>/'],
   [/<AKASHA_DIR>\\/g, '<AKASHA_DIR>/'],
   // ── core 侧"插件路径"映射（2026-10-11 复检补）：活树布局 → OSS 布局（plugins/ 下）
-  //    例：'../dsh-akasha-gate/index.js' → '../plugins/akasha-gate/index.js'
+  //    例：'../plugins/akasha-gate/index.js' → '../plugins/akasha-gate/index.js'
   //    例：join(HERE, '..', 'dsh-akasha-gate') → join(HERE, '..', 'plugins', 'akasha-gate')
   [/'\.\.\/dsh-akasha-([a-z]+)\//g, "'../plugins/akasha-$1/"],
   [/'dsh-mcp-akasha\//g, "'plugins/mcp-akasha/"],

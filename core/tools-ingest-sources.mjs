@@ -5,7 +5,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { appendRecord, currentRecords, loadStore } from 'file:///H:/Harness/akasha/lib.mjs';
+import { appendRecord, currentRecords, loadStore } from 'file:///<AKASHA_DIR>/lib.mjs';
 
 const EXCLUDE = /(node_modules|\/vendor\/|top20\/sources\/|awesome-|\/upstream\/|dsh-tavern|history\/AGENTS-|third[_-]?party|\.min\.)/i;
 const IN_SCOPE = /(akasha|memory-architecture|session-layer|superpowers\/(plans|specs)|history\/akasha|PROTOCOL|MEMORY-TEST)/i;
@@ -30,8 +30,8 @@ for (const s of ['canon', 'frontier', 'orphan', 'mirror', 'pricing', 'lexicon'])
 }
 const existingIds = new Set(currentRecords(loadStore('canon').records).map((r) => String(r.id)));
 
-const files = [...walk('H:/Harness/research'), ...walk('H:/Harness/docs')]
-  .map((p) => ({ p, rel: norm(p).replace('H:/Harness/', '') }))
+const files = [...walk('<LOCAL_PATH>'), ...walk('<LOCAL_PATH>')]
+  .map((p) => ({ p, rel: norm(p).replace('<LOCAL_PATH>', '') }))
   .filter((x) => !EXCLUDE.test('/' + x.rel) && IN_SCOPE.test(x.rel))
   .filter((x) => ![...refs].some((r) => r.endsWith(basename(x.p).toLowerCase())))
   .sort((a, b) => statSync(b.p).size - statSync(a.p).size);

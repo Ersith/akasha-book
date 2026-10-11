@@ -2,7 +2,7 @@
 // 判据：条目 source.ref 里出现的文件路径（取 basename 或路径后缀）＝"已有出处"；否则＝未回填。
 import { readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { currentRecords, loadStore } from 'file:///H:/Harness/akasha/lib.mjs';
+import { currentRecords, loadStore } from 'file:///<AKASHA_DIR>/lib.mjs';
 
 const refs = new Set();
 for (const s of ['canon', 'frontier', 'orphan', 'mirror', 'pricing', 'lexicon']) {
@@ -30,10 +30,10 @@ const walk = (dir) => {
 const norm = (p) => String(p).replace(/\\/g, '/');
 const EXCLUDE = /(node_modules|\/vendor\/|top20\/sources\/|awesome-|\/upstream\/|dsh-tavern|history\/AGENTS-|third[_-]?party|\.min\.)/i;
 const IN_SCOPE = /(akasha|memory-architecture|session-layer|superpowers\/plans|history\/akasha|PROTOCOL|MEMORY-TEST|mirror|lexicon|frontier)/i;
-const files = [...walk('H:/Harness/research'), ...walk('H:/Harness/docs')]
+const files = [...walk('<LOCAL_PATH>'), ...walk('<LOCAL_PATH>')]
   .filter((x) => !EXCLUDE.test(norm(x.p)) && IN_SCOPE.test(norm(x.p)))
   .map(({ p, stat }) => {
-    const rel = p.replace(/\\/g, '/').replace('H:/Harness/', '');
+    const rel = p.replace(/\\/g, '/').replace('<LOCAL_PATH>', '');
     const name = basename(p).toLowerCase();
     const hit = [...refs].some((r) => r.endsWith(name) || rel.toLowerCase().endsWith(r) || r.endsWith(rel.toLowerCase()));
     return { rel, kb: Math.round(stat.size / 1024), ref: hit, mtime: stat.mtime.toISOString().slice(0, 10) };

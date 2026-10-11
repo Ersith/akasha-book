@@ -1,6 +1,6 @@
 // try-abc-framework.mjs —— 用新三件套在「推演出阿卡夏之书」的会话上实做一次完整取回（只读）。
 // 流程：① 主题簇看全貌 → ② 按主题分页取到"拿全"（每页记调用/字符）→ ③ 抽样做**原文保真对照**（段 gist vs 档案原话）。
-import * as s from 'file:///H:/Harness/akasha/session.mjs';
+import * as s from 'file:///<AKASHA_DIR>/session.mjs';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 

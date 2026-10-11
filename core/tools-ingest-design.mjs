@@ -2,10 +2,10 @@
 // 原则：① 机械提取（不手抄 ⇒ 不走样）；② 每条带段落锚点 source.ref（设计稿路径#§X.Y）；③ event_time=2026-10-06（事件时间轴）；
 //       ④ 幂等（同 id 已存在则跳过）；⑤ tags 带「设计块」「源头设计」+ 标题词，供话题簇/检索使用。
 import { readFileSync } from 'node:fs';
-import { appendRecord, currentRecords, loadStore, STORES } from 'file:///H:/Harness/akasha/lib.mjs';
+import { appendRecord, currentRecords, loadStore, STORES } from 'file:///<AKASHA_DIR>/lib.mjs';
 
-const DRAFT = 'H:/Harness/research/ai-memory-architecture-20261006.md';
-const PLAN = 'H:/Harness/docs/superpowers/plans/2026-10-06-akasha-v0.md';
+const DRAFT = '<LOCAL_PATH>';
+const PLAN = '<LOCAL_PATH>';
 const lines = readFileSync(DRAFT, 'utf8').split('\n');
 
 // 已有 id 集合（幂等）
