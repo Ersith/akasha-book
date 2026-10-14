@@ -88,6 +88,8 @@ export class StdioMcpClient {
         this.closed = true;
         this.#fail(new Error(`MCP server exited (code=${code} signal=${signal ?? 'none'})`));
       });
+      this.child.stdout.setEncoding('utf8');   // F12（2026-10-14 外部审查）：保持跨块 UTF-8 解码状态——否则多字节字符恰好分块时静默乱码（'���忆原文'）
+      this.child.stderr.setEncoding('utf8');
       this.child.stdout.on('data', (chunk) => this.#onData(chunk));
       this.child.stderr.on('data', (chunk) => this.log('stderr: ' + String(chunk).trim().slice(0, 500)));
       // 关键：子进程死后写 stdin 会以**异步 'error' 事件**抛 EPIPE（try/catch 抓不到同步的），
@@ -194,16 +196,20 @@ export function createToolDefinition(client, { serverName, tool, toolCallTimeout
       const argsObject = args && typeof args === 'object' ? args : {};
       if (exec?.signal?.aborted) throw new Error(`tool ${rawName} 已取消`);
       const call = client.callTool(rawName, argsObject, toolCallTimeoutMs);
-      // 尊重调用方取消信号（与官方桥同语义：取消即拒绝，不等超时）
+      // 尊重调用方取消信号（与官方桥同语义：取消即拒绝，不等超时）。
+      // F07（2026-10-14 外部审查 · GPT）：原实现用 `call.finally(...)` 清理监听器——它会**派生出第二个 promise**；
+      //   `call` 拒绝时该派生 promise 无人消费 ⇒ 未处理拒绝，隔离 Node 在外层已 catch 的情况下仍 exit 1。
+      //   修法：成功/失败两个分支**都接在 `call` 本身**（单消费者），不再产生派生 promise。
       const result = exec?.signal
-        ? await Promise.race([
-            call,
-            new Promise((_resolve, reject) => {
-              const onAbort = () => reject(new Error(`tool ${rawName} 已取消`));
-              exec.signal.addEventListener('abort', onAbort, { once: true });
-              call.finally(() => exec.signal.removeEventListener('abort', onAbort));
-            }),
-          ])
+        ? await new Promise((resolve, reject) => {
+            const onAbort = () => reject(new Error(`tool ${rawName} 已取消`));
+            if (exec.signal.aborted) { reject(new Error(`tool ${rawName} 已取消`)); return; }
+            exec.signal.addEventListener('abort', onAbort, { once: true });
+            call.then(
+              (v) => { exec.signal.removeEventListener('abort', onAbort); resolve(v); },
+              (e) => { exec.signal.removeEventListener('abort', onAbort); reject(e); },
+            );
+          })
         : await call;
       const text = renderText(result?.content);
       if (result?.isError === true) throw new Error(text || `tool ${rawName} failed`);

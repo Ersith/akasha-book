@@ -91,7 +91,10 @@ const FORBIDDEN_EXTRA = (() => {
 //      `--command`/`--rm` 这类**选项名**里含 `rm`（本机实测：gate 自己的 dry-run CLI 被掐），
 //      排除后仍拦 `rm -f`、`cmd /c del x`、`tee f`。**边界（如实）**：`xrm f`（无分隔前缀）不再当命令。
 // 两正则**同源共享**（shell 与 agent 规则都用），改一处两侧同变。
-const WRITE_REDIRECT = /(>>|(?<![=\-])>(?![&=])(?!\/dev\/|nul\b|\$null))/i;
+// 2026-10-14（外部审查 #6）：分裂写 `2> /dev/null`（`>` 与目标间有空格）此前仍被拒（只认紧邻形态）。
+//   ⇒ 空目标例外允许**空白分隔**，并把空目标从宽口径 `/dev/` 收窄为**精确的 `/dev/null`**（`> /dev/sda` 这类真设备写仍拦）。
+//   两侧哨兵：`ls -la <data> 2> /dev/null` 放行；`echo x >> <data>/f 2> /dev/null` 照拒（真写侧不放松）。
+const WRITE_REDIRECT = /(>>|(?<![=\-])>(?![&=])(?!\s*(?:\/dev\/null\b|nul\b|\$null)))/i;
 const WRITE_TOKEN = /(Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Item|(?<!-)\bdel\b(?=[ -]|$)|(?<!-)\brm\b(?=[ -]|$)|(?<!-)\btee\b(?=[ -]|$)|(?<!-)\bsed\s+-i\b|drop\b|delete\b|append\b|overwrite\b|modify\b|追加|写入|改写|覆盖|替换|清空|删除|编辑)/i;
 
 // ── 规则层（2026-10-11，借鉴 CyberStrikeAI 的"有序规则 + 首命中 + 可试匹配"；本改动**不改变**任何拒绝文案与判定条件）──

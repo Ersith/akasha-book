@@ -282,15 +282,9 @@ export function apply(ctx, config = {}) {
   });
 
   // 回查提示（v1.5，错误钩子的注入级动作）：进程内记录近期失败（工具 / agent），窗口内幂等渲染。
-  const recentFailures = [];
-  const usedTools = new Set();                                    // 本会话用过哪些工具（首用预告的判据）
-  const announcedTraps = new Set();                               // 已预告过的陷阱工具（每工具一次）
 
   // 触发词路由（2026-10-11 解冻后新增）：**最近的用户消息文本** + 已触发过的条目（去重）。
   // ⚠ 只存内存、只在进程内、不落盘；超 TTL 视为过期（避免拿很久以前的任务文本乱触发）。
-  const lastUserText = { text: '', at: 0 };
-  const firedTriggers = new Map();                                // 条目 id → 上次触发时间（同条 30 分钟去重）
-  const broughtUp = { at: 0, id: null };                          // #13「端上来」：同一条消息只端一次（用 at 做键）
   const USER_TEXT_TTL = 10 * 60 * 1000;
   /** 从 session/event 的 user/message 事件里**防御式**取正文（载荷形状随宿主版本可能不同）。 */
   const textOfUserEvent = (p) => {
@@ -308,40 +302,69 @@ export function apply(ctx, config = {}) {
     } catch { /* 取不到就当作没消息 */ }
     return '';
   };
+  // ── F09/F10（2026-10-14 外部审查 · GPT）：**会话状态按 session 分桶** ─────────────────────────────
+  //   原实现把 观测计数（轮/压缩）/失败列表/首用集合/触发去重/去抖状态 全放进程级 ⇒ 换会话后新会话继承旧会话的
+  //   「已压缩 N 次」「上次失败是 edit」等状态（上下文污染 + 抑制当前提醒）。现在全部进**会话桶**：
+  //   事件先 retarget(sidOf(payload)) 切桶，渲染面取当前桶；会话 id 缺失时归 '(unknown)' 桶（最多 8 桶 LRU）。
+  //   F10 同批：C3 的「已触发」从**永久布尔**改为**当轮标记**（c3Turn）——不再是「一次触发压制到重载」。
+  const sessionStates = new Map();
+  let curSid = '(unknown)';
+  const sidOf = (p) => {
+    try {
+      const a = p?.agent ?? p?.data?.agent;
+      const s = a?.session?.id ?? a?.id ?? p?.session?.id ?? p?.session ?? p?.data?.session ?? p?.sessionId;
+      return s === undefined || s === null || s === '' ? null : String(s);
+    } catch { return null; }
+  };
+  const freshState = () => ({
+    obs: { turn: 0, steps: 0, compactions: 0, usedToolsN: 0, lastRecallTurn: null, lastCompactionTurn: null },
+    recentFailures: [], usedTools: new Set(), announcedTraps: new Set(),
+    lastUserText: { text: '', at: 0 }, firedTriggers: new Map(), broughtUp: { at: 0, id: null },
+    gateState: { c3Cat: null, c3At: 0, c3Turn: -1 },
+  });
+  const S = () => {
+    if (!sessionStates.has(curSid)) sessionStates.set(curSid, freshState());
+    const s = sessionStates.get(curSid);
+    sessionStates.delete(curSid); sessionStates.set(curSid, s);
+    while (sessionStates.size > 8) sessionStates.delete(sessionStates.keys().next().value);
+    return s;
+  };
+  const retarget = (sid) => { if (sid && sid !== curSid) curSid = sid; };
   const noteFailure = (tool) => {
     try {
-      recentFailures.push({ ts: Date.now(), tool: String(tool ?? '?') });
-      if (recentFailures.length > 20) recentFailures.splice(0, recentFailures.length - 20);
+      S().recentFailures.push({ ts: Date.now(), tool: String(tool ?? '?') });
+      if (S().recentFailures.length > 20) S().recentFailures.splice(0, S().recentFailures.length - 20);
     } catch { /* 静默 */ }
   };
   // 极限观测（2026-10-11 用户令）：把「该查库了」变成**可见信号**，不靠记性——针对"200 轮后忘记查库"的观察。
-  const obs = { turn: 0, steps: 0, compactions: 0, usedToolsN: 0, lastRecallTurn: null, lastCompactionTurn: null };
   const clip = (s) => (s.length <= 80 ? s : s.slice(0, 79) + '…');   // 行宽硬约束的统一裁剪（模块级，供多行共用）
   const isRecallTool = (name) => /^mcp__akasha__/.test(String(name || ''));
   ctx.on('tools/result', (exec, result) => {
+    retarget(sidOf(exec));
     const tool = String(exec?.name ?? '?');
-    usedTools.add(tool);                                          // 首用预告用（2026-10-11）
-    obs.usedToolsN = usedTools.size;
-    if (isRecallTool(tool)) obs.lastRecallTurn = obs.turn;         // MCP 召回 ⇒ 刷新"距上次查库"
+    S().usedTools.add(tool);                                          // 首用预告用（2026-10-11）
+    S().obs.usedToolsN = S().usedTools.size;
+    if (isRecallTool(tool)) S().obs.lastRecallTurn = S().obs.turn;         // MCP 召回 ⇒ 刷新"距上次查库"
     else {
       // CLI 查库也算召回（2026-10-11 实测：本会话大量查库走 `node akasha.mjs …`，只认 MCP 会显示"尚未查库"＝自欺）
       try {
         const blob = JSON.stringify(exec?.args ?? exec?.input ?? exec?.params ?? '');
-        if (/akasha\.mjs|session\.mjs|mcp\.mjs/.test(blob)) obs.lastRecallTurn = obs.turn;
+        if (/akasha\.mjs|session\.mjs|mcp\.mjs/.test(blob)) S().obs.lastRecallTurn = S().obs.turn;
       } catch { /* 忽略 */ }
     }
     if (result?.isError === true) noteFailure(exec?.name);
   });
-  ctx.on('agent/error', () => noteFailure('agent'));
+  ctx.on('agent/error', (p) => { retarget(sidOf(p)); noteFailure('agent'); });
   // 轮次与压缩真值：能拿到就用真值，拿不到就保持 0（宁缺勿假）
-  try { ctx.on('agent/turn-stopping', (p) => { if (p && typeof p.turn === 'number') obs.turn = p.turn; }); } catch { /* 事件不存在 */ }
-  try { ctx.on('agent/turn-end', (p) => { if (p && typeof p.turn === 'number') obs.turn = Math.max(obs.turn, p.turn); }); } catch { /* 事件不存在 */ }
+  try { ctx.on('agent/turn-stopping', (p) => { retarget(sidOf(p)); if (p && typeof p.turn === 'number') S().obs.turn = p.turn; }); } catch { /* 事件不存在 */ }
+  try { ctx.on('agent/turn-end', (p) => { retarget(sidOf(p)); if (p && typeof p.turn === 'number') S().obs.turn = Math.max(S().obs.turn, p.turn); }); } catch { /* 事件不存在 */ }
   try {
     ctx.on('session/event', (p) => {
+      retarget(sidOf(p));
       const t = String(p?.type ?? p?.name ?? p?.eventType ?? '');
       if (t.startsWith('compaction/end') || (t === 'compaction' && p?.phase === 'end')) {
-        obs.compactions++;
-        obs.lastCompactionTurn = obs.turn;      // 脆弱窗判据（压缩补偿行用）
+        S().obs.compactions++;
+        S().obs.lastCompactionTurn = S().obs.turn;      // 脆弱窗判据（压缩补偿行用）
       }
       // 触发词路由（2026-10-11 解冻后新增，外部对照启发：灵枢的「触发词路由」）：
       //   捕获**最近的用户消息文本**，供注入面（system-prompt/assemble 时求值的函数）做触发词匹配——
@@ -349,7 +372,7 @@ export function apply(ctx, config = {}) {
       //   ⚠ 只存一行文本 + 时间戳（内存、不出进程、不落盘）；超时即视为过期。
       if (t === 'user/message') {
         const s = textOfUserEvent(p);
-        if (s) { lastUserText.text = s.slice(0, 4000); lastUserText.at = Date.now(); }
+        if (s) { S().lastUserText.text = s.slice(0, 4000); S().lastUserText.at = Date.now(); }
       }
     });
   } catch { /* 事件不存在 */ }
@@ -362,7 +385,7 @@ export function apply(ctx, config = {}) {
       try {
         const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
         const lines = [core().renderPulseLine(lib.pulse())];
-        const recall = core().renderRecallLine(recentFailures, Date.now());
+        const recall = core().renderRecallLine(S().recentFailures, Date.now());
         if (recall) lines.push(recall);
         return lines.filter(Boolean).join('\n') || null;
       } catch { return null; }
@@ -398,7 +421,6 @@ export function apply(ctx, config = {}) {
   //   新口径按**字节**切，不受单行大小影响（更大记录下更稳，属**语义改进**而非纯等价）。
   //   两个纯函数（tailReadText / latestIntentGist）移到模块顶层导出，供自测做等价对照。
   // 去抖状态（同类 30 分钟内只提醒一次；见下方 c3Cat 判定）
-  const gateState = { c3Cat: null, c3At: 0, c3Fired: false };
   if (cfg.statefulGate !== false) {
     const STATEFUL = [
       { cat: "发布", re: /已发布|未发布|上架|没过审|已过审|待审/ },
@@ -419,8 +441,8 @@ export function apply(ctx, config = {}) {
           const hit = STATEFUL.find((k) => k.re.test(gist));
           if (!hit) return null;
           const now = Date.now();
-          if (gateState.c3Cat === hit.cat && now - gateState.c3At < 30 * 60 * 1000) return null;  // 同类 30 分钟去重
-          gateState.c3Cat = hit.cat; gateState.c3At = now; gateState.c3Fired = true;
+          if (S().gateState.c3Cat === hit.cat && now - S().gateState.c3At < 30 * 60 * 1000) return null;  // 同类 30 分钟去重
+          S().gateState.c3Cat = hit.cat; S().gateState.c3At = now; S().gateState.c3Turn = S().obs.turn;   // F10：当轮标记（非永久布尔）
           try {
             appendFileSync(join(cfg.akashaDir, "logs", "hooks.jsonl"),
               JSON.stringify({ ts: new Date().toISOString(), kind: "stateful-reminder", cat: hit.cat }) + "\n", "utf8");
@@ -444,11 +466,11 @@ export function apply(ctx, config = {}) {
       order: cfg.preflightOrder,
       text: () => {
         try {
-          if (gateState.c3Fired) return null;   // C3 优先（同回合只出一条）
+          if (S().gateState.c3Turn === S().obs.turn) return null;   // F10：仅同轮让位   // C3 优先（同回合只出一条）
           const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
           const now = Date.now();
           const WINDOW = 30 * 60 * 1000;
-          const recent = (recentFailures || []).filter((f) => now - Number(f.ts ?? f.at) <= WINDOW);  // 字段是 ts（见 noteFailure）
+          const recent = (S().recentFailures || []).filter((f) => now - Number(f.ts ?? f.at) <= WINDOW);  // 字段是 ts（见 noteFailure）
           const map = lib.RECALL_TRAP_MAP || {};
           // 2026-10-11 修复（用户裁定：反射要能随工程知识纠错与优化）：
           //   **反射文本随条目走** —— 不再只认写死的表。
@@ -511,9 +533,9 @@ export function apply(ctx, config = {}) {
 
           // 条件事实（供条目 `when` 判定；#9 条件谓词化的落地）：只含**可判定**的现场事实。
           const condCtx = {
-            turn: obs.turn,
+            turn: S().obs.turn,
             date: today,
-            usedTools: [...usedTools],
+            usedTools: [...S().usedTools],
             failedRecently: recent.length > 0,
           };
           // 条目 `when` 闸（可选）：不满足就不打（把"不适用条件"变成可判定的谓词，而不是靠人记）。
@@ -529,7 +551,7 @@ export function apply(ctx, config = {}) {
           //     字段与 hint 同构：`hint`（≤80 字反射）+ `triggers`（触发词数组）；退役 / `hint_until` 过期 / 无 hint 一律不打。
           //     去重：同条目 30 分钟一次（与①同窗）；条数上限：每回合最多一条（本函数只 return 一条）。
           if (cfg.triggerRouting !== false) {
-            const txt = (lastUserText.text && now - lastUserText.at <= USER_TEXT_TTL) ? lastUserText.text : '';
+            const txt = (S().lastUserText.text && now - S().lastUserText.at <= USER_TEXT_TTL) ? S().lastUserText.text : '';
             if (txt) {
               const matched = (rec) => {
                 const trs = Array.isArray(rec.triggers) ? rec.triggers : [];
@@ -544,9 +566,9 @@ export function apply(ctx, config = {}) {
               });
               if (hit) {
                 const key = String(hit.id);
-                if (now - (firedTriggers.get(key) ?? 0) >= WINDOW) {
+                if (now - (S().firedTriggers.get(key) ?? 0) >= WINDOW) {
                   const tr = matched(hit);
-                  firedTriggers.set(key, now);
+                  S().firedTriggers.set(key, now);
                   emitPreflight({ entry: key, trigger: tr, hintSource: 'entry', mode: 'trigger' });
                   return trim80('[触发] ' + tr + ' ⇒ ' + safeInjectInline(String(hit.hint).trim()) + ' —— 条目 ' + key);
                 }
@@ -559,8 +581,8 @@ export function apply(ctx, config = {}) {
           //     **一次轻量词法召回** —— 按当前任务把最相关的一条**直接端上来**，而不是提示"你去查"。
           //     纪律：上限 1 条 · 阈值 ≥2 分（防误端）· 同一条消息只算一次 · 与①b 互斥 · 可关（autoBringUp）· 失败静默。
           if (cfg.autoBringUp !== false) {
-            const txt = (lastUserText.text && now - lastUserText.at <= USER_TEXT_TTL) ? lastUserText.text : '';
-            if (txt && broughtUp.at !== lastUserText.at) {
+            const txt = (S().lastUserText.text && now - S().lastUserText.at <= USER_TEXT_TTL) ? S().lastUserText.text : '';
+            if (txt && S().broughtUp.at !== S().lastUserText.at) {
               try {
                 // 分词修正（2026-10-11 实测）：`tokenize` 把中文长句当成**一个 token** ⇒ 每条最多拿 0.9 的中文回退分
                 // ⇒ 阈值 2 永远够不到（146 条并列 0.90，等于"要么全端、要么都不端"）。故此处**额外做 bigram 展开**
@@ -590,8 +612,8 @@ export function apply(ctx, config = {}) {
                 //   不切题样本：归一 0.82/0.45/0.29（分 4.9/4.9/2.0）⇒ 全不端 ⇒ 完美分离。
                 const norm = best ? best.score / toks.length : 0;
                 const accept = !!best && best.score >= 8 && norm >= 1.0;
-                broughtUp.at = lastUserText.at;
-                broughtUp.id = accept ? String(best.rec.id) : null;
+                S().broughtUp.at = S().lastUserText.at;
+                S().broughtUp.id = accept ? String(best.rec.id) : null;
                 if (accept && whenOk(best.rec)) {
                   emitPreflight({ entry: String(best.rec.id), score: best.score, norm: Number(norm.toFixed(2)), mode: 'bring-up' });
                   return trim80('[端上来] ' + safeInjectInline(String(best.rec.claim).slice(0, 44)) + ' —— ' + String(best.rec.id).slice(0, 26));
@@ -604,11 +626,11 @@ export function apply(ctx, config = {}) {
           //    渲染时**不知道本回合会用什么工具**，但知道**本会话还没用过哪些** ⇒ 逐个把"未用过的陷阱工具"预告一遍，
           //    每个工具只预告一次（用过即止）= 把"事后回查"提前成"动手前预检"，不依赖历史失败。
           if (cfg.preflightFirstUse !== false) {
-            const nextTool = Object.keys(map).find((t) => !usedTools.has(t) && !announcedTraps.has(t));
+            const nextTool = Object.keys(map).find((t) => !S().usedTools.has(t) && !S().announcedTraps.has(t));
             if (nextTool) {
               const h = hintForTool(nextTool);
               if (h) {
-                announcedTraps.add(nextTool);
+                S().announcedTraps.add(nextTool);
                 emitPreflight({ tool: nextTool, entry: h.id, hintSource: h.hintSource, mode: 'first-use' });
                 return trim80('[坑前提示·首用] ' + nextTool + ' 还没用过：' + safeInjectInline(h.act) + ' —— 条目 ' + h.id);
               }
@@ -628,10 +650,10 @@ export function apply(ctx, config = {}) {
       order: (cfg.pulseOrder ?? 132) + 2,
       text: () => {
         try {
-          if (!obs.turn) return null;
-          const gap = obs.lastRecallTurn === null ? '(本进程尚未查库)' : '距今 ' + Math.max(0, obs.turn - obs.lastRecallTurn) + ' 轮';
+          if (!S().obs.turn) return null;
+          const gap = S().obs.lastRecallTurn === null ? '(本进程尚未查库)' : '距今 ' + Math.max(0, S().obs.turn - S().obs.lastRecallTurn) + ' 轮';
           // 口径标注（2026-10-11）：轮次/压缩/查库均为**本进程**统计——重启即归零；不标会被读成"整场会话"
-          const line = '[极限观测·本进程] 轮=' + obs.turn + ' 压缩=' + obs.compactions + ' 上次查库=' + gap;
+          const line = '[极限观测·本进程] 轮=' + S().obs.turn + ' 压缩=' + S().obs.compactions + ' 上次查库=' + gap;
           return line.length <= 80 ? line : line.slice(0, 79) + '…';
         } catch { return null; }
       }
@@ -650,15 +672,15 @@ export function apply(ctx, config = {}) {
       order: (cfg.pulseOrder ?? 132) + 3,
       text: () => {
         try {
-          if (!obs.turn || !obs.compactions) return null;                  // 没压缩过 ⇒ 不打扰
-          const sinceComp = obs.lastCompactionTurn === null ? null : Math.max(0, obs.turn - obs.lastCompactionTurn);
-          const recalledRecently = obs.lastRecallTurn !== null && (obs.turn - obs.lastRecallTurn) <= 2;
+          if (!S().obs.turn || !S().obs.compactions) return null;                  // 没压缩过 ⇒ 不打扰
+          const sinceComp = S().obs.lastCompactionTurn === null ? null : Math.max(0, S().obs.turn - S().obs.lastCompactionTurn);
+          const recalledRecently = S().obs.lastRecallTurn !== null && (S().obs.turn - S().obs.lastRecallTurn) <= 2;
           const inWindow = sinceComp !== null && sinceComp <= RECALL_WINDOW;
-          if (obs.compactions >= 5 && !recalledRecently) {
-            return clip('[压缩补偿·强制] 本会话已压缩 ' + obs.compactions + ' 次：关键动作前先 akasha_lookup/brief 补全，再动手');
+          if (S().obs.compactions >= 5 && !recalledRecently) {
+            return clip('[压缩补偿·强制] 本会话已压缩 ' + S().obs.compactions + ' 次：关键动作前先 akasha_lookup/brief 补全，再动手');
           }
-          if (obs.compactions >= 3 && !recalledRecently) {
-            return clip('[压缩补偿] 已压缩 ' + obs.compactions + ' 次' + (inWindow ? '（脆弱窗 距上次 ' + sinceComp + ' 轮）' : '') + '：本回合先查库再答');
+          if (S().obs.compactions >= 3 && !recalledRecently) {
+            return clip('[压缩补偿] 已压缩 ' + S().obs.compactions + ' 次' + (inWindow ? '（脆弱窗 距上次 ' + sinceComp + ' 轮）' : '') + '：本回合先查库再答');
           }
           if (inWindow) {
             return clip('[压缩补偿·脆弱窗] 距上次压缩 ' + sinceComp + ' 轮：重要结论先落库，动手前先查');
@@ -686,8 +708,8 @@ export function apply(ctx, config = {}) {
           const recs = lib.currentRecords(lib.loadStore('canon').records);
           const rec = recs.filter((r) => String(r.id) === CONV_ID || String(r.id).startsWith(CONV_ID + '-r')).pop();
           const text = (rec && typeof rec.line === 'string' && rec.line.trim()) ? rec.line.trim() : FALLBACK_CONVENTIONS;
-          return clipLong('[约定] ' + text);
-        } catch { return clipLong('[约定] ' + FALLBACK_CONVENTIONS); }
+          return safeInject(clipLong('[约定] ' + text));   // F06（2026-10-14 外部审查）：库原文可能含合法模板示例（如 {{unknown}}）——出口整体包裹，防宿主插值抛错
+        } catch { return safeInject(clipLong('[约定] ' + FALLBACK_CONVENTIONS)); }
       }
     });
   }
@@ -722,14 +744,14 @@ export function apply(ctx, config = {}) {
             const q = gist.replace(new RegExp(PRONOUN.source, 'g'), ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || gist.slice(0, 60);
             const r = lib.lookupDetailed(q, { limit: 2, contextBudget: false, via: 'probe' }); // via:'probe'（2026-10-14 复检）——机制探针，不进检索面指标
             const ids = (r.hits || []).map((h) => String(h.id)).slice(0, 2).join(' · ');
-            if (ids) return clip120('[指代检索] 像是问旧事 → 先看：' + ids);
+            if (ids) return safeInject(clip120('[指代检索] 像是问旧事 → 先看：' + ids));   // F06：库侧内容出口必须包裹（防模板插值）
           }
           // 语义钩子（近失败）
-          const f = recentFailures[recentFailures.length - 1];
-          if (f && obs.turn && Date.now() - f.ts < 30 * 60 * 1000) {
+          const f = S().recentFailures[S().recentFailures.length - 1];
+          if (f && S().obs.turn && Date.now() - f.ts < 30 * 60 * 1000) {
             const r = lib.lookupDetailed(String(f.tool || ''), { limit: 2, contextBudget: false, via: 'probe' }); // 同上：机制探针（近失败回查），不进检索面指标
             const top = (r.hits || [])[0];
-            if (top) return clip120('[处境检索] ' + f.tool + ' 近 30 分钟内失败过 → 相关条目 ' + top.id + '：' + String(top.snippet || '').slice(0, 42));
+            if (top) return safeInject(clip120('[处境检索] ' + f.tool + ' 近 30 分钟内失败过 → 相关条目 ' + top.id + '：' + String(top.snippet || '').slice(0, 42)));   // F06 同上
           }
           return null;
         } catch { return null; }

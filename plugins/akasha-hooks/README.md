@@ -4,6 +4,7 @@
 
 > **版本（单一真值）**：以本包 `package.json` 的 `version` 为准（2026-10-13 审计 P3 同族：此处曾写死 v1.2 而实际已到 1.2.4-h2）。当前装载版本用 `plugin_manager list_bundles` 查。
 
+- **v1.2.6-h1（2026-10-14，外部审查修复批 B）**：**`expandHome` 定义前置于使用**（TDZ 修复）——此前它排在 `ENV_AKASHA` 之后，外部按契约设**非空 `AKASHA_DIR`** 时模块导入即 ReferenceError ⇒ hooks 整个装不上（复跑：`loaded`、exit 0 ✓）。
 - **v1.2.5-h1（2026-10-13，举一反三批）**：**修两处「工具/子命令表漏项 ⇒ 召回静默漏计」**（与 gate 的 SHELL_TOOLS 同族）——
   ① `SHELL_TOOLS` 补 **`ops_bash`**：dsh-ops 落地后它是最常用 shell 入口，**gate 早就补了、hooks 漏了**（两处不同步）；
   ② `CLI_RECALL` 从 9 条只读子命令扩到**全部只读面**（`check/stats/audit/metrics/frontier due|list/session lookup|context|tree|node|loopwatch|stats/sleep --plan/evidence`）——

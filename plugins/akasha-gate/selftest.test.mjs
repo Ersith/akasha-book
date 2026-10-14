@@ -144,6 +144,9 @@ assert.equal(g('ops_bash', { command: `ls -la ${DATA.replace(/\\/g, '/')} 2>/dev
 assert.equal(g('ops_bash', { command: `cat ${F('canon.jsonl').replace(/\\/g, '/')} 2>/dev/null | tail -3` }), undefined, 'cat + 2>/dev/null 必须放行');
 assert.equal(g('pwsh', { command: `Get-Content '${F('canon.jsonl')}' 2>$null` }), undefined, 'PowerShell 2>$null 只读必须放行');
 assert.equal(typeof g('ops_bash', { command: `echo x >> ${F('canon.jsonl').replace(/\\/g, '/')} 2>/dev/null` }), 'string', '写重定向 + 2>/dev/null 混合仍必须拒（不放松真写侧）');
+// 2026-10-14（外部审查 #6）：分裂写（`>` 与空目标间带空格）同属 stderr 丢弃 —— 只读命令必须放行；真写侧照拒。
+assert.equal(g('ops_bash', { command: `ls -la ${DATA.replace(/\\/g, '/')} 2> /dev/null` }), undefined, '2> /dev/null（分裂写）的只读 ls 必须放行');
+assert.equal(typeof g('ops_bash', { command: `echo x >> ${F('canon.jsonl').replace(/\\/g, '/')} 2> /dev/null` }), 'string', '真写 + 分裂写空目标仍必须拒');
 assert.equal(g('codex_exec', { prompt: `分析 ${DATA} 目录的文件大小分布，给出报告` }), undefined, '委派分析（无写动作）必须放行');
 // 参数名误判修复（同日）：`--command` 这类**选项名**里含 `rm`，不得算写动作（本机实测：gate 自己的 dry-run CLI 被掐）。
 assert.equal(g('ops_bash', { command: `node akasha/tools/gate-dry.mjs --tool ops_bash --command "ls -la ${DATA.replace(/\\/g, '/')}"` }), undefined, '选项名 --command 里的 rm 不算写动作');
