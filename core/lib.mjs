@@ -71,9 +71,11 @@ const REDACT_RES = [
   //   **R10（GPT 复核二轮）**：占位豁免从「前缀就放过」改为**整个值等于占位词才放过**（`FalseSYNTHETIC_…` 不再漏遮）。
   //   **R11（GPT 复核二轮）**：键名从「任意子串」收窄为「**敏感词结尾**」形态——`tokenizer` / `token_count_source` /
   //   `password_policy` / `secretary` 等合法字段保真；`access_token` / `client_secret` / `api_key` 等照遮。
-  [/((?:[A-Za-z0-9]*[_-])?(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential)"\s*:\s*")([^"]{6,})(")/gi,
+  //   **N01/N02（GPT 第三轮）**：名单补回 `authorization`（对象型有、文本型漏了——回归）；值模式支持**转义序列**
+  //   （`\"` 不再被当字符串终止符 ⇒ 密码内转义引号不再泄漏后半段）。
+  [/((?:[A-Za-z0-9]*[_-])?(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential|authorization)"\s*:\s*")((?:\\.|[^"\\]){6,})(")/gi,
     (m, p1, v, p3) => (/^(?:False|True|None|null|n\/a)$/i.test(v) ? m : p1 + '[redacted]' + p3)],
-  [/((?:[A-Za-z0-9]*[_-])?(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential)\s*[=:]\s*)(["'])([^"']{6,})\2/gi,
+  [/((?:[A-Za-z0-9]*[_-])?(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential|authorization)\s*[=:]\s*)(["'])((?:\\.|[^"'\\]){6,})\2/gi,
     (m, p1, q, v) => (/^(?:False|True|None|null|n\/a)$/i.test(v) ? m : p1 + q + '[redacted]' + q)],
   // **明确不做**（2026-10-11 裁定）：通用「长随机串」规则（如 [A-Za-z0-9_-]{32,}）—— 它与**我们自己的 id 形态**
   //   冲突（`node-7fe8ec84-L2-2781-4441-eb9ff212` / `canon-…-20261011` 都会命中）⇒ **必然误伤** ⇒ 违反口径①。
@@ -81,6 +83,15 @@ const REDACT_RES = [
 ];
 export function redact(value) {
   let out = String(value ?? '');
+  // N01/N02（GPT 第三轮）：**结构化优先**——整串是 JSON 对象/数组时，解析后**按键递归脱敏**再序列化
+  //   （Authorization 任意大小写、转义引号、嵌套形态一次性覆盖；解析失败退回文本规则）。
+  const s = out.trim();
+  if ((s.startsWith('{') || s.startsWith('[')) && s.length > 8) {
+    try {
+      const parsed = JSON.parse(s);
+      if (parsed && typeof parsed === 'object') return JSON.stringify(redactDeep(parsed, null));
+    } catch { /* 非完整 JSON ⇒ 走文本规则 */ }
+  }
   for (const [re, to] of REDACT_RES) out = out.replace(re, to);
   return out;
 }
@@ -951,10 +962,15 @@ export function clipByBudget(result, opts = {}) {
     //   不再以「首条全文」突破 cap（旧行为 brief 8328/4096、cross 1114/200 均可穿透）。摘要长度随 cap 收缩。
     if (kept.length === 0 && list.length > 0 && used === 0 && !floorDone) {
       const first = list[0];
-      const BODY = ['snippet', 'gist', 'claim', 'line', 'title', 'situation', 'behavior', 'outcome', 'social_reaction', 'emotion'];
+      // N12（GPT 第三轮）：**固定白名单**（不再黑名单补漏——orphan.summary / lexicon.resolution / mirror.story /
+      //   source.ref 都曾因漏列而完整保留）——只留身份与短元数据 + 来源态 type；正文一律只进 snippet 摘要。
+      const KEEP = new Set(['id', 'store', 'kind', 'status', 'score', 'strong', 'zeroWeight', 'rank', 'factor', 'severity', 'complexity', 'factorApplied', 'balance', 'tier', 'displayTier', 'stale', 'refuted', 'time', 'agePrefix', 'valence', 'severity_default', 'count', 'miss', 'weight']);
       const ph = {};
-      for (const k of Object.keys(first)) if (!BODY.includes(k)) ph[k] = first[k];
-      const bodyText = String(first.snippet ?? first.gist ?? first.claim ?? first.line ?? first.title ?? first.situation ?? '');
+      for (const k of Object.keys(first)) if (KEEP.has(k)) ph[k] = first[k];
+      if (first.source && typeof first.source === 'object') ph.source = { type: first.source.type };
+      const BODY_KEYS = ['snippet', 'gist', 'claim', 'line', 'title', 'summary', 'situation', 'story', 'behavior', 'outcome', 'social_reaction', 'emotion', 'resolution', 'word', 'term', 'label', 'topic'];
+      let bodyText = '';
+      for (const k of BODY_KEYS) { if (typeof first[k] === 'string' && first[k]) { bodyText = first[k]; break; } }
       const capChars = Math.max(60, Math.min(300, cap - reserve - 80));
       ph.snippet = bodyText.slice(0, capChars);
       ph.oversizeOmitted = true;
@@ -1029,7 +1045,7 @@ export function clipByBudget(result, opts = {}) {
   // ③ 可见性：每次返回都带一行人类可读的装载说明（不再有静默截断）
   const parts = ['本页 ' + after + ' 条 / 共 ' + total + ' 条', used + '/' + cap + ' tok'];
   if (skippedByOffset > 0) parts.push('已跳过前 ' + skippedByOffset + ' 条(offset)');
-  if (floorApplied) parts.push('地板保底：首条超上限仍保留（另 ' + Math.max(0, trimmedOut - 1) + ' 条未显示）→ 续取 offset=' + nextOffset + '（或 --full）');
+  if (floorApplied) parts.push('地板保底：首条超大条目**仅示摘要**（oversizeOmitted=true；全文走 show/--full）（另 ' + Math.max(0, trimmedOut - 1) + ' 条未显示）→ 续取 offset=' + nextOffset + '（或 --full）');
   else if (trimmedOut > 0) parts.push('因上限未显示 ' + trimmedOut + ' 条 → 续取 offset=' + nextOffset + '（或 --full）');
   else parts.push('无因上限丢弃');
   const hint = parts.join(' · ');
@@ -1811,7 +1827,7 @@ export function lookupDetailed(query, opts = {}) {
   //   2026-10-13（举一反三·类③）：空查询与「查了但 0 命中」必须可区分——`cross`/`brief` 早有 hint，这里此前闷着。
   const tokens = tokenize(q);
   const hits = [];
-  const __age = new Map();
+  // N13：__age 映射已移除（agePrefix 在 hit 构建时直接装配——计量口径统一）。
   const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
   const seenIds = new Set();
   for (const name of STORES) {
@@ -1860,15 +1876,16 @@ export function lookupDetailed(query, opts = {}) {
       // strong 只看整词命中；严重度×可信度×复杂度只进 rank，不进 score。
       const strong = name !== 'orphan' && sc.whole >= 1;
       const rf = applyRank(sc.score, name, r, cred, { ...rankOpts, strong });
-      // 不传 depth / reflect / depth:full：snippet 仍是 main 的 120 字（放开会破坏默认档零差）。只有 pointer 收到 80。
-      const __snipCap = opts.depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.lookupSummaryChars;
+      // 不传 depth / reflect / depth:full：snippet 仍是 main 的 120 字（放开会破坏默认档零差）。只有有效档为 pointer 时收到 80。
+      // N14（GPT 第三轮）：用**有效档位**（readDepthOf）而非原始 opts.depth——pointer+reflect 组合下有效档=full。
+      const __snipCap = readDepthOf(opts) === 'pointer' ? READ_TIER.pointerChars : READ_TIER.lookupSummaryChars;
       const hit = {
         store: name, id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan',
         snippet: redact(hay.slice(0, __snipCap)),
         rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
         tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
       };
-      if (isStr(r.id)) __age.set(name + '\0' + r.id, agePrefix(r, { today: opts.today }));
+      if (isStr(r.id)) hit.agePrefix = agePrefix(r, { today: opts.today });   // N13：装配**前移**（计量=最终响应）
       if (b.bucket === 'undated') hit.undated = true;
       hits.push(hit);
     }
@@ -1897,7 +1914,7 @@ export function lookupDetailed(query, opts = {}) {
     severity: h.severity ?? null, complexity: h.complexity ?? null, factor: h.factor ?? null, factorApplied: h.factorApplied !== false,
     balance: h.balance ?? { enabled: false, correction: 1 }, zeroWeight: !!h.zeroWeight
   }));
-  const __res = { hits: ranked, stats, knowledge, citeAllowlist, trace, blindspots: blindspotsFor({ perspective: opts.perspective }) };
+  const __res = { hits: ranked, stats, knowledge, citeAllowlist, trace, blindspots: blindspotsFor({ perspective: opts.perspective }), depth: readDepthOf(opts) };
   // I-12 P1-③ 剂量闸（2026-10-13）：符号负荷超阈 ⇒「后续条目」snippet 摘要化（保 id / 序位；反思通道与 doseThreshold:0 不受限）。
   const __doseThreshold = Number.isInteger(opts.doseThreshold) ? opts.doseThreshold : GENRE_DOSE_DEFAULTS.threshold;
   if (!highFidelityRead(opts) && __doseThreshold > 0 && ranked.length) {
@@ -1908,13 +1925,8 @@ export function lookupDetailed(query, opts = {}) {
     }
   }
   const __out = opts.contextBudget === false ? __res : clipByBudget(__res, { ...opts, offset: opts.offset });
-  // 年龄前缀在裁剪之后盖上：clip 按整条 JSON 计 token，盖早了会让默认预算账与 main 分叉。
-  // citeAllowlist 保持裁剪前的清单（与 main 相同，不在裁后重建）。
-  for (const h of __out.hits || []) {
-    const pre = __age.get((h.store || '') + '\0' + h.id);
-    if (pre) h.agePrefix = pre;
-  }
-  __out.depth = readDepthOf(opts);
+  // N13（GPT 第三轮）：**统一计量口径**——agePrefix / depth 属最终响应，装配已在 clip **之前**完成（此前裁后装配
+  //   ⇒ 账面 4050 而排除 budget 复算 4147）。citeAllowlist 保持裁剪前的清单（与 main 相同，不在裁后重建）。
   // I-02 查询侧线（append-only；失败静默，绝不影响返回值）
   if (opts.__noQueryLog !== true) recordQuery({ cmd: 'lookup', query: __qRaw, hits: ranked.length, ms: Date.now() - __t0, ids: ranked.map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
   return __out;
@@ -2002,7 +2014,7 @@ export function brief(query, opts = {}) {
   const tokens = tokenize(q);
   const perStore = Number.isInteger(opts.perStore) && opts.perStore > 0 ? opts.perStore : READ_TIER.briefPerStore;
   const groups = [];
-  const __ageB = new Map();
+  // N13：__ageB 映射已移除（同上）。
   const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
   for (const name of STORES) {
     const records = recordsOf(name, opts);
@@ -2045,8 +2057,9 @@ export function brief(query, opts = {}) {
       groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => {
         const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + valenceTip(x.r);
         const rf = applyRank(base, name, x.r, x.cred, { ...rankOpts, strong: x.strong });
-        if (isStr(x.r.id)) __ageB.set(name + '\0' + x.r.id, agePrefix(x.r, { today: opts.today }));
+        const __pre = isStr(x.r.id) ? agePrefix(x.r, { today: opts.today }) : null;   // N13：装配前移（计量=最终响应）
         return {
+          ...( __pre ? { agePrefix: __pre } : {}),
           ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight,
           rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
           tier: x.cred ? x.cred.tier : null, displayTier: x.cred ? x.cred.displayTier : null,
@@ -2072,8 +2085,9 @@ export function brief(query, opts = {}) {
     }
   }
   if (readTierActive(opts)) {
-    const cap = opts.depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.summaryChars;
-    for (const g of groups) g.hits = g.hits.map((h) => projectHitFields(h, opts.depth, cap));
+    const __d = readDepthOf(opts);                                                    // N14：投影/标签同源于有效档位
+    const cap = __d === 'pointer' ? READ_TIER.pointerChars : READ_TIER.summaryChars;
+    for (const g of groups) g.hits = g.hits.map((h) => projectHitFields(h, __d, cap));
   }
   const flat = [];
   for (const g of groups) for (const h of g.hits) flat.push({ ...h, store: g.store });
@@ -2106,13 +2120,9 @@ export function brief(query, opts = {}) {
       }
       return layers;
     })() };
+  __bres.depth = readDepthOf(opts);                                                  // N13：depth 装配前移（计量=最终响应）
   const __out = opts.contextBudget === false ? __bres : clipByBudget(__bres, opts);   // 取料类：每次查阅上限默认生效
-  // 年龄前缀在裁剪之后盖上（同 lookup：避免整条上账把前缀算进默认预算）。清单不在裁后重建。
-  for (const g of __out.groups || []) for (const h of g.hits || []) {
-    const pre = __ageB.get(g.store + '\0' + h.id);
-    if (pre) h.agePrefix = pre;
-  }
-  __out.depth = readDepthOf(opts);
+  // N13（GPT 第三轮）：agePrefix 装配已前移（组内构建时）——clip 计量即终局。清单不在裁后重建。
   if (opts.__noQueryLog !== true) recordQuery({ cmd: 'brief', query: q, hits: groups.reduce((n, g) => n + g.total, 0), ms: Date.now() - __t0, ids: flat.map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
   return __out;
 }
@@ -3231,9 +3241,12 @@ export function readDepthOf(opts = {}) {
   return 'full';
 }
 
-/** 硬顶 / 字段投影只在调用方显式要摘要或指针时打开。省略 depth 不算。 */
+/** 硬顶 / 字段投影只在调用方显式要摘要或指针时打开。省略 depth 不算。
+ *  N14（GPT 第三轮）：**按有效档位判定**——`depth:'pointer' + reflect:true` 的有效档是 full（readDepthOf），
+ *  旧实现直接看 `opts.depth` ⇒ 标签 full 但投影按 pointer 截断（组合参数回归）。 */
 export function readTierActive(opts = {}) {
-  return opts.depth === 'pointer' || opts.depth === 'summary';
+  const d = readDepthOf(opts);
+  return d === 'pointer' || d === 'summary';
 }
 
 /** 高保真：跳过剥皮与剂量闸。省略 depth 不是高保真（默认仍剥、仍受闸，与 main 一致）。 */
@@ -3489,13 +3502,21 @@ export function rollbackBatch(store, opts = {}) {
     // 「已回滚」的判定看**后继**：谁把它 rollback_of 了；不能只看 id（回滚版 id ≠ 前版 id）。
     const rolledBy = new Set();
     for (const r of records) if (r.rollback_of !== undefined && isStr(r.supersedes)) rolledBy.add(r.supersedes);
+    // N06（GPT 第三轮）：**覆盖范围判定**——每次 rollback 在记录里写 `rolled_back`（本次撤掉的窗口内修订），
+    //   重跑/扩窗一律按「窗口内是否还有**未被覆盖**的修订」判，不再用日期短路（原实现把扩窗误当重复请求）。
+    const coveredIds = new Set();
+    for (const r of records) if (Array.isArray(r.rolled_back)) for (const x of r.rolled_back) if (isStr(x)) coveredIds.add(x);
     const plan = [];
     // R6（GPT 复核二轮 · 2026-10-14）：**退役链不可经 rollback 复活**——链上（根或任意版本）被墓碑 `retires` 时，
     //   恢复必须走**明确的恢复操作**（revokeRetire / sleep --revoke）；否则 rollback 会把记录以新版本悄悄带回当前集，
     //   而墓碑仍挂着 ⇒ current 与 retires 打架（复现：revise→retire→rollback ⇒ current 出现 `…-r1r1`）。
+    // N05（GPT 第三轮）：**有效退役状态统一**——已被显式 revoke 的墓碑不再算「已退役」；否则明确恢复后的记录
+    //   仍被 rollback 当退役链永久拒绝（复现：revise→retire→revokeRetire→revise→rollback ⇒ refused:retired）。
     const tombstoned = new Set();
+    const revokedTombIds = new Set(records.map((r) => (isStr(r.revokes) ? r.revokes : null)).filter(Boolean));
     for (const t of records) {
       if (!isStr(t.retires)) continue;
+      if (revokedTombIds.has(t.id)) continue;
       tombstoned.add(t.retires);
       const r0 = byId.get(t.retires);
       if (r0) { let c = r0; while (c.supersedes && byId.has(c.supersedes)) c = byId.get(c.supersedes); tombstoned.add(c.id); }
@@ -3516,12 +3537,10 @@ export function rollbackBatch(store, opts = {}) {
       for (;;) { const n = records.find((x) => x.supersedes === c.id); if (!n) break; c = n; ch.push(n); }
       const tip = ch[ch.length - 1];
       if (!isStr(tip.id) || tip.id === rootId) continue;                                          // 只有追加、无修订 ⇒ 无可回滚
-      // R12（GPT 复核二轮）：**重跑零新增**——链尾已是**本窗口**的回滚产物时跳过（原漏洞：重跑时链内第一次修订
-      //   仍符合候选条件 ⇒ 反复追加 r2r1、r2r1r1…）。跨日窗口由候选的日期条件另管。
-      if (tip.rollback_of !== undefined && String(tip.logged_at ?? '').slice(0, 10) >= day) continue;
-      // 候选 = 窗口内「未回滚过的修订」（rollback 记录自身不是候选）——重跑/链尾已是回滚记录时自然为空 ⇒ 幂等。
-      const firstIdx = ch.findIndex((x, k) => k > 0 && x.rollback_of === undefined && String(x.logged_at ?? '').slice(0, 10) >= day && !rolledBy.has(x.id));
-      if (firstIdx < 1) continue;                                                                 // 窗口内无未回滚修订 ⇒ 无可回滚
+      // R12 幂等由 N06 的 coveredIds 统一接管（重跑：窗口内修订全被覆盖 ⇒ 无候选 ⇒ 零新增）。
+      // 候选 = 窗口内「未回滚过的修订」（rollback 记录自身不是候选、已覆盖的不再算）。
+      const firstIdx = ch.findIndex((x, k) => k > 0 && x.rollback_of === undefined && String(x.logged_at ?? '').slice(0, 10) >= day && !rolledBy.has(x.id) && !coveredIds.has(x.id));
+      if (firstIdx < 1) continue;                                                                 // 窗口内无未覆盖修订 ⇒ 无可回滚
       const restore = ch[firstIdx - 1];
       if (isProtocolId(rootId) || isProtocolId(tip.id) || isProtocolId(restore.id)) {             // F01：协议链回滚须人工 --allow-protocol
         plan.push({ store, id: tip.id, restores: restore.id, refused: 'protocol' });
@@ -3531,7 +3550,8 @@ export function rollbackBatch(store, opts = {}) {
         plan.push({ store, id: tip.id, restores: restore.id, refused: 'retired' });
         continue;
       }
-      plan.push({ store, id: tip.id, restores: restore.id, claim: restore.claim ?? restore.summary ?? restore.behavior ?? restore.title ?? '' });
+      const coveredHere = ch.slice(firstIdx).map((x) => x.id).filter((x) => String(byId.get(x)?.logged_at ?? '').slice(0, 10) >= day);
+      plan.push({ store, id: tip.id, restores: restore.id, covered: coveredHere, claim: restore.claim ?? restore.summary ?? restore.behavior ?? restore.title ?? '' });
     }
     if (!need) return plan;
     const done = [];
@@ -3542,7 +3562,7 @@ export function rollbackBatch(store, opts = {}) {
       // id 必须新（重复 id 是硬错误）：内容=前一版，id = **链尾 + r1**。
       const targetId = p.id + 'r1';
       if (records.some((x) => x.id === targetId)) continue;                                       // 幂等（重跑时目标已存在 ⇒ 跳过）
-      const rec = { ...prev, id: targetId, supersedes: p.id, rollback_of: p.id };
+      const rec = { ...prev, id: targetId, supersedes: p.id, rollback_of: p.id, rolled_back: Array.isArray(p.covered) ? p.covered : [] };   // N06：覆盖范围随记录持久化
       delete rec.logged_at;                                                                        // 回滚=一次新写入 ⇒ 盖新戳
       appendRecord(store, rec, { file, locked: true });
       rolledIds.add(p.id);
@@ -4028,7 +4048,7 @@ function reviseUnlocked(store, id, patch, opts) {
   // F01（2026-10-14 外部审查 · GPT）：**状态迁移字段不得经普通修订写入**——否则可借普通条目的 patch 夹带
   //   `retires:<协议条>` 把受保护协议条从当前集抹掉（且 check 零报错）。supersedes / rollback_of 同理：
   //   它们只由 revise / retire / revoke / rollback 这些**专门函数**生成，普通 patch 一律只许内容字段。
-  const STATE_FIELDS = ['supersedes', 'retires', 'revokes', 'rollback_of', 'retired_at', 'retired_reason'];
+  const STATE_FIELDS = ['supersedes', 'retires', 'revokes', 'rollback_of', 'rolled_back', 'retired_at', 'retired_reason'];
   const illegal = STATE_FIELDS.filter((k) => patch && patch[k] !== undefined);
   if (illegal.length) throw new Error('状态迁移字段不可经普通修订写入（' + illegal.join(' / ') + '）：退役用 retire、撤销用 revoke、回滚用 rollback、修订用 revise');
   let tip = found;
@@ -4258,6 +4278,8 @@ function retireRecordUnlocked(store, id, opts, file) {
   for (let n = 2; records.some((r) => r.id === tombId); n += 1) tombId = tip.id + '-retired-' + n;   // 复检：再退役（撤销之后）须落新墓碑、不撞 id
   const tomb = { ...tip, id: tombId, retires: tip.id, retired_at: new Date().toISOString() };
   if (reason) tomb.retired_reason = reason;
+  // N03（GPT 第三轮）：`extra` = **背景字段**（如 sleep_plan_id / sleep_op_id）随墓碑持久化——归属可核（结构化匹配）。
+  if (opts.extra && typeof opts.extra === 'object') for (const [k, v] of Object.entries(opts.extra)) if (tomb[k] === undefined) tomb[k] = v;
   delete tomb.logged_at;   // 与 revise 一致：墓碑自成一版，盖自己的写入时间戳
   appendRecordUnlocked(store, tomb, file, {});   // 已在 retireRecord 的锁内（锁不可重入）
   return { store, id: tip.id, retired: tip.id, tombstone: tomb.id, hard: false, reason };

@@ -109,15 +109,19 @@ export function tailReadText(file, maxBytes = TAIL_WINDOW_BYTES) {
     return { text, bytes: n, truncated: start > 0 };
   } finally { closeSync(fd); }
 }
+// N09（GPT 第三轮）：**身份归一**——会话索引器持久化时剥 `session-` 前缀（生产者 dsh-akasha-session），
+//   渲染/事件侧是完整 id ⇒ 两侧经 normSid 归一后比较（`session-1` ≡ `1`）。**模块级**：latestIntentGist 亦需。
+const normSid = (s) => String(s ?? '').replace(/^session-/, '');
+
 export function latestIntentGist(text, session) {
   // R04（GPT 复核二轮）：**按 session 过滤**——intent 记录带 session 字段；`session===null`（来源不明）⇒ 不读，
-  //   绝不把上一会话的意图喂给当前会话（复现：A 的 intent 触发 B 的 C3）。
+  //   绝不把上一会话的意图喂给当前会话（复现：A 的 intent 触发 B 的 C3）。N09：两侧经 normSid 归一。
   if (session === null) return null;
   const lines = String(text ?? '').split('\n');
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (!lines[i].includes('"kind":"intent"')) continue;
     let r; try { r = JSON.parse(lines[i]); } catch { continue; }
-    if (session !== undefined && String(r.session ?? '') !== String(session)) continue;
+    if (session !== undefined && normSid(r.session) !== normSid(session)) continue;
     const g = String(r.gist || '');
     if (!g) continue;
     // 规则化跳过注入段（2026-10-10 生产核对：除 runtime context 外还有 openviking / hindsight 等注入块被记成 intent）
@@ -337,6 +341,7 @@ export function apply(ctx, config = {}) {
   // R04：**无 sid 不继承**——缺身份的输入归 `(unknown)` 桶，绝不沿用上一会话（来源不明 ⇒ 不碰敏感提醒）。
   const retarget = (sid) => { curSid = sid ? String(sid) : '(unknown)'; };
   const renderSidOf = (context) => sidOf(context?.agent ?? context?.session ?? context);
+  // N09：normSid 已上移模块级（latestIntentGist 亦需；此前误放此处 ⇒ 模块函数引用未定义、被 catch 吞掉）。
   const noteFailure = (tool) => {
     try {
       S().recentFailures.push({ ts: Date.now(), tool: String(tool ?? '?') });
@@ -355,7 +360,9 @@ export function apply(ctx, config = {}) {
     else {
       // CLI 查库也算召回（2026-10-11 实测：本会话大量查库走 `node akasha.mjs …`，只认 MCP 会显示"尚未查库"＝自欺）
       try {
-        const blob = JSON.stringify(exec?.args ?? exec?.input ?? exec?.params ?? '');
+        // N11（GPT 第三轮）：宿主 ToolExecution 的执行参数在 **exec.arguments**（dsh-tools 契约）；args/input/params
+        //   只作旧夹具兼容——前者优先，避免「真实 CLI 查库后仍显示未查库」。
+        const blob = JSON.stringify(exec?.arguments ?? exec?.args ?? exec?.input ?? exec?.params ?? '');
         if (/akasha\.mjs|session\.mjs|mcp\.mjs/.test(blob)) S().obs.lastRecallTurn = S().obs.turn;
       } catch { /* 忽略 */ }
     }
@@ -376,8 +383,14 @@ export function apply(ctx, config = {}) {
       // R04/R05：回合真值也接 **turn/start**（取消/异常回合不更新 turn-stopping ⇒ C3 当轮标记须靠 start 失效）。
       if (t === 'turn/start') { const tn = Number(p?.data?.turn ?? p?.turn); if (Number.isFinite(tn)) S().obs.turn = Math.max(S().obs.turn, tn); }
       if (t.startsWith('compaction/end') || (t === 'compaction' && p?.phase === 'end')) {
-        S().obs.compactions++;
-        S().obs.lastCompactionTurn = S().obs.turn;      // 脆弱窗判据（压缩补偿行用）
+        // N10（GPT 第三轮）：**失败压缩不计成功**——宿主失败路径同样发 end（data.error 非空）⇒ 此前把失败算成
+        //   「已压缩 N 次」并触发多余补查。成功才计数与更新脆弱窗；失败另计（观测用，不触发提醒）。
+        const failed = !!(p?.data && p.data.error) || !!p?.error;
+        if (failed) S().obs.compactionFailed = (S().obs.compactionFailed || 0) + 1;
+        else {
+          S().obs.compactions++;
+          S().obs.lastCompactionTurn = S().obs.turn;      // 脆弱窗判据（压缩补偿行用）
+        }
       }
       // 触发词路由（2026-10-11 解冻后新增，外部对照启发：灵枢的「触发词路由」）：
       //   捕获**最近的用户消息文本**，供注入面（system-prompt/assemble 时求值的函数）做触发词匹配——
@@ -741,10 +754,14 @@ export function apply(ctx, config = {}) {
   //   两钩子**每回合最多出一行**，优先级 显式 > 语义；都无触发 ⇒ **静默**（不制造噪音）；可关 `recallHook:false`。
   if (cfg.recallHook !== false) {
     const PRONOUN = /(上次|之前|上回|那天|那个|说过|记得|当时|前面说|前面提)/;
+    // N08（GPT 第三轮）：**按当前身份过滤**——恢复提示与 C3 同规则（规范化 id 过滤）；unknown 不读共享最后一条。
     const recentIntentGist = () => {
       try {
         const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
-        const rows = lib.loadStore('session').records.filter((r) => r.kind === 'intent');
+        const sid = curSid;
+        if (!sid || sid === '(unknown)') return '';
+        const want = normSid(sid);
+        const rows = lib.loadStore('session').records.filter((r) => r.kind === 'intent' && normSid(r.session) === want);
         const last = rows[rows.length - 1];
         return last ? String(last.gist || '') : '';
       } catch { return ''; }
