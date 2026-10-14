@@ -689,7 +689,11 @@ export function cross(query, opts = {}) {
       }
     }
     hits.sort((a, b) => b.rank - a.rank || b.score - a.score);
-    const items = opts.perStore ? hits.slice(0, opts.perStore) : hits;
+    // ①（GPT 第四轮·token 开刀）：**有界档给总量上界**——每库 ≤ boundedPerStore、全组累计 ≤ boundedTotal（默认 full 不动）。
+    const __psCap = readTierActive(opts) ? Math.min(opts.perStore ?? READ_TIER.boundedPerStore, READ_TIER.boundedPerStore) : opts.perStore;
+    const __usedNow = groups.reduce((n, g) => n + g.items.length, 0);
+    const __remain = readTierActive(opts) ? Math.max(0, READ_TIER.boundedTotal - __usedNow) : Infinity;
+    const items = (__psCap ? hits.slice(0, __psCap) : hits).slice(0, __remain);
     if (items.length) groups.push({ store: name, total: hits.length, items });
   }
   const total = groups.reduce((n, g) => n + g.total, 0);
@@ -1051,8 +1055,12 @@ export function clipByBudget(result, opts = {}) {
     used = estimateTokens(JSON.stringify(probe));
   }
   // R09-r3 复检补：**hint 说真话**——元数据使总账超限时如实追加（否则「155/200」看起来没超，与 overCap:true 打架）。
-  const hintOut = used > cap ? hint + ' · ⚠ 元数据 ' + metaTok + ' tok 使总账 ' + used + '/' + cap + ' 超限（条目已按剩余额度收缩；不复读假绿）' : hint;
-  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint: hintOut, metaTokens: metaTok, overCap: used > cap };
+  // ③（GPT 第四轮·token 开刀）：**最小包标记**——cap 连元数据都装不下时如实标注（不塞完整诊断、不假装成功）。
+  const budgetTooSmall = metaTok > cap - 60;
+  const hintOut = budgetTooSmall
+    ? hint + ' · ⚠ 预算 ' + cap + ' < 元数据 ' + metaTok + ' tok：连最小包都装不下——请加大 maxTokens（budgetTooSmall）'
+    : (used > cap ? hint + ' · ⚠ 元数据 ' + metaTok + ' tok 使总账 ' + used + '/' + cap + ' 超限（条目已按剩余额度收缩；不复读假绿）' : hint);
+  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint: hintOut, metaTokens: metaTok, overCap: used > cap, budgetTooSmall };
   return out;
 }
 
@@ -1902,13 +1910,15 @@ export function lookupDetailed(query, opts = {}) {
   //   软协议：本回合断言优先引用这份清单里的 id；清单外 = 无据（要么先查、要么明说不知道）。
   const citeAllowlist = ranked.filter((h) => isStr(h.id)).map((h) => ({ id: h.id, store: h.store, tier: h.tier ?? null, strong: !!h.strong }));
   // #35 lookup --trace（2026-10-12 窗口 5）：输出 schema 固化——逐条列出计分零件，可审、可复核。
-  const trace = ranked.map((h) => ({
+  // ②（GPT 第四轮·token 开刀）：**诊断默认分离**——trace（逐条计分零件）只在显式 `trace:true`（CLI `--trace`）时返回；
+  //   citeAllowlist（引用纪律件）与 stats（报告口径）保留——分离的是「可审零件」，不是纪律。
+  const trace = opts.trace !== true ? null : ranked.map((h) => ({
     id: h.id, store: h.store, score: h.score, rank: h.rank, strong: !!h.strong,
     tier: h.tier ?? null, displayTier: h.displayTier ?? null, stale: !!h.stale,
     severity: h.severity ?? null, complexity: h.complexity ?? null, factor: h.factor ?? null, factorApplied: h.factorApplied !== false,
     balance: h.balance ?? { enabled: false, correction: 1 }, zeroWeight: !!h.zeroWeight
   }));
-  const __res = { hits: ranked, stats, knowledge, citeAllowlist, trace, blindspots: blindspotsFor({ perspective: opts.perspective }), depth: readDepthOf(opts) };
+  const __res = { hits: ranked, stats, knowledge, citeAllowlist, ...(trace ? { trace } : {}), blindspots: blindspotsFor({ perspective: opts.perspective }), depth: readDepthOf(opts) };
   // I-12 P1-③ 剂量闸（2026-10-13）：符号负荷超阈 ⇒「后续条目」snippet 摘要化（保 id / 序位；反思通道与 doseThreshold:0 不受限）。
   const __doseThreshold = Number.isInteger(opts.doseThreshold) ? opts.doseThreshold : GENRE_DOSE_DEFAULTS.threshold;
   if (!highFidelityRead(opts) && __doseThreshold > 0 && ranked.length) {
@@ -2048,7 +2058,8 @@ export function brief(query, opts = {}) {
     };
     scored.sort((a, b) => weight(b) - weight(a) || Number(b.strong) - Number(a.strong));
     if (scored.length) {
-      groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => {
+      const __ps = readTierActive(opts) ? Math.min(perStore, READ_TIER.boundedPerStore) : perStore;   // ①：有界档 clamp（默认 perStore=3 不变）
+      groups.push({ store: name, total: scored.length, hits: scored.slice(0, __ps).map(x => {
         const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + valenceTip(x.r);
         const rf = applyRank(base, name, x.r, x.cred, { ...rankOpts, strong: x.strong });
         const __pre = isStr(x.r.id) ? agePrefix(x.r, { today: opts.today }) : null;   // N13：装配前移（计量=最终响应）
@@ -3224,7 +3235,10 @@ export const READ_TIER = Object.freeze({
   summaryChars: 400,       // 仅 depth=summary|pointer 时，brief / 会话 gist 主字段截断
   crossLineChars: 300,     // 仅 depth=summary 时的 cross 行宽；默认不截断
   claimCapChars: 1500,     // 仅 depth=summary 时的 show 单条硬顶
-  briefPerStore: 3         // 与 main 相同；不随档变
+  briefPerStore: 3,        // 与 main 相同；不随档变
+  // ①（GPT 第四轮·token 开刀）：**有界档的总量上界**——只作用于 depth=summary|pointer（默认 full 仍全量，不动裁定）。
+  boundedPerStore: 12,
+  boundedTotal: 50
 });
 
 /** 未显式传 depth 时返回 `'full'`。reflect / rawProcess / depth:full 也是全文。 */

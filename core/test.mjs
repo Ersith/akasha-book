@@ -3067,8 +3067,9 @@ t('#31 检索梯：标明「停在哪一层」与「为何没下钻」（能红�
 });
 t('#35 lookup --trace：输出 schema 固化（逐条可审）（能红）', () => {
   assert.ok(lib);
-  const r = lib.lookupDetailed('会话层', { contextBudget: false });
+  const r = lib.lookupDetailed('会话层', { contextBudget: false, trace: true });   // ②（GPT 第四轮）：trace 改为显式请求
   assert.ok(Array.isArray(r.trace) && r.trace.length === r.hits.length, 'trace 须与命中一一对应：' + r.trace?.length + ' vs ' + r.hits.length);
+  assert.ok(!('trace' in lib.lookupDetailed('会话层', { contextBudget: false })), '② 默认响应不得携带 trace（诊断分离）');
   const t = r.trace[0];
   for (const k of ['id', 'store', 'score', 'rank', 'strong', 'tier', 'severity', 'complexity', 'factor', 'balance']) assert.ok(k in t, 'trace 缺字段 ' + k + '：' + JSON.stringify(t));
   assert.equal(typeof t.score, 'number');
@@ -4670,6 +4671,7 @@ t('默认档零差：不传 depth 的 lookup/brief/cross/show 与 main 逐字节
     "    for (const k of Object.keys(v)) {",
     "      if (ADD.has(k)) continue;",
     "      if (k === 'budget') continue;   // 2026-10-14（GPT 复核 R8 后）：budget 是**自述账面**（数值随预算算法演进——R8 修复正改了它）——不属「默认档内容零差」；其语义由 F08 测试与本块下方的「预算须启用」断言守。",
+    "      if (k === 'trace') continue;    // 2026-10-14（GPT 第四轮 ②）：trace 改为显式请求（默认分离）——不属「默认档内容零差」；其 schema 由 #35 测试守。",
     "      if (extra && extra.has(k)) continue;",
     "      o[k] = strip(v[k], extra);",
     "    }",
