@@ -127,7 +127,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 - 主题词按空格/逗号切分，对六库 `LOOKUP_FIELDS` 计分：整词命中 ×1；含中文且 ≥3 字的词追加相邻二字（bigram）回退 ×0.25（2026-10-07 起）——词组未原样出现也能召回；**回退分 <1 = 弱命中（疑似相关），整词级 ≥1 = 强命中**。`brief` 在强命中为零时明确写「确定不知道」（弱命中仍列出，但不算证据）。孤案 `zeroWeight`：可见、不加权、不算强命中。
 - `--since / --until`（YYYY-MM-DD，lookup / brief / cross 通用）：按 `event_time`（优先）|| `logged_at` 的日期级比较过滤（UTC 口径）；无时间戳条目被排除（**默认提示「另有 N 条日期未知」；`--undated` 并入、`--report` 完整报告；非法日期即拒**）；brief 每条命中带 `time` 坐标；
-- frontier 命中附加状态权重（已实践 3 > 已复现 2 > 高引用 1 > 待验证 0），每库默认 top **2**（`READ_TIER.briefPerStore`；`--per` 可调）；主字段日常截到约 400 字（`--reflect` / `--depth full` 给全文）；
+- frontier 命中附加状态权重（已实践 3 > 已复现 2 > 高引用 1 > 待验证 0），每库默认 top **3**（`--per` 可调，与 main 相同）。不传 `--depth` 时主字段是全文；`--depth summary` 才把主字段截到约 400 字，`--depth pointer` 约 80 字。`--reflect` / `--depth full` 是高保真全文（不剥皮、不受剂量闸）；
 - 输出带来源态提示：库内强命中标注「记得·库内」；仅弱命中 →「不确定」并引用 cites；无可用证据 →「确定不知道，不要编」（见「知识分层」）。
 
 ## 起床包（kit）
@@ -145,7 +145,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 `node akasha.mjs cross <词> [--per N]`（MCP：`akasha_cross`）——同一主题词在六库的**全部**命中按库并排：
 
-- 当前版本、按命中数排序。主行字段仍是全文来源（canon=claim；mirror=境况→反应；orphan=摘要；pricing=行为；lexicon=词条：行为；frontier=题名），**日常渲染截到约 300 字并剥完成态符号**；`--reflect` / `--depth full` 给原文、不截断；
+- 当前版本、按命中数排序。主行字段仍是全文来源（canon=claim；mirror=境况→反应；orphan=摘要；pricing=行为；lexicon=词条：行为；frontier=题名），**默认不截断**（读侧只剥完成态符号）；`--depth summary` 才把行宽收到约 300 字，`--depth pointer` 约 80 字；`--reflect` / `--depth full` 给原文、不截断、不剥皮；
 - 「同题多源」提示 + 处置姿势：**矛盾不合并**——留档用孤案（orphan add），定论用修订链（revise）；
 - 与 `brief` 的分工：brief 是「按相关度取前 N 条」（快速了解），cross 是「全摆出来对位」（裁决用）；两者与 lookup 均支持 `--since / --until` 时间过滤。
 
@@ -159,7 +159,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 ## 直读（show）
 
-`node akasha.mjs show <id> [--reflect] [--depth pointer|summary|full]`——按 id 跨六库直读。**默认摘要档**（单条硬顶约 1500 字，非全文）；`--reflect` 或 `--depth full` 取所查版本全文。命中被修订的旧版本时，提示链尾 id，record 仍是所查版本（日常可能已按硬顶截断，全文用 `--reflect`）。配合 lookup / brief 构成「先搜后读」。
+`node akasha.mjs show <id> [--reflect] [--depth pointer|summary|full]`——按 id 跨六库直读。**默认全文**（与不带 depth 的既有读档一致）。`--depth summary` 单条硬顶约 1500 字，`--depth pointer` 约 80 字；`--reflect` 或 `--depth full` 取所查版本全文且不剥皮。命中被修订的旧版本时，提示链尾 id，record 仍是所查版本全文（只有显式摘要/指针档才截断）。配合 lookup / brief 构成「先搜后读」。
 
 ## 候选转正（promote）
 
@@ -436,7 +436,7 @@ verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", a
 
 **citeAllowlist（#30；lookup / brief / cross / show / session lookup / --recall 返回）**
 
-- 形状：`[{id, store, tier, strong}]`——**本回合取回的 id 清单**（事前形状；事后仍由 `output-audit` 抓假 id）。裁剪之后按实际返回重建。
+- 形状：`[{id, store, tier, strong}]`——**本回合取回的 id 清单**（事前形状；事后仍由 `output-audit` 抓假 id）。lookup / brief 的清单在裁剪前定稿（与 main 一致，裁剪不改写它）；cross / show 为本轮返回。
 - 软协议：本回合断言**优先引用清单内 id**；清单外 = 无据（要么先查、要么明说不知道）；**零命中 ⇒ 空清单**（不冒充有据）。
 - 轻量核对：`checkCitations(cited, allowlist)` 返回 `{ok, outside, allowed}`，只报引用是否落在本轮清单内，**不拦截**任何读/写通道。
 

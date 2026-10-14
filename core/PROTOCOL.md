@@ -180,13 +180,14 @@
 
 ## 十五、读档三档与长会话剂量（2026-10-14）
 
-体裁隔离是**渲染策略**：JSONL 原文不动。日常读停在摘要；全文只走反思通道。
+体裁隔离是**渲染策略**：JSONL 原文不动。**默认全文**（不传 `depth` 与 main 零行为差）。三档是显式 opt-in，不是日常默认。
 
 | 档 | 何时 | 行为 |
 |---|---|---|
-| 指针 `depth:pointer` / `--depth pointer` | 只要 id 与极短摘 | 主字段约 80 字 |
-| 摘要（默认） | lookup / brief / show / cross / session lookup，及 MCP 对等工具 | lookup 短摘约 120 字；brief / 会话主字段约 400 字、brief 每库默认 2 条；cross 行约 300 字；show 单条硬顶 1500 字 |
-| 全文 | `--reflect`、MCP `reflect:true`、会话 `rawProcess`、或 `depth:full` / `--depth full` | 不截断。CLI / MCP 的剥皮也跳过。过程段是否纳入仍只看 `rawProcess` / `--raw-process` / `--process`，`--reflect` 不自动打开过程段 |
+| 全文（默认） | 不传 `depth` | 与 main 相同：lookup 仍是既有 120 字 snippet；brief 每库 3 条、主字段不另截；show 全文；cross 库内主行不截断。CLI / MCP 仍剥皮；剂量闸仍开 |
+| 指针 `--depth pointer` | 显式要 id 与极短摘 | 主字段约 80 字 |
+| 摘要 `--depth summary` | 显式要短读 | brief / 会话主字段约 400 字；cross 行约 300 字；show 单条硬顶 1500 字。brief 每库仍是 3 条 |
+| 高保真 | `--reflect`、MCP `reflect:true`、会话 `rawProcess`、或 `--depth full` | 不截断。CLI / MCP 的剥皮与剂量闸跳过。过程段是否纳入仍只看 `rawProcess` / `--raw-process` / `--process`，`--reflect` 不自动打开过程段 |
 
 命中行、brief、show 的渲染带读侧年龄前缀 `[过去·N天]` / `[未来·N天]` / `[日期未知]`，锚是 `event_time`，否则 `logged_at`（会话段用 `event_time` 或段时间）。**不写库。**
 

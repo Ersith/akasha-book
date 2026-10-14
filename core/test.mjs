@@ -3647,7 +3647,7 @@ t('I-02 查询侧线：recordQuery 落线 + 凭据遮蔽 + 坏路径不抛（能
   assert.equal(rec.ms, 7, 'ms 取整');
   assert.ok(!String(rec.query).includes('sk-abcdefgh12345678'), '凭据必须遮蔽：' + rec.query);
   assert.deepEqual(rec.ids, ['canon-a']);
-  assert.equal(rec.genre_render, false, '体裁渲染层未落地 ⇒ false');
+  assert.equal(rec.genre_render, false, '直接 recordQuery 不传 genreRender 仍记 false');
   const r2 = lib.recordQuery({ cmd: 'lookup', query: 'x', hits: 0 }, { queryLog: dir });   // 目录当文件 ⇒ 写不进
   assert.equal(r2.ok, false, '写侧线失败须回执 ok:false（不抛）：' + JSON.stringify(r2));
   assert.equal(lib.queryLogPathOf({ queryLog: false }), null, 'queryLog:false ⇒ 关断');
@@ -4540,7 +4540,14 @@ t('F08 修复批（预算账实 ≤cap / 整条上账 / 分页原始序号口径
   rmSync(dir, { recursive: true, force: true });
 });
 
-t('读档三档：指针短于摘要、摘要硬顶、reflect/depth full 给原文且不改库（能红）', () => {
+t('读档三档：默认=full；硬顶只在显式 summary/pointer；reflect 不改库（能红）', () => {
+  assert.equal(lib.readDepthOf({}), 'full', '未传 depth 必须是 full');
+  assert.equal(lib.readDepthOf({ depth: 'summary' }), 'summary');
+  assert.equal(lib.readDepthOf({ depth: 'pointer' }), 'pointer');
+  assert.equal(lib.readDepthOf({ depth: 'full' }), 'full');
+  assert.equal(lib.readDepthOf({ reflect: true }), 'full');
+  assert.equal(lib.READ_TIER.depth, 'full');
+  assert.equal(lib.READ_TIER.briefPerStore, 3, 'brief 每库默认回到 3');
   const dir = mkdtempSync(join(SCRATCH, 'akasha-tier-'));
   const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
   for (const n of lib.STORES) writeFileSync(files[n], '');
@@ -4550,57 +4557,152 @@ t('读档三档：指针短于摘要、摘要硬顶、reflect/depth full 给原�
   const before = readFileSync(files.canon);
   const base = { files, contextBudget: false, today: '2026-10-14', queryLog: false, doseThreshold: 0 };
   const pointer = lib.lookupDetailed('三档夹具词', { ...base, depth: 'pointer' });
-  const summary = lib.lookupDetailed('三档夹具词', base);
+  const plain = lib.lookupDetailed('三档夹具词', base);
+  const summary = lib.lookupDetailed('三档夹具词', { ...base, depth: 'summary' });
   const full = lib.lookupDetailed('三档夹具词', { ...base, reflect: true });
   const byDepth = lib.lookupDetailed('三档夹具词', { ...base, depth: 'full' });
   assert.equal(pointer.depth, 'pointer');
+  assert.equal(plain.depth, 'full', '省略 depth 的 lookup 档是 full');
   assert.equal(summary.depth, 'summary');
   assert.equal(full.depth, 'full');
   assert.ok(pointer.hits[0].snippet.length <= lib.READ_TIER.pointerChars, '指针摘应 ≤80：' + pointer.hits[0].snippet.length);
-  assert.ok(summary.hits[0].snippet.length <= lib.READ_TIER.lookupSummaryChars, '摘要摘应 ≤120：' + summary.hits[0].snippet.length);
-  assert.ok(pointer.hits[0].snippet.length < summary.hits[0].snippet.length, '指针应短于摘要');
-  assert.ok(!summary.hits[0].snippet.includes('TAILMARK'), '日常 lookup 不得带出尾部全文');
-  assert.ok(full.hits[0].snippet.includes('TAILMARK') && byDepth.hits[0].snippet.includes('TAILMARK'), 'reflect 与 depth:full 须含原文尾');
-  assert.equal(full.hits[0].snippet, byDepth.hits[0].snippet);
+  assert.equal(plain.hits[0].snippet.length, summary.hits[0].snippet.length);
+  assert.ok(plain.hits[0].snippet.length <= lib.READ_TIER.lookupSummaryChars, '默认摘仍是 120：' + plain.hits[0].snippet.length);
+  assert.ok(pointer.hits[0].snippet.length < plain.hits[0].snippet.length, '指针应短于默认摘');
+  assert.equal(full.hits[0].snippet, plain.hits[0].snippet, 'reflect 不把 lookup 摘放开（main 始终 120）');
+  assert.equal(byDepth.hits[0].snippet, plain.hits[0].snippet, 'depth:full 的 lookup 摘仍是 120');
+  assert.ok(!plain.hits[0].snippet.includes('TAILMARK'), '120 字摘带不出尾部');
   const shown = lib.show('canon-tier-1', { file: files.canon, store: 'canon', today: '2026-10-14' });
+  const shownSum = lib.show('canon-tier-1', { file: files.canon, store: 'canon', depth: 'summary' });
+  const shownPtr = lib.show('canon-tier-1', { file: files.canon, store: 'canon', depth: 'pointer' });
   const shownFull = lib.show('canon-tier-1', { file: files.canon, store: 'canon', reflect: true });
-  assert.equal(shown.depth, 'summary');
-  assert.equal(shown.truncated, true);
-  assert.ok(shown.record.claim.length <= lib.READ_TIER.claimCapChars + 1, 'show 日常硬顶：' + shown.record.claim.length);
-  assert.ok(!shown.record.claim.includes('TAILMARK'), 'show 默认非全文');
+  assert.equal(shown.depth, 'full');
+  assert.equal(shown.truncated, false);
+  assert.equal(shown.record.claim, claim, 'show 默认逐字全文');
+  assert.equal(shownSum.truncated, true);
+  assert.ok(shownSum.record.claim.length <= lib.READ_TIER.claimCapChars + 1, 'show 摘要硬顶：' + shownSum.record.claim.length);
+  assert.ok(!shownSum.record.claim.includes('TAILMARK'), 'show 摘要档非全文');
+  assert.ok(shownPtr.record.claim.length <= lib.READ_TIER.pointerChars + 1, 'show 指针硬顶');
   assert.equal(shownFull.record.claim, claim, 'reflect 须逐字取回 claim');
   assert.equal(shownFull.depth, 'full');
   assert.equal(shownFull.truncated, false);
   assert.equal(lib.show('canon-tier-1', { file: files.canon, store: 'canon', depth: 'full' }).record.claim, claim);
-  const briefSum = lib.brief('三档夹具词', base);
+  const briefPlain = lib.brief('三档夹具词', base);
+  const briefSum = lib.brief('三档夹具词', { ...base, depth: 'summary' });
   const briefFull = lib.brief('三档夹具词', { ...base, depth: 'full' });
+  assert.equal(briefPlain.groups[0].hits[0].claim, claim, 'brief 默认主字段不截');
+  assert.equal(briefPlain.depth, 'full');
   const bClaim = briefSum.groups[0].hits[0].claim;
-  assert.ok(bClaim.length <= lib.READ_TIER.summaryChars + 1 && !bClaim.includes('TAILMARK'), 'brief 主字段日常截断');
+  assert.ok(bClaim.length <= lib.READ_TIER.summaryChars + 1 && !bClaim.includes('TAILMARK'), 'brief 摘要档才截主字段');
   assert.equal(briefFull.groups[0].hits[0].claim, claim, 'brief depth:full 给全文');
   const longFiles = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, 'b-' + n + '.jsonl')]));
   for (const n of lib.STORES) writeFileSync(longFiles[n], '');
   const rows = [1, 2, 3].map((i) => JSON.stringify({ id: 'canon-tier-n' + i, claim: '三档条数夹具 ' + i, source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-01', event_time: '2026-10-01' }));
   writeFileSync(longFiles.canon, rows.join('\n') + '\n');
   const perDefault = lib.brief('三档条数夹具', { files: longFiles, contextBudget: false, queryLog: false, doseThreshold: 0 });
-  assert.equal(perDefault.groups[0].hits.length, lib.READ_TIER.briefPerStore, 'brief 默认每库条数应是 briefPerStore');
-  assert.equal(perDefault.groups[0].total, 3, 'total 仍报全部命中，截的是返回条');
-  const crossSum = lib.cross('三档夹具词', { ...base });
+  assert.equal(perDefault.groups[0].hits.length, 3, 'brief 默认每库 3 条');
+  assert.equal(perDefault.groups[0].hits.length, lib.READ_TIER.briefPerStore);
+  assert.equal(perDefault.groups[0].total, 3, 'total 仍报全部命中');
+  const crossPlain = lib.cross('三档夹具词', { ...base });
+  const crossSum = lib.cross('三档夹具词', { ...base, depth: 'summary' });
   const crossFull = lib.cross('三档夹具词', { ...base, reflect: true });
+  const plainLine = crossPlain.groups[0].items[0].line;
+  assert.ok(plainLine.includes('TAILMARK'), 'cross 默认不截断');
+  assert.ok(!plainLine.includes('⇒'), 'cross 默认仍剥皮');
+  assert.equal(crossPlain.depth, 'full');
   const line = crossSum.groups[0].items[0].line;
-  assert.ok(line.length <= lib.READ_TIER.crossLineChars + 1 && !line.includes('TAILMARK'), 'cross 日常行截断：' + line.length);
-  assert.ok(!line.includes('⇒'), 'cross 日常剥皮');
+  assert.ok(line.length <= lib.READ_TIER.crossLineChars + 1 && !line.includes('TAILMARK'), 'cross 摘要档才截行：' + line.length);
+  assert.ok(!line.includes('⇒'), 'cross 摘要档剥皮');
   assert.equal(crossFull.groups[0].items[0].line, claim, 'cross reflect 不截断、不剥皮');
   const sfile = join(dir, 'session.jsonl');
   const gist = '三档会话夹具⇒' + '乙'.repeat(1800) + 'TAILMARK';
   writeFileSync(sfile, JSON.stringify({ kind: 'conclusion', session: 'sT', seq: 1, id: 'seg-sT-1', gist, keywords: ['三档会话夹具'], time: '2026-10-01T00:00:00Z', event_time: '2026-10-01' }) + '\n');
   const sess = sessionMod.lookupSegmentsDetailed('三档会话夹具', { storeFile: sfile, today: '2026-10-14', doseThreshold: 0, queryLog: false });
+  const sessSum = sessionMod.lookupSegmentsDetailed('三档会话夹具', { storeFile: sfile, depth: 'summary', doseThreshold: 0, queryLog: false });
   const sessFull = sessionMod.lookupSegmentsDetailed('三档会话夹具', { storeFile: sfile, reflect: true, doseThreshold: 0, queryLog: false });
-  assert.equal(sess.depth, 'summary');
-  assert.ok(sess.hits[0].gist.length <= lib.READ_TIER.summaryChars + 1 && !sess.hits[0].gist.includes('TAILMARK'));
+  assert.equal(sess.depth, 'full', '会话默认档是 full');
+  assert.ok(sess.hits[0].gist.includes('TAILMARK'), '会话默认不按 400 字截');
+  assert.ok(!sess.hits[0].gist.includes('⇒'), '会话默认仍剥皮');
+  assert.equal(sessSum.depth, 'summary');
+  assert.ok(sessSum.hits[0].gist.length <= lib.READ_TIER.summaryChars + 1 && !sessSum.hits[0].gist.includes('TAILMARK'));
   assert.equal(sessFull.hits[0].gist, gist, 'session reflect 给原文');
   assert.equal(sessFull.depth, 'full');
   assert.ok(sessFull.hits.every((h) => h.kind !== 'process'), 'reflect 不自动纳入过程段');
   assert.equal(readFileSync(files.canon).equals ? readFileSync(files.canon).equals(before) : readFileSync(files.canon).toString() === before.toString(), true, '读档不得改 JSONL');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('默认档零差：不传 depth 的 lookup/brief/cross/show 与 main 逐字节一致（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-golden-'));
+  const mainLib = join(dir, 'main-lib.mjs');
+  const script = join(dir, 'golden.mjs');
+  const shown = spawnSync('git', ['show', 'origin/main:core/lib.mjs'], { cwd: join(ROOT, '..'), encoding: 'utf8' });
+  assert.equal(shown.status, 0, shown.stderr || 'git show origin/main:core/lib.mjs 失败');
+  writeFileSync(mainLib, shown.stdout);
+  const dataDir = join(dir, 'data');
+  const logsDir = join(dir, 'logs');
+  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(logsDir, { recursive: true });
+  writeFileSync(script, [
+    "import { writeFileSync } from 'node:fs';",
+    "import { join } from 'node:path';",
+    "import { pathToFileURL } from 'node:url';",
+    "const mainPath = process.argv[2];",
+    "const curPath = process.argv[3];",
+    "const dir = process.argv[4];",
+    "const main = await import(pathToFileURL(mainPath).href);",
+    "const cur = await import(pathToFileURL(curPath).href);",
+    "const files = Object.fromEntries(main.STORES.map((n) => [n, join(dir, n + '.jsonl')]));",
+    "for (const n of main.STORES) writeFileSync(files[n], '');",
+    "const claim = '零差夹具词⇒' + '甲'.repeat(40);",
+    "writeFileSync(files.canon, JSON.stringify({ id: 'canon-golden-1', claim, source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-01', event_time: '2026-10-01' }) + '\\n');",
+    "const opts = { files, today: '2026-10-14', queryLog: false };",
+    "const optsOff = { ...opts, contextBudget: false, doseThreshold: 0 };",
+    "const ADD = new Set(['agePrefix', 'depth', 'truncated']);",
+    "function strip(v, extra) {",
+    "  if (Array.isArray(v)) return v.map((x) => strip(x, extra));",
+    "  if (v && typeof v === 'object') {",
+    "    const o = {};",
+    "    for (const k of Object.keys(v)) {",
+    "      if (ADD.has(k)) continue;",
+    "      if (extra && extra.has(k)) continue;",
+    "      o[k] = strip(v[k], extra);",
+    "    }",
+    "    return o;",
+    "  }",
+    "  return v;",
+    "}",
+    "function eq(label, a, b) {",
+    "  const sa = JSON.stringify(a);",
+    "  const sb = JSON.stringify(b);",
+    "  if (sa === sb) return;",
+    "  let i = 0;",
+    "  while (i < sa.length && i < sb.length && sa[i] === sb[i]) i++;",
+    "  throw new Error(label + ' @' + i + '\\nCUR ' + sa.slice(Math.max(0, i - 60), i + 80) + '\\nMAIN ' + sb.slice(Math.max(0, i - 60), i + 80));",
+    "}",
+    "const dropShow = new Set(['citeAllowlist']);",
+    "const probe = cur.lookupDetailed('零差夹具词', optsOff);",
+    "if (probe.depth !== 'full') throw new Error('lookup depth ' + probe.depth);",
+    "if (!probe.hits[0] || !probe.hits[0].agePrefix) throw new Error('lookup 应带年龄前缀');",
+    "eq('lookup off', strip(probe), strip(main.lookupDetailed('零差夹具词', optsOff)));",
+    "eq('lookup budget', strip(cur.lookupDetailed('零差夹具词', opts)), strip(main.lookupDetailed('零差夹具词', opts)));",
+    "eq('brief off', strip(cur.brief('零差夹具词', optsOff)), strip(main.brief('零差夹具词', optsOff)));",
+    "eq('brief budget', strip(cur.brief('零差夹具词', opts)), strip(main.brief('零差夹具词', opts)));",
+    "eq('cross', strip(cur.cross('零差夹具词', opts), dropShow), strip(main.cross('零差夹具词', opts), dropShow));",
+    "const showOpts = { file: files.canon, store: 'canon', today: '2026-10-14' };",
+    "const shownCur = cur.show('canon-golden-1', showOpts);",
+    "if (shownCur.depth !== 'full' || shownCur.truncated !== false) throw new Error('show 默认应是全文未截断');",
+    "if (shownCur.record.claim !== claim) throw new Error('show 默认 claim 被改写');",
+    "eq('show', strip(shownCur, dropShow), strip(main.show('canon-golden-1', showOpts), dropShow));",
+    "console.log('golden-ok');"
+  ].join('\n'));
+  const r = spawnSync(process.execPath, [script, mainLib, join(ROOT, 'lib.mjs'), dir], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, AKASHA_ROOT: dataDir, AKASHA_LOGS: logsDir, AKASHA_QUERY_LOG: 'off' }
+  });
+  assert.equal(r.status, 0, (r.stderr || '') + (r.stdout || ''));
+  assert.match(r.stdout || '', /golden-ok/);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -4750,7 +4852,8 @@ t('MCP 读返回默认紧凑 JSON，pretty 才缩进（能红）', () => {
   assert.ok(!compact.includes('\n'), '默认不得 pretty');
   assert.ok(pretty.includes('\n') && pretty.length > compact.length, 'pretty:true 才换行展开');
   const parsed = JSON.parse(compact);
-  assert.equal(parsed.depth, 'summary');
+  assert.equal(parsed.depth, 'full');
+  assert.equal(parsed.truncated, false);
   assert.ok(Array.isArray(parsed.citeAllowlist) && parsed.citeAllowlist.some((x) => x.id === 'canon-akasha-usage-r10'));
   assert.equal(JSON.parse(lines[2].result.content[0].text).depth, 'full');
 });

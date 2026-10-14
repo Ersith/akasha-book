@@ -357,11 +357,15 @@ export function lookupSegments(query, opts = {}) {
 export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, rawProcess = false, reflect = false, doseThreshold, longSessionSegs, limit = 10, offset = 0, level, all = false, storeRecords = null, depth, via, queryLog, today } = {}) {
   // 体裁隔离 P0-①（2026-10-13）：`rawProcess` ＝**反思通道**（显式要过程）——含过程段、且**不剥皮**（§4.7 原则 3）。
   // `reflect` 同样走全文（不剥、不截）；过程段是否纳入仍只看 rawProcess / includeProcess。
-  const highFidelity = rawProcess || reflect === true;
-  const readDepth = highFidelity ? 'full' : readDepthOf({ depth });
+  // 省略 depth 仍剥皮、仍受剂量闸（与 main 零差）。高保真只认 reflect / rawProcess / 显式 depth:full。
+  // 硬顶只在显式 summary|pointer。返回的 depth 缺省是 full。
+  const reflectOn = rawProcess || reflect === true;
+  const highFidelity = reflectOn || depth === 'full';
+  const tierOn = depth === 'pointer' || depth === 'summary';
+  const readDepth = readDepthOf({ reflect, rawProcess, depth });
   const incProcess = includeProcess || rawProcess;
   const q = String(query ?? '').trim();
-  const empty = { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true, citeAllowlist: [], depth: readDepth, reflect: highFidelity, withheld: null };
+  const empty = { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true, citeAllowlist: [], depth: readDepth, reflect: reflectOn, withheld: null };
   if (!q) return empty;
   const tokens = tokenize(q);
   if (!tokens.length) return empty;
@@ -468,14 +472,14 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   const scopedSegCount = records.filter((r) => r.kind !== 'promotion' && (!sess || r.session === sess)).length;
   const autoStrict = !!sess && scopedSegCount >= longSegs;
   const doseTh = Number.isInteger(doseThreshold) ? doseThreshold : (autoStrict ? GENRE_DOSE_DEFAULTS.strictThreshold : GENRE_DOSE_DEFAULTS.threshold);
-  const dg = (readDepth !== 'full' && doseTh > 0 && ranked.length) ? doseGate(ranked.map((h) => h.gist), { threshold: doseTh }) : null;
-  const gistCap = readDepth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.summaryChars;
+  const dg = (!highFidelity && doseTh > 0 && ranked.length) ? doseGate(ranked.map((h) => h.gist), { threshold: doseTh }) : null;
+  const gistCap = depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.summaryChars;
   for (let i = 0; i < ranked.length; i += 1) {
     const over = !!dg && dg.cutoff !== null && i >= dg.cutoff;
-    // P0-②：`conclusion`/`process`/`node`（模型产出）剥；`intent`（用户原话）/`action`（工具记录）不剥；全文档（rawProcess / reflect / depth:full）全不剥。
-    // 顺序：先按原文计负荷（上面的 doseGate），再剥皮，再按读档截断。短文本截断是恒等，既有剥皮断言不变。
-    const base = readDepth === 'full' ? ranked[i].gist : (SEG_STRIP_KINDS.has(ranked[i].kind) ? stripGenre(String(ranked[i].gist ?? '')) : ranked[i].gist);
-    const gist = over ? doseSummary(base) : (readDepth === 'full' ? base : projectText(base, readDepth, gistCap));
+    // P0-②：`conclusion`/`process`/`node`（模型产出）剥；`intent`（用户原话）/`action`（工具记录）不剥；高保真（rawProcess / reflect / depth:full）全不剥。
+    // 省略 depth 仍剥（与 main 一致），但不按摘要档截断。截断只在显式 summary|pointer。
+    const base = highFidelity ? ranked[i].gist : (SEG_STRIP_KINDS.has(ranked[i].kind) ? stripGenre(String(ranked[i].gist ?? '')) : ranked[i].gist);
+    const gist = over ? doseSummary(base) : (tierOn ? projectText(base, depth, gistCap) : base);
     ranked[i] = over ? { ...ranked[i], gist, dose: true } : { ...ranked[i], gist };
   }
   if (dg && dg.cutoff !== null) dose = { threshold: doseTh, total: dg.total, from: dg.cutoff, trimmed: ranked.length - dg.cutoff, strict: autoStrict };
@@ -483,13 +487,13 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   const citeAllowlist = ranked.filter((h) => typeof h.id === 'string' && h.id).map((h) => ({ id: h.id, store: 'session', tier: null, strong: !!h.strong }));
   const __out = {
     hits: ranked, matched, sessionTotal: scopeTotal, offset: off, nextOffset, exhausted: nextOffset >= matched,
-    reflect: highFidelity,
+    reflect: reflectOn,
     depth: readDepth,
     dose,
     citeAllowlist,
     withheld: withheldProcess ? { process: withheldProcess, hint: `存在 ${withheldProcess} 段过程记录（默认不回放）；--raw-process 可调取原文（反思通道，不剥皮）` } : null
   };
-  recordQuery({ cmd: 'session', query: q, hits: ranked.length, ids: citeAllowlist.map((x) => x.id), genreRender: genreRenderOf({ reflect: highFidelity, rawProcess: highFidelity, depth: readDepth }), via }, { queryLog, via });
+  recordQuery({ cmd: 'session', query: q, hits: ranked.length, ids: citeAllowlist.map((x) => x.id), genreRender: genreRenderOf({ reflect: reflect === true, rawProcess: rawProcess === true, depth }), via }, { queryLog, via });
   return __out;
 }
 

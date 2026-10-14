@@ -671,7 +671,7 @@ export function cross(query, opts = {}) {
           id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan', line: PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay,
           rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
           tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted),
-          time: tsOf(r) ? String(tsOf(r)).slice(0, 10) : null, agePrefix: agePrefix(r, { today: opts.today })
+          agePrefix: agePrefix(r, { today: opts.today })
         });
       }
     }
@@ -685,12 +685,16 @@ export function cross(query, opts = {}) {
     ? `同题多源：${multi.join('、')}——对位时若见矛盾：不合并；矛盾留档用「孤案」（orphan add），定论用「修订链」（revise）。`
     : null;
   // cross = 对位视图（并排对账）⇒ **豁免**「每次查阅上限」（那是取料类的事，2026-10-11）。
-  // 体裁隔离＝渲染策略：默认剥皮。读档三档：日常摘要行宽 crossLineChars；reflect / depth:full ＝全文不截断。
+  // 体裁隔离＝渲染策略：不传 depth 时与 main 一样——默认剥皮、主行不截断。
+  // 行宽（pointer 80 / summary 300）只在显式 depth=summary|pointer 时生效。
+  // reflect / depth:full / rawProcess ＝原文不剥、不截。
   const depth = readDepthOf(opts);
-  if (depth !== 'full') {
+  if (!highFidelityRead(opts)) {
     for (const g of groups) for (const it of g.items) it.line = stripGenre(String(it.line ?? ''));
-    const cap = depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.crossLineChars;
-    for (const g of groups) for (const it of g.items) it.line = projectText(it.line, depth, cap);
+  }
+  if (readTierActive(opts)) {
+    const cap = opts.depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.crossLineChars;
+    for (const g of groups) for (const it of g.items) it.line = projectText(it.line, opts.depth, cap);
   }
   const citeAllowlist = [];
   for (const g of groups) for (const it of g.items) citeAllowlist.push({ id: it.id, store: g.store, tier: it.tier ?? null, strong: !!it.strong });
@@ -1769,6 +1773,7 @@ export function lookupDetailed(query, opts = {}) {
   //   2026-10-13（举一反三·类③）：空查询与「查了但 0 命中」必须可区分——`cross`/`brief` 早有 hint，这里此前闷着。
   const tokens = tokenize(q);
   const hits = [];
+  const __age = new Map();
   const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
   const seenIds = new Set();
   for (const name of STORES) {
@@ -1817,15 +1822,15 @@ export function lookupDetailed(query, opts = {}) {
       // strong 只看整词命中；严重度×可信度×复杂度只进 rank，不进 score。
       const strong = name !== 'orphan' && sc.whole >= 1;
       const rf = applyRank(sc.score, name, r, cred, { ...rankOpts, strong });
-      const __depth0 = readDepthOf(opts);
-      const __snipCap = __depth0 === 'full' ? null : (__depth0 === 'pointer' ? READ_TIER.pointerChars : READ_TIER.lookupSummaryChars);
+      // 不传 depth / reflect / depth:full：snippet 仍是 main 的 120 字（放开会破坏默认档零差）。只有 pointer 收到 80。
+      const __snipCap = opts.depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.lookupSummaryChars;
       const hit = {
         store: name, id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan',
-        snippet: redact(__snipCap == null ? hay : hay.slice(0, __snipCap)),
-        time: tsOf(r) ? String(tsOf(r)).slice(0, 10) : null, agePrefix: agePrefix(r, { today: opts.today }),
+        snippet: redact(hay.slice(0, __snipCap)),
         rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
         tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
       };
+      if (isStr(r.id)) __age.set(name + '\0' + r.id, agePrefix(r, { today: opts.today }));
       if (b.bucket === 'undated') hit.undated = true;
       hits.push(hit);
     }
@@ -1857,7 +1862,7 @@ export function lookupDetailed(query, opts = {}) {
   const __res = { hits: ranked, stats, knowledge, citeAllowlist, trace, blindspots: blindspotsFor({ perspective: opts.perspective }) };
   // I-12 P1-③ 剂量闸（2026-10-13）：符号负荷超阈 ⇒「后续条目」snippet 摘要化（保 id / 序位；反思通道与 doseThreshold:0 不受限）。
   const __doseThreshold = Number.isInteger(opts.doseThreshold) ? opts.doseThreshold : GENRE_DOSE_DEFAULTS.threshold;
-  if (readDepthOf(opts) !== 'full' && __doseThreshold > 0 && ranked.length) {
+  if (!highFidelityRead(opts) && __doseThreshold > 0 && ranked.length) {
     const dg = doseGate(ranked.map((h) => h.snippet), { threshold: __doseThreshold });
     if (dg.cutoff !== null) {
       for (let i = dg.cutoff; i < ranked.length; i += 1) ranked[i] = { ...ranked[i], snippet: doseSummary(ranked[i].snippet), dose: true };
@@ -1865,10 +1870,15 @@ export function lookupDetailed(query, opts = {}) {
     }
   }
   const __out = opts.contextBudget === false ? __res : clipByBudget(__res, { ...opts, offset: opts.offset });
+  // 年龄前缀在裁剪之后盖上：clip 按整条 JSON 计 token，盖早了会让默认预算账与 main 分叉。
+  // citeAllowlist 保持裁剪前的清单（与 main 相同，不在裁后重建）。
+  for (const h of __out.hits || []) {
+    const pre = __age.get((h.store || '') + '\0' + h.id);
+    if (pre) h.agePrefix = pre;
+  }
   __out.depth = readDepthOf(opts);
-  if (Array.isArray(__out.hits)) __out.citeAllowlist = citeRows(__out.hits);
   // I-02 查询侧线（append-only；失败静默，绝不影响返回值）
-  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'lookup', query: __qRaw, hits: (__out.hits || []).length, ms: Date.now() - __t0, ids: (__out.hits || []).map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'lookup', query: __qRaw, hits: ranked.length, ms: Date.now() - __t0, ids: ranked.map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
   return __out;
 }
 
@@ -1924,8 +1934,7 @@ export function multiRecall(query, opts = {}) {
   const out = { ...base, hits: fused, rrf: { lexical: lexical.length, citation: citHits.length, k }, citeAllowlist: [...base.citeAllowlist || [], ...fused.filter((h) => isStr(h.id)).map((h) => ({ id: h.id, store: h.store ?? null, tier: h.tier ?? null, strong: !!h.strong }))] };
   const __out = opts.contextBudget === false ? out : clipByBudget(out, { ...opts, offset: opts.offset });
   __out.depth = readDepthOf(opts);
-  if (Array.isArray(__out.hits)) __out.citeAllowlist = citeRows(__out.hits);
-  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'recall', query: String(query ?? '').trim(), hits: (__out.hits || []).length, ms: Date.now() - __t0, ids: (__out.hits || []).map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'recall', query: String(query ?? '').trim(), hits: (out.hits || []).length, ms: Date.now() - __t0, ids: (out.hits || []).map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
   return __out;
 }
 
@@ -1955,6 +1964,7 @@ export function brief(query, opts = {}) {
   const tokens = tokenize(q);
   const perStore = Number.isInteger(opts.perStore) && opts.perStore > 0 ? opts.perStore : READ_TIER.briefPerStore;
   const groups = [];
+  const __ageB = new Map();
   const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
   for (const name of STORES) {
     const records = recordsOf(name, opts);
@@ -1997,8 +2007,9 @@ export function brief(query, opts = {}) {
       groups.push({ store: name, total: scored.length, hits: scored.slice(0, perStore).map(x => {
         const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + valenceTip(x.r);
         const rf = applyRank(base, name, x.r, x.cred, { ...rankOpts, strong: x.strong });
+        if (isStr(x.r.id)) __ageB.set(name + '\0' + x.r.id, agePrefix(x.r, { today: opts.today }));
         return {
-          ...briefHit(name, x.r, x.score), agePrefix: agePrefix(x.r, { today: opts.today }), strong: x.strong, zeroWeight: x.zeroWeight,
+          ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight,
           rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
           tier: x.cred ? x.cred.tier : null, displayTier: x.cred ? x.cred.displayTier : null,
           stale: !!(x.cred && x.cred.stale), refuted: !!(x.cred && x.cred.refuted)
@@ -2009,7 +2020,7 @@ export function brief(query, opts = {}) {
   // I-12 P1-③ 剂量闸（2026-10-13）：按「主文本字段」计符号负荷，超阈 ⇒「后续条目」该字段摘要化（反思通道与 doseThreshold:0 不受限）。
   const __doseThresholdB = Number.isInteger(opts.doseThreshold) ? opts.doseThreshold : GENRE_DOSE_DEFAULTS.threshold;
   let __doseB = null;
-  if (readDepthOf(opts) !== 'full' && __doseThresholdB > 0 && groups.length) {
+  if (!highFidelityRead(opts) && __doseThresholdB > 0 && groups.length) {
     const seq = [];
     for (const g of groups) for (const h of g.hits) seq.push({ g, h });
     const dg = doseGate(seq.map((x) => String(x.h[DOSE_TEXT_FIELD[x.g.store]] ?? '')), { threshold: __doseThresholdB });
@@ -2022,10 +2033,9 @@ export function brief(query, opts = {}) {
       __doseB = { threshold: __doseThresholdB, total: dg.total, from: dg.cutoff, trimmed: seq.length - dg.cutoff };
     }
   }
-  const __bDepth = readDepthOf(opts);
-  if (__bDepth !== 'full') {
-    const cap = __bDepth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.summaryChars;
-    for (const g of groups) g.hits = g.hits.map((h) => projectHitFields(h, __bDepth, cap));
+  if (readTierActive(opts)) {
+    const cap = opts.depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.summaryChars;
+    for (const g of groups) g.hits = g.hits.map((h) => projectHitFields(h, opts.depth, cap));
   }
   const flat = [];
   for (const g of groups) for (const h of g.hits) flat.push({ ...h, store: g.store });
@@ -2059,11 +2069,13 @@ export function brief(query, opts = {}) {
       return layers;
     })() };
   const __out = opts.contextBudget === false ? __bres : clipByBudget(__bres, opts);   // 取料类：每次查阅上限默认生效
+  // 年龄前缀在裁剪之后盖上（同 lookup：避免整条上账把前缀算进默认预算）。清单不在裁后重建。
+  for (const g of __out.groups || []) for (const h of g.hits || []) {
+    const pre = __ageB.get(g.store + '\0' + h.id);
+    if (pre) h.agePrefix = pre;
+  }
   __out.depth = readDepthOf(opts);
-  const __cited = [];
-  for (const g of __out.groups || []) for (const h of g.hits || []) if (isStr(h.id)) __cited.push({ id: h.id, store: g.store, tier: h.tier ?? null, strong: !!h.strong });
-  __out.citeAllowlist = __cited;
-  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'brief', query: q, hits: groups.reduce((n, g) => n + g.total, 0), ms: Date.now() - __t0, ids: __cited.map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'brief', query: q, hits: groups.reduce((n, g) => n + g.total, 0), ms: Date.now() - __t0, ids: flat.map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
   return __out;
 }
 
@@ -2101,21 +2113,24 @@ export function summary(opts = {}) {
 export function show(id, opts = {}) {
   const target = String(id || '').trim();
   const depth = readDepthOf(opts);
+  const projectDepth = readTierActive(opts) ? opts.depth : 'full';
   const pack = (name, rec, extra) => {
-    const projected = projectRecord(rec, name, depth);
+    const projected = projectRecord(rec, name, projectDepth);
     const cred = extra.credibility;
     const note = extra.note && projected.truncated
-      ? extra.note + `（日常读档已按单条硬顶 ${depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.claimCapChars} 字截断；全文用 reflect / depth:full）`
+      ? extra.note + `（读档 ${depth} 已按单条硬顶 ${depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.claimCapChars} 字截断；全文是默认，或显式 reflect / depth:full）`
       : extra.note;
-    return {
-      ...extra,
-      ...(note ? { note } : {}),
-      record: projected.record,
-      depth,
-      truncated: projected.truncated,
-      agePrefix: agePrefix(rec, { today: opts.today }),
-      citeAllowlist: isStr(rec && rec.id) ? [{ id: rec.id, store: name, tier: cred ? (cred.tier ?? null) : null, strong: true }] : []
-    };
+    // 键序对齐 main（found, store, id, retired?, note?, record, credibility），附加字段放末尾。
+    const out = { found: extra.found, store: name, id: extra.id };
+    if (extra.retired) out.retired = true;
+    if (note) out.note = note;
+    out.record = projected.record;
+    if (cred) out.credibility = cred;
+    out.depth = depth;
+    out.truncated = projected.truncated;
+    out.agePrefix = agePrefix(rec, { today: opts.today });
+    out.citeAllowlist = isStr(rec && rec.id) ? [{ id: rec.id, store: name, tier: cred ? (cred.tier ?? null) : null, strong: true }] : [];
+    return out;
   };
   if (!target) return { found: false, note: '给一个记录 id', citeAllowlist: [], depth };
   const stores = opts.store ? [opts.store] : STORES;
@@ -3156,24 +3171,36 @@ export function conflictReport(input, opts = {}) {
 }
 
 // ── 读路径三档（2026-10-14）· 指针 → 摘要 → 全文 ─────────────────────────────
-// 体裁隔离是**渲染策略**，不是删记忆：JSONL 原文不动。日常默认摘要；
-// `--reflect` / `reflect:true` / `rawProcess` / `depth:'full'` ＝全文（不截断、不剥皮由调用侧配合）。
-// 单条 claim 日常硬顶 `claimCapChars`（1–2k 字档）。反思高保真路径必须留着。
+// 体裁隔离是**渲染策略**，不是删记忆：JSONL 原文不动。
+// **默认全文**（不传 depth ＝ 与 main 零行为差）。三档是显式 opt-in：`--depth summary|pointer`。
+// `--reflect` / `reflect:true` / `rawProcess` / `depth:'full'` ＝高保真（不截断、不剥皮、不受剂量闸）。
+// 硬顶（show 1500 / cross 300 / brief 字段 400 / 指针 80）只在 depth 为 summary 或 pointer 时生效。
 export const READ_TIER = Object.freeze({
-  depth: 'summary',
+  depth: 'full',
   pointerChars: 80,
-  lookupSummaryChars: 120, // lookup 摘要＝既有短 snippet（指针 + 短摘要）；勿放长
-  summaryChars: 400,       // brief / 会话 gist 主字段日常截断
-  crossLineChars: 300,     // cross 日常行宽；reflect / full 恢复不截断
-  claimCapChars: 1500,     // show 与任何非全文投影的单条硬顶
-  briefPerStore: 2
+  lookupSummaryChars: 120, // lookup 的既有短 snippet；不传 depth / full / reflect 都停在这里
+  summaryChars: 400,       // 仅 depth=summary|pointer 时，brief / 会话 gist 主字段截断
+  crossLineChars: 300,     // 仅 depth=summary 时的 cross 行宽；默认不截断
+  claimCapChars: 1500,     // 仅 depth=summary 时的 show 单条硬顶
+  briefPerStore: 3         // 与 main 相同；不随档变
 });
 
-/** `pointer` | `summary`（默认）| `full`。reflect / rawProcess 强制全文。 */
+/** 未显式传 depth 时返回 `'full'`。reflect / rawProcess / depth:full 也是全文。 */
 export function readDepthOf(opts = {}) {
   if (opts.reflect === true || opts.rawProcess === true || opts.depth === 'full') return 'full';
   if (opts.depth === 'pointer') return 'pointer';
-  return 'summary';
+  if (opts.depth === 'summary') return 'summary';
+  return 'full';
+}
+
+/** 硬顶 / 字段投影只在调用方显式要摘要或指针时打开。省略 depth 不算。 */
+export function readTierActive(opts = {}) {
+  return opts.depth === 'pointer' || opts.depth === 'summary';
+}
+
+/** 高保真：跳过剥皮与剂量闸。省略 depth 不是高保真（默认仍剥、仍受闸，与 main 一致）。 */
+export function highFidelityRead(opts = {}) {
+  return opts.reflect === true || opts.rawProcess === true || opts.depth === 'full';
 }
 
 /** 该次结果是否走体裁渲染（剥皮 / 非全文）。反思通道＝false，便于侧线分清「召回差」与「剥皮」。 */

@@ -330,8 +330,8 @@ switch (cmd) {
     const credLines = c ? ['可信度：' + (c.label || '（无层级）') + (c.cls ? ' · ' + c.cls : ''), ...c.steps.map((st) => `  ${st.id}  ${st.why} → ${st.tier || '—'}${st.refuted ? ' refuted' : ''}`)] : [];
     // I-11 P0-②（2026-10-13）：读侧剥皮（--reflect＝反思通道，不剥）——⇒/✓/好。 非 JSON 结构字符，序列化后整段剥安全。
     const recText = JSON.stringify(r.record, null, 2);
-    const tierNote = r.truncated ? `· 读档 ${r.depth}（已截断）；全文用 --reflect` : '';
-    const fullText = flags.reflect || flags.depth === 'full' || r.depth === 'full';
+    const tierNote = r.truncated ? `· 读档 ${r.depth}（已截断）；去掉 --depth 即全文` : '';
+    const fullText = flags.reflect || flags.depth === 'full';
     print(r, [head, ...credLines, tierNote, fullText ? recText : stripGenre(recText)].filter((x) => x !== '').join('\n'));
     break;
   }
