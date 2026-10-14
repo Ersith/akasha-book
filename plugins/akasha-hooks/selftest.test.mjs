@@ -20,6 +20,7 @@ process.on('exit', () => {
 const dir = mkdtempSync(join(scratchRoot, 'akasha-hooks-'));
 cleanupDirs.push(dir);
 copyFileSync(join(CORE, 'lib.mjs'), join(dir, 'lib.mjs'));
+copyFileSync(join(CORE, 'json-redaction.mjs'), join(dir, 'json-redaction.mjs'));
 mkdirSync(join(dir, 'data'), { recursive: true });
 writeFileSync(join(dir, 'data', 'canon.jsonl'), JSON.stringify({
   id: 'canon-test-item-xyz', claim: '测试条目', source: { type: '复现', ref: 'selftest' }, last_reviewed: '2026-10-07'

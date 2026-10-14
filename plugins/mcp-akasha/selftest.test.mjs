@@ -8,14 +8,26 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CORE = join(HERE, '..', 'akasha');
+// OSS tree and the local sibling akasha layout both resolve to the actual core root.
+const CORE_CANDIDATES = [
+  process.env.AKASHA_CORE,
+  join(HERE, '..', '..', 'core'),
+  join(HERE, '..', 'core'),
+  join(HERE, '..', 'akasha'),
+  join(HERE, '..', 'akasha', 'core'),
+].filter(Boolean);
+const CORE = CORE_CANDIDATES.find((d) => existsSync(join(d, 'lib.mjs')) && existsSync(join(d, 'mcp.mjs')));
+assert.ok(CORE, '找不到 akasha 核心 lib.mjs/mcp.mjs；候选：' + CORE_CANDIDATES.join(' | '));
 const PATCH = join(HERE, 'cordis.patch.yml');
 const patch = readFileSync(PATCH, 'utf8');
+const packageName = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8')).name;
 
 // —— ① Bundle Patch 契约（STORE 硬门：入口 ID 自有、不以 name 引用官方命名空间、不 disable/replace）——
 assert.ok(/id:\s*mcp-akasha/.test(patch), '入口 id 为插件自有 ID：mcp-akasha');
 assert.ok(!/\bname:\s*['"]?@deepseek-ai\//i.test(patch), 'Bundle Patch 不得以 name 引用 @deepseek-ai/* 官方包（SUBMISSION_PATCH_PROTECTED）');
-assert.ok(/name:\s*['"]@local\/mcp-akasha['"]/.test(patch), 'Patch 引用自有包名 @akasha-book/mcp');
+const patchNames = [...patch.matchAll(/^\s*name:\s*(?:'([^']+)'|"([^"]+)"|([^\s#]+))\s*(?:#.*)?$/gm)].map((m) => m[1] ?? m[2] ?? m[3]);
+assert.equal(typeof packageName, 'string', 'package.json 必须声明自有包名');
+assert.deepEqual(patchNames, [packageName], 'Patch 必须且仅引用本插件 package.json 的准确包名');
 assert.ok(!/^\s*(remove|disable|patch):/m.test(patch), 'Bundle Patch 只使用 insert；不得出现 remove/disable/patch 行');
 
 // —— ② 命令以数组给出，不做 shell 字符串拼接（fail closed：避免注入面）——
@@ -34,12 +46,10 @@ assert.match(publicToolName('akasha', 'a b/c'), /^mcp__akasha__a_b_c_[0-9a-f]{12
 assert.equal(renderText([{ type: 'text', text: 'a' }, { type: 'image', data: 'x' }]), 'a\n[image]', '非文本块降级为占位符（不丢值）');
 
 // —— ④ 注册桥端到端：临时 core 副本 + 真实 MCP 服务器（stdio）→ 注册 → 真调一个工具 ——
-//   前提门（2026-10-11）：本段依赖 core 里的 `init-example.mjs`（初始化示例库的辅助脚本）。
-//   2026-10-13 举一反三批修正：门原先只查 `CORE/init-example.mjs`，而**本机布局下它在 `akasha/init-example.mjs`**
-//   （CORE = <...>/akasha 的**父目录**下的 akasha —— 见第 11 行：CORE = join(HERE, '..', 'akasha')，其实就在那儿）。
-//   旧门写错了一层 ⇒ 长期误 SKIP，白白丢掉 21 条断言（含真起服务器 + 真调工具）。现在门按候选列表找，找到就用。
+//   前提门：初始化脚本必须位于所选 core 根，随后从同一根复制并在临时副本运行。
+//   不再以另一个布局中存在 init-example 为据，误判当前复制源可执行端到端测试。
 let skipCount = 0;
-const INIT_CANDIDATES = [join(CORE, 'init-example.mjs'), join(CORE, 'akasha', 'init-example.mjs'), join(CORE, 'core', 'init-example.mjs')];
+const INIT_CANDIDATES = [join(CORE, 'init-example.mjs')];
 const INIT_EXAMPLE = INIT_CANDIDATES.find((p) => existsSync(p)) || null;
 if (!INIT_EXAMPLE) {
   skipCount += 1;

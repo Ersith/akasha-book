@@ -109,14 +109,13 @@ export function tailReadText(file, maxBytes = TAIL_WINDOW_BYTES) {
     return { text, bytes: n, truncated: start > 0 };
   } finally { closeSync(fd); }
 }
-// N09→Q06（第三/四轮）：`normSid` 归一已弃用——多对一转换无法区分 `session-1` 与 `1` 两个合法 ID；
-//   读取走「精确优先 + 单前缀差兜底」（见 latestIntentGist），生产者（session 插件）改存完整原始 ID。
+// 会话身份是完整宿主 ID；`session-1`、`1`、`session-session-1` 是三个不同身份。
+// 生产者已经保留原始 ID。旧短 ID 缺少可核对映射时不得猜别名，需核对原档后重索引。
 
 export function latestIntentGist(text, session) {
-  // R04/N09/Q06（GPT 二~四轮）：会话意图读取——**精确优先**（原始 id 全等），精确无命中时才接受「单前缀差」变体
-  //   （旧数据兼容：历史索引记录曾剥 `session-` 前缀）。**遇歧义不猜测归属**：两个合法 ID（`session-1` 与 `1`）并存时
-  //   各走各的精确记录、不互读；unknown 仍返回 null。
-  if (session === null) return null;
+  // V02：当前会话尚无 intent 也不能回退到另一个合法 ID；无标记的完整 ID 历史记录仍可精确读取。
+  // 省略参数仅保留给原有离线尾读诊断；运行时两个调用方均明确传入完整 ID 或 null。
+  if (session === null || session === '' || session === '(unknown)') return null;
   const want = session === undefined ? undefined : String(session);
   const lines = String(text ?? '').split('\n');
   const pick = (pred) => {
@@ -134,12 +133,7 @@ export function latestIntentGist(text, session) {
     return null;
   };
   if (want === undefined) return pick(null);
-  const exact = pick((r) => String(r.session ?? '') === want);
-  if (exact !== null) return exact;
-  const up = 'session-' + want;
-  const down = want.startsWith('session-') ? want.slice('session-'.length) : want;
-  if (up === want && down === want) return null;
-  return pick((r) => { const s = String(r.session ?? ''); return s === up || s === down; });
+  return pick((r) => String(r.session ?? '') === want);
 }
 
 export function apply(ctx, config = {}) {
@@ -765,7 +759,7 @@ export function apply(ctx, config = {}) {
   if (cfg.recallHook !== false) {
     const PRONOUN = /(上次|之前|上回|那天|那个|说过|记得|当时|前面说|前面提)/;
     // N08（GPT 第三轮）：按当前身份过滤；unknown 不读共享最后一条。
-    // Q06（GPT 第四轮）：与 C3 共用同一读法（latestIntentGist：精确优先 + 旧数据单前缀差兜底）。
+    // 与 C3 共用完整 ID 精确读取；当前会话无记录时静默，不猜旧数据的别名。
     const recentIntentGist = () => {
       try {
         const sid = curSid;

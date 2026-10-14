@@ -4,6 +4,7 @@ import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync, sta
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { createRedactor } from './json-redaction.mjs';
 
 export const ROOT = dirname(fileURLToPath(import.meta.url));
 // 数据根（#36 相关）：`AKASHA_ROOT` 可覆盖（迁移/多库/坏根演练用）；默认 <repo>/data。
@@ -81,11 +82,8 @@ const REDACT_RES = [
   //   冲突（`node-7fe8ec84-L2-2781-4441-eb9ff212` / `canon-…-20261011` 都会命中）⇒ **必然误伤** ⇒ 违反口径①。
   //   此条即「独立令牌形态」的具体取舍：宁可漏报，不做泛化长串遮蔽 ✓
 ];
-export function redact(value) {
+function redactText(value) {
   let out = String(value ?? '');
-  // Q04（GPT 第四轮）：**不做 JSON 解析往返**——`JSON.parse→stringify` 经 JS Number，会把大整数/高精度小数
-  //   改写（9007199254740993 → …992）且**非敏感字段也中招**。脱敏只该改敏感值：纯文本规则（已支持转义值、
-  //   含 authorization 名单）足以覆盖 N01/N02 的全部形态；其余字面量原样保留。
   for (const [re, to] of REDACT_RES) out = out.replace(re, to);
   return out;
 }
@@ -98,15 +96,15 @@ export function redact(value) {
 const SENSITIVE_KEY_RE = /^(?:api[_-]?key|apikey|password|passwd|pwd|secret|token|authorization|credential)$/i;
 const SENSITIVE_KEY_TAIL_RE = /(^|[_-])(?:token|secret|password|passwd|pwd|apikey|api[_-]?key|credential)$/i;
 const isSensitiveKey = (k) => SENSITIVE_KEY_RE.test(String(k)) || SENSITIVE_KEY_TAIL_RE.test(String(k));
-export function redactDeep(v, keyHint) {
-  if (typeof v === 'string') {
-    if (keyHint && isSensitiveKey(keyHint) && v.length >= 6 && !/^(true|false|null|none|yes|no)$/i.test(v) && !/^\d{1,4}$/.test(v)) return '[redacted]';
-    return redact(v);
-  }
-  if (Array.isArray(v)) return v.map((x) => redactDeep(x, keyHint));
-  if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = redactDeep(v[k], k); return o; }
-  return v;
-}
+// V01 + Q04: JSON strings use a bounded lossless scanner. Only string/key tokens
+// are decoded; numbers and unchanged spans keep their original source spelling.
+// Sensitive context is inherited through arrays/objects. Ordinary text keeps the
+// existing regex policy, including mixed prose / fenced JSON fragments. Malformed
+// credential fragments become a visible conservative mask; resource limits reject.
+export const { redact, redactDeep } = createRedactor({
+  redactText, isSensitiveKey,
+  shouldMask: (v) => v.length >= 6 && !/^(true|false|null|none|yes|no)$/i.test(v) && !/^\d{1,4}$/.test(v),
+});
 
 /** 原子替换（先写临时文件再 rename）。 */
 export function writeFileAtomic(file, text) {
@@ -689,11 +687,8 @@ export function cross(query, opts = {}) {
       }
     }
     hits.sort((a, b) => b.rank - a.rank || b.score - a.score);
-    // ①（GPT 第四轮·token 开刀）：**有界档给总量上界**——每库 ≤ boundedPerStore、全组累计 ≤ boundedTotal（默认 full 不动）。
-    const __psCap = readTierActive(opts) ? Math.min(opts.perStore ?? READ_TIER.boundedPerStore, READ_TIER.boundedPerStore) : opts.perStore;
-    const __usedNow = groups.reduce((n, g) => n + g.items.length, 0);
-    const __remain = readTierActive(opts) ? Math.max(0, READ_TIER.boundedTotal - __usedNow) : Infinity;
-    const items = (__psCap ? hits.slice(0, __psCap) : hits).slice(0, __remain);
+    // 有界档保留完整候选；限量在 offset 定位之后执行，不能先截断再分页。
+    const items = readTierActive(opts) ? hits : (opts.perStore ? hits.slice(0, opts.perStore) : hits);
     if (items.length) groups.push({ store: name, total: hits.length, items });
   }
   const total = groups.reduce((n, g) => n + g.total, 0);
@@ -720,6 +715,11 @@ export function cross(query, opts = {}) {
   // F08（2026-10-14 外部审查 · GPT）：**显式给了 maxTokens / offset 才守预算**——默认仍豁免全量（「性能优先」：
   //   对位视图的完整可达性优先，削减只在调用方明确要求时发生；分页可续取 `budget.nextOffset`，不丢内容）。
   //   clipByBudget 原样保留（账实 + 原始序号）；depth / citeAllowlist 随结果对象带过去，不改裁剪算法。
+  if (readTierActive(opts)) return clipByBudget(__out, {
+    ...opts, pageLimits: boundedPageLimits(opts, READ_TIER.boundedPerStore),
+    // cross 默认仍豁免 token 预算；有界档仅强制条数分页，显式 maxTokens 才同时限 token。
+    contextBudget: opts.maxTokens === undefined ? false : opts.contextBudget
+  });
   if (opts.maxTokens !== undefined || Math.floor(opts.offset ?? 0) > 0) return clipByBudget(__out, { ...opts });
   return __out;
 }
@@ -929,13 +929,37 @@ export const CONTEXT_BUDGET_DEFAULTS = Object.freeze({
  *        self/usage 为豁免源（exemptShrink），不参与此处裁剪。
  *  行为：按 rank 顺序累计 estimateTokens，超额即裁；被裁条数写入 result.budget.trimmed（可见、可观测）。
  *  关闭：opts.contextBudget === false。 */
+function boundedPageLimits(opts, fallback) {
+  const requested = Number.isInteger(opts.perStore) && opts.perStore > 0 ? opts.perStore : fallback;
+  return { perStore: Math.min(requested, READ_TIER.boundedPerStore), total: READ_TIER.boundedTotal };
+}
+
+// 稳定轮转六库的组内排序，offset 指向这条完整序列；遇页额度即停，绝不跳过留待下页的候选。
+function groupedPageWindow(groups, offset, limits) {
+  const arrays = groups.map(g => g.items || g.hits || []);
+  const all = [], stores = new Map();
+  const longest = arrays.reduce((n, a) => Math.max(n, a.length), 0);
+  for (let i = 0; i < longest; i += 1) for (let gi = 0; gi < arrays.length; gi += 1) {
+    if (i < arrays[gi].length) { const item = arrays[gi][i]; all.push(item); stores.set(item, groups[gi].store); }
+  }
+  const remaining = all.slice(Math.min(offset, all.length)), window = [], counts = new Map();
+  for (const item of remaining) {
+    const store = stores.get(item), count = counts.get(store) || 0;
+    if (window.length >= limits.total || count >= limits.perStore) break;
+    window.push(item); counts.set(store, count + 1);
+  }
+  return { all, remaining, window };
+}
+
 export function clipByBudget(result, opts = {}) {
-  if (opts.contextBudget === false) return result;
+  const pageLimits = opts.pageLimits;
+  if (opts.contextBudget === false && !pageLimits) return result;
+  const countOnly = opts.contextBudget === false;
   // 每次查阅的总量上限：**天花板的性质**（防跑飞），不是日常配额 —— 默认 4096 tok；
   // 依据：实测 lookup(「记忆」)=1442 tok、cross(「记忆」)=2544 tok 都在其下（不会被裁）；
   //       取 2048 时 cross 对位视图会被砍到 4/95 条，违背其「主行不截断」契约。
   const DEFAULT_CALL_CAP = 4096;
-  const cap = Math.max(200, Math.floor(opts.maxTokens ?? DEFAULT_CALL_CAP));
+  const cap = countOnly ? Infinity : Math.max(200, Math.floor(opts.maxTokens ?? DEFAULT_CALL_CAP));
   // F08（2026-10-14 外部审查 · GPT）：**账实相符**——预算必须覆盖**整条**（全部字段与元数据），而不是只估主文本一个字段。
   //   旧口径漏计：mirror 五字段（0/4096）、lookup report 元数据（2060 vs 实际 6213）。现口径＝整条 JSON 过同一
   //   estimateTokens（与复现脚本「同一算法复算」同口径）。结构符与 budget 自身不计（量级 = 个位数 tok）。
@@ -983,6 +1007,11 @@ export function clipByBudget(result, opts = {}) {
   };
   const out = { ...result };
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const page = pageLimits && Array.isArray(out.groups) ? groupedPageWindow(out.groups, offset, pageLimits) : null;
+  if (page && Array.isArray(out.citeAllowlist)) {
+    const visibleIds = new Set(page.window.map(item => item.id));
+    out.citeAllowlist = out.citeAllowlist.filter(item => visibleIds.has(item.id));
+  }
   // F08-r3（GPT 复核二轮 R09 · 她 token 脚本复跑揭出）：预留改为**真实元数据口径**——report/trace/citeAllowlist/
   //   stats 等顶层内容此前进不了装填判定（lookup report 20 条小条目全装后整响应 5414>4096）。先把「除条目本体
   //   与 budget 外的一切」序列化估一遍作为 reserve；条目裁剪据此收缩。极小 cap 低于元数据体量时，overCap 如实标注。
@@ -1003,9 +1032,8 @@ export function clipByBudget(result, opts = {}) {
     // brief 用 groups[].hits，cross 用 groups[].items ⇒ 两者都处理（2026-10-11）
     // F08（2026-10-14 外部审查 · GPT）：**全局序**处理 offset 与预算（按组序 × 组内序展平）——
     //   原实现逐组独立 slice/trim ⇒ offset 对 groups 完全失效（复现实测：页 2 与页 1 重复、拼不齐全集）。
-    const flat = [];
-    out.groups.forEach((g) => (g.items || g.hits || []).forEach((it) => flat.push(it)));
-    const sliced = flat.slice(Math.min(offset, flat.length));
+    const flat = page ? page.all : out.groups.flatMap(g => g.items || g.hits || []);
+    const sliced = page ? page.window : flat.slice(Math.min(offset, flat.length));
     const t1 = trim(sliced, reserve);
     const kept = new Set(t1.kept);
     out.__nextRaw = offset + t1.lastIndex;                  // F08：原始序号口径（同 hits 分支）
@@ -1024,7 +1052,7 @@ export function clipByBudget(result, opts = {}) {
       const own = (Array.isArray(g.hits) ? g.hits : (g.items || [])).filter((it) => kept.has(it));
       return Array.isArray(g.hits) ? { ...g, hits: own } : { ...g, items: own };
     });
-    out.__afterOffset = sliced.length;                      // 供区分「offset 跳过」与「上限裁掉」
+    out.__afterOffset = page ? page.remaining.length : sliced.length; // 未进入本页的候选仍属于剩余集合
     out.__total = flat.length;
   }
   const before = (Array.isArray(result.hits) ? result.hits.length : 0)
@@ -1041,7 +1069,7 @@ export function clipByBudget(result, opts = {}) {
   const nextOffset = Math.min(total, out.__nextRaw ?? (offset + after));
   delete out.__nextRaw;
   // ③ 可见性：每次返回都带一行人类可读的装载说明（不再有静默截断）
-  const parts = ['本页 ' + after + ' 条 / 共 ' + total + ' 条', used + '/' + cap + ' tok'];
+  const parts = ['本页 ' + after + ' 条 / 共 ' + total + ' 条', countOnly ? '按条数分页（未启用 token 上限）' : used + '/' + cap + ' tok'];
   if (skippedByOffset > 0) parts.push('已跳过前 ' + skippedByOffset + ' 条(offset)');
   if (floorApplied) parts.push('地板保底：首条超大条目**仅示摘要**（oversizeOmitted=true；全文走 show/--full）（另 ' + Math.max(0, trimmedOut - 1) + ' 条未显示）→ 续取 offset=' + nextOffset + '（或 --full）');
   else if (trimmedOut > 0) parts.push('因上限未显示 ' + trimmedOut + ' 条 → 续取 offset=' + nextOffset + '（或 --full）');
@@ -1060,7 +1088,8 @@ export function clipByBudget(result, opts = {}) {
   const hintOut = budgetTooSmall
     ? hint + ' · ⚠ 预算 ' + cap + ' < 元数据 ' + metaTok + ' tok：连最小包都装不下——请加大 maxTokens（budgetTooSmall）'
     : (used > cap ? hint + ' · ⚠ 元数据 ' + metaTok + ' tok 使总账 ' + used + '/' + cap + ' 超限（条目已按剩余额度收缩；不复读假绿）' : hint);
-  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint: hintOut, metaTokens: metaTok, overCap: used > cap, budgetTooSmall };
+  out.budget = { mode: countOnly ? 'per-page-count' : 'per-call-cap', capTokens: countOnly ? null : cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint: hintOut, metaTokens: metaTok, overCap: used > cap, budgetTooSmall,
+    ...(pageLimits ? { perStoreLimit: pageLimits.perStore, totalLimit: pageLimits.total, cursorOrder: 'store-round-robin' } : {}) };
   return out;
 }
 
@@ -1814,6 +1843,15 @@ export function credibilityTodos(opts = {}) {
   return items;
 }
 
+function scoreTrace(h) {
+  return {
+    id: h.id, store: h.store, score: h.score, rank: h.rank, strong: !!h.strong,
+    tier: h.tier ?? null, displayTier: h.displayTier ?? null, stale: !!h.stale,
+    severity: h.severity ?? null, complexity: h.complexity ?? null, factor: h.factor ?? null, factorApplied: h.factorApplied !== false,
+    balance: h.balance ?? { enabled: false, correction: 1 }, zeroWeight: !!h.zeroWeight
+  };
+}
+
 export function lookupDetailed(query, opts = {}) {
   // #11 参数结构化错误（2026-10-12 窗口 2）：类型错**报错**，绝不静默当空查询。
   if (query !== undefined && query !== null && typeof query !== 'string') {
@@ -1912,12 +1950,7 @@ export function lookupDetailed(query, opts = {}) {
   // #35 lookup --trace（2026-10-12 窗口 5）：输出 schema 固化——逐条列出计分零件，可审、可复核。
   // ②（GPT 第四轮·token 开刀）：**诊断默认分离**——trace（逐条计分零件）只在显式 `trace:true`（CLI `--trace`）时返回；
   //   citeAllowlist（引用纪律件）与 stats（报告口径）保留——分离的是「可审零件」，不是纪律。
-  const trace = opts.trace !== true ? null : ranked.map((h) => ({
-    id: h.id, store: h.store, score: h.score, rank: h.rank, strong: !!h.strong,
-    tier: h.tier ?? null, displayTier: h.displayTier ?? null, stale: !!h.stale,
-    severity: h.severity ?? null, complexity: h.complexity ?? null, factor: h.factor ?? null, factorApplied: h.factorApplied !== false,
-    balance: h.balance ?? { enabled: false, correction: 1 }, zeroWeight: !!h.zeroWeight
-  }));
+  const trace = opts.trace !== true ? null : ranked.map(scoreTrace);
   const __res = { hits: ranked, stats, knowledge, citeAllowlist, ...(trace ? { trace } : {}), blindspots: blindspotsFor({ perspective: opts.perspective }), depth: readDepthOf(opts) };
   // I-12 P1-③ 剂量闸（2026-10-13）：符号负荷超阈 ⇒「后续条目」snippet 摘要化（保 id / 序位；反思通道与 doseThreshold:0 不受限）。
   const __doseThreshold = Number.isInteger(opts.doseThreshold) ? opts.doseThreshold : GENRE_DOSE_DEFAULTS.threshold;
@@ -1953,6 +1986,7 @@ export function multiRecall(query, opts = {}) {
   const byId = new Map(lexical.filter((h) => isStr(h.id)).map((h) => [h.id, h]));
   // 引用路：读与词法同一批 records，建反向索引（target → sources），再把命中者的邻居带回。
   const citHits = [];
+  const citationStores = new Map();
   const rrf = new Map();
   lexical.forEach((h, i) => rrf.set(h.id, { item: h, score: 1 / (k + i + 1), paths: ['lexical'] }));
   if (lexical.length) {
@@ -1972,6 +2006,7 @@ export function multiRecall(query, opts = {}) {
       seen.add(p.rec.id);
       const item = briefHit(p.store, p.rec, 0);
       citHits.push(item);
+      citationStores.set(item.id, p.store);
       const cur = rrf.get(item.id);
       const inc = 1 / (k + citHits.length);
       if (cur) { cur.score += inc; cur.paths.push('citation'); }
@@ -1986,6 +2021,10 @@ export function multiRecall(query, opts = {}) {
       || (b.score ?? 0) - (a.score ?? 0)
       || String(a.id).localeCompare(String(b.id), 'en'));
   const out = { ...base, hits: fused, rrf: { lexical: lexical.length, citation: citHits.length, k }, citeAllowlist: [...base.citeAllowlist || [], ...fused.filter((h) => isStr(h.id)).map((h) => ({ id: h.id, store: h.store ?? null, tier: h.tier ?? null, strong: !!h.strong }))] };
+  if (opts.trace === true) out.trace = fused.map(h => ({
+    ...scoreTrace({ ...h, store: h.store ?? citationStores.get(h.id) ?? null }),
+    rrfScore: h.rrfScore, paths: h.paths
+  }));
   const __out = opts.contextBudget === false ? out : clipByBudget(out, { ...opts, offset: opts.offset });
   __out.depth = readDepthOf(opts);
   if (opts.__noQueryLog !== true) recordQuery({ cmd: 'recall', query: String(query ?? '').trim(), hits: (out.hits || []).length, ms: Date.now() - __t0, ids: (out.hits || []).map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
@@ -2058,8 +2097,8 @@ export function brief(query, opts = {}) {
     };
     scored.sort((a, b) => weight(b) - weight(a) || Number(b.strong) - Number(a.strong));
     if (scored.length) {
-      const __ps = readTierActive(opts) ? Math.min(perStore, READ_TIER.boundedPerStore) : perStore;   // ①：有界档 clamp（默认 perStore=3 不变）
-      groups.push({ store: name, total: scored.length, hits: scored.slice(0, __ps).map(x => {
+      const candidates = readTierActive(opts) ? scored : scored.slice(0, perStore);
+      groups.push({ store: name, total: scored.length, hits: candidates.map(x => {
         const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + valenceTip(x.r);
         const rf = applyRank(base, name, x.r, x.cred, { ...rankOpts, strong: x.strong });
         const __pre = isStr(x.r.id) ? agePrefix(x.r, { today: opts.today }) : null;   // N13：装配前移（计量=最终响应）
@@ -2126,7 +2165,9 @@ export function brief(query, opts = {}) {
       return layers;
     })() };
   __bres.depth = readDepthOf(opts);                                                  // N13：depth 装配前移（计量=最终响应）
-  const __out = opts.contextBudget === false ? __bres : clipByBudget(__bres, opts);   // 取料类：每次查阅上限默认生效
+  const __out = readTierActive(opts)
+    ? clipByBudget(__bres, { ...opts, pageLimits: boundedPageLimits(opts, READ_TIER.briefPerStore) })
+    : (opts.contextBudget === false ? __bres : clipByBudget(__bres, opts));
   // N13（GPT 第三轮）：agePrefix 装配已前移（组内构建时）——clip 计量即终局。清单不在裁后重建。
   if (opts.__noQueryLog !== true) recordQuery({ cmd: 'brief', query: q, hits: groups.reduce((n, g) => n + g.total, 0), ms: Date.now() - __t0, ids: flat.map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
   return __out;
@@ -2963,9 +3004,9 @@ export function committedOf(result, opts = {}) {
 }
 
 /** #24 代际指纹（2026-10-12 窗口 8；外部对照：灵枢 cg(op=info)）。
- *  `code_generation` = 本进程启动时核心三件的源指纹（模块加载即算）；
+ *  `code_generation` = 本进程启动时核心模块的源指纹（模块加载即算）；
  *  `disk_generation` = 当前盘上源指纹；不一致 ⇒ `stale_on_disk:true` + `restart_required:true`（提醒"跑的是旧代码"）。 */
-const CORE_FILES = ['lib.mjs', 'session.mjs', 'sleep.mjs'];
+const CORE_FILES = ['lib.mjs', 'session.mjs', 'sleep.mjs', 'json-redaction.mjs'];
 function coreFingerprint(useMtime) {
   const parts = [];
   for (const f of CORE_FILES) {
@@ -2987,7 +3028,7 @@ export function generationInfo() {
     stale_on_disk: stale,
     restart_required: stale,
     note: stale
-      ? '核心三件在本进程启动后有改动 ⇒ 跑的是旧代码；重启宿主/CLI 才能换代'
+      ? '核心模块在本进程启动后有改动 ⇒ 跑的是旧代码；重启宿主/CLI 才能换代'
       : '代码与盘上一致（无需重启）'
   };
 }

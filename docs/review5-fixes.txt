@@ -1,0 +1,65 @@
+Akasha 第五轮修复：V01–V07
+合入基线：33037b3f5360159f36a3881c68652e7d7fef2fba
+
+用途
+这是待审查、待合入的源码补丁。没有修改插件版本、宿主配置或生产记忆库。
+部署时必须把新增 core/json-redaction.mjs 和 core/lib.mjs 一起同步。
+
+行为变化
+V01：JSON 脱敏按字符串/键名扫描，数字不经过 Number 转换。支持转义键、
+敏感键下的嵌套数组/对象和字符串内编码的 JSON。数字字面量、重复键与未修改
+区域的格式保留。普通文本仍使用既有凭据规则；不是通用密码识别器。
+支持带说明、Markdown 围栏、多 JSON 片段及普通引语、编号和检索截段。
+如果已识别敏感键但其值破损、结尾不可判定，会把该片段及其后文本保守替换为
+[redacted-invalid-json]；这是可见的内容损失，不会悄悄写入明文凭据。
+每次处理共享深度 64、节点 100000、累计 8*1024*1024 个 JS 字符单位上限；
+超限或循环对象明确拒绝。新增模块也已纳入核心代际指纹。
+V02：intent 仅按完整原始 sessionId 精确匹配，不再猜测 session- 前缀别名。
+已有完整 ID 即使没有格式标记仍可读；历史短 ID 需要核对原档后另行重索引。
+V03：summary/pointer 的分页先保留全部候选，再切页，后续条目可通过游标继续读。
+V04：cross/brief 的 summary/pointer 每库每页最多 12 条、总计最多 50 条。
+brief 默认每库 3 条；cross 默认每库 12 条。显式正整数 perStore 可降低上限；
+大于 12 则取 12；0、负数和非整数使用上述默认值。
+V05：MCP trace:true 无需再配 report:true。recall 在 MCP/CLI 均返回诊断，
+包含融合分数与召回路径。默认不输出 trace。
+V06：merge 仅从本轮实际成功退役的候选继承来源，拒绝/跳过项不进入证据并集。
+keeper 的原 source 与已有 sources 均保留；撤销后来源保留沿用原约定。
+V07：回执与墓碑重建使用同一核验：库、计划、操作和实际退役目标都必须匹配，
+协议/自我层豁免保持。missing 引用只报告、不进入按原 ID 查找的恢复路径。
+自吸收计划（absorb 包含 keep）在退役任何条目前整组拒绝。
+
+分页与 token
+1. 默认/full/reflect 沿用原有读取行为；本补丁不偷偷改变默认读取档位。
+2. summary/pointer 的分组候选按库轮询组成完整顺序，库内仍按原排序。
+   一页先应用条数上限，再应用既有 token 预算。停止处不跳过因条数限制而延后的候选。
+3. 下一次请求使用 budget.nextOffset，保持 query、depth、perStore 和过滤条件一致。
+   不要自行把“本页显示条数”当成游标。升级后旧游标作废，从 offset:0 开始。
+   数据变化或排序参数变化时也应从头查询；这里没有新增数据库快照隔离。
+4. cross 只设置 depth:summary/pointer、未给 maxTokens 时，是“条数分页”：
+   budget.mode=per-page-count，capTokens=null。总条数可控，但不代表 token 硬上限。
+5. 希望节省上下文时，可显式使用 depth:pointer 或 summary，并给 maxTokens，
+   先看本页、需要才翻页或按 ID 展开。正常调用保持 trace 关闭。
+6. maxTokens 仍是现有粗估预算；预算元数据自身不计入 usedTokens，单条保底、
+   元数据自身超额、混合超大条目跳过沿用原契约。检查 overCap/budgetTooSmall，
+   不要把此数当成 DeepSeek tokenizer 实测或 API 账单。此补丁未宣称解决这些既有取舍。
+
+撤销兼容
+新墓碑必须同时匹配 sleep_plan_id 和 sleep_op_id；字段缺失一半或不匹配时，
+不得退回 reason 文本。两字段均不存在的旧墓碑只接受该计划该操作完整匹配的
+旧 reason。merge 的 keep 不是退役授权目标。
+
+验证入口（Node.js 24；从仓库根运行）
+  node tests/run-review5.mjs
+  cd core
+  node test.mjs
+
+五个插件各自目录运行 node selftest.test.mjs。
+新版测试只使用临时/合成库，不需要生产数据。身份回归的真实宿主契约测试是可选项：
+设置 DSH_HOST_NODE_MODULES 指向 DSH 的 node_modules 后再运行 tests/run-review5.mjs。
+sleep 原套件的宿主模块参数为 AKASHA_DSH_MODULES。未设置时必须如实记录 skip。
+这些宿主测试只回放合成事件，不等于部署后真实模型会话验收。
+
+合入建议
+在目标分支先运行 git apply --check，再应用补丁并执行上述回归。若基线已推进，
+按文件审查冲突后再合入，不要覆盖整个生产目录。先保留源数据与旧版本备份，
+由部署方按既有发布流程同步核心和插件；部署后另外确认加载代际及新会话行为。

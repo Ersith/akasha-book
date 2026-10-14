@@ -778,6 +778,8 @@ export function applyPlan(planRef, opts = {}) {
         // Q02（GPT 第四轮）：**A 档守「keep 一字不动」**——非空 mergedText（模型/人工填写）**拒绝执行**；
         //   正文改写走独立 revise 通道（若需 B 档须另立启用条件与撤销/冲突语义，未开）。
         if (typeof op.mergedText === 'string' && op.mergedText.trim().length > 0) { results.push({ op: 'merge', store: op.store, keep: op.keep, absorb: op.absorb || [], status: 'refused-merged-text', why: 'A 档不支持正文改写（keep 一字不动）；请先 revise 正文、或另走 B 档设计' }); refusedN += 1; continue; }
+        // V07：keeper 不是退役目标；整组先拒绝，不能执行到自吸收时才停、留下部分退役。
+        if (Array.isArray(op.absorb) && op.absorb.includes(op.keep)) { results.push({ op: 'merge', store: op.store, keep: op.keep, absorb: op.absorb, status: 'refused-self-absorb', why: 'keep 不能出现在 absorb 中；请修正计划后重试' }); refusedN += 1; continue; }
         const recs = loadStore(op.store, fileOf(op.store)).records;
         const byId = new Map(recs.map((r) => [r.id, r]));
         if (isExemptRecord(byId.get(op.keep), op.keep)) { results.push({ op: 'merge', store: op.store, keep: op.keep, status: 'refused-exempt', why: 'keep 在豁免面（协议条/自我层）' }); refusedN += 1; continue; }   // 豁免优先（协议条即便不在库也先拒；复检修）
@@ -802,11 +804,13 @@ export function applyPlan(planRef, opts = {}) {
         if (!dry) {
           // Q01（GPT 第四轮）：**来源链并集**——被吸收者可能自己已有 `sources`（链式合并 B←C 后再 A←B）——
           //   只读 `r.source` 会丢掉 C。并集 = 逐条 [source, ...sources]（后面统一按来源身份去重）。
-          const absorbSrc = (op.absorb || []).map((id) => byId.get(id)).filter(Boolean)
+          // V06：来源也是合并结果，只接收本轮成功退役的候选；拒绝/跳过不能给 keep 增加证据。
+          const absorbSrc = detail.filter((d) => d.status === 'retired').map((d) => byId.get(d.id)).filter(Boolean)
             .flatMap((r) => [r.source, ...(Array.isArray(r.sources) ? r.sources : [])]).filter(Boolean);
-          if (detail.some((d) => d.status === 'retired') && absorbSrc.length) {
+          if (absorbSrc.length) {
             try {
-              const curS = Array.isArray(keepRec.sources) ? keepRec.sources : (keepRec.source ? [keepRec.source] : []);
+              const curS = [...new Map([keepRec.source, ...(Array.isArray(keepRec.sources) ? keepRec.sources : [])]
+                .filter(Boolean).map((s) => [JSON.stringify(s), s])).values()];
               const seen = new Set(curS.map((s) => JSON.stringify(s ?? null)));
               const add = absorbSrc.filter((s) => { const k = JSON.stringify(s ?? null); if (seen.has(k)) return false; seen.add(k); return true; });
               if (add.length) {
@@ -896,41 +900,58 @@ export function revokePlan(planRef, opts = {}) {
     // R03（GPT 复核二轮）：墓碑是一级依据——回执缺失/失败时以库内墓碑重建。
     // N03/N07（GPT 第三轮）：**归属必须可核**——①新墓碑带结构化 `sleep_plan_id`，精确匹配；
     //   ②旧格式只认**锚定结尾** ` · plan <id>`（不再 includes 子串——`plan-` 前缀或说明文字提及不再误认领）；
-    //   ③墓碑须对应**计划成员**（keep/absorb/id），否则拒绝；④已撤销墓碑（被 revokes 行指向）一律排除；
+    //   ③墓碑须对应计划中同库、同操作的**退役目标**（absorb/id），否则拒绝；④重建排除已撤销墓碑；
     //   ⑤去重按**墓碑 ID**（同一目标的新旧两枚墓碑各算一个事件，不再折成一个）；⑥回执 planId 必须匹配请求。
     let receipt = null;
     if (existsSync(rf)) { try { receipt = JSON.parse(readFileSync(rf, 'utf8')); } catch { receipt = null; } }
     if (receipt && receipt.planId !== undefined && String(receipt.planId) !== planId && opts.allowReceiptMismatch !== true) {
       return { ok: false, error: '回执与请求计划不匹配：回执 planId=' + String(receipt.planId) + '，请求 ' + planId + '（确要重放请显式 allowReceiptMismatch）' };
     }
-    const members = new Set();
+    const targets = new Map();
     for (const op of plan?.ops || []) {
-      if (typeof op.keep === 'string') members.add(op.keep);
-      if (typeof op.id === 'string') members.add(op.id);
-      for (const a of op.absorb || []) if (typeof a === 'string') members.add(a);
+      if (!op || !STORES.includes(op.store)) continue;
+      let ids; let opId; let legacyReason;
+      if (op.op === 'merge' && typeof op.keep === 'string' && op.keep && Array.isArray(op.absorb)) {
+        ids = op.absorb.filter((id) => id !== op.keep);
+        opId = 'merge|' + op.store + '|' + op.keep;
+        legacyReason = 'merged-into ' + op.keep + ' · plan ' + planId;
+      } else if (op.op === 'discard' && typeof op.id === 'string' && op.id) {
+        ids = [op.id];
+        opId = 'discard|' + op.store + '|' + op.id;
+        legacyReason = (String(op.reason || 'discard') + ' · plan ' + planId).trim();
+      } else continue;
+      for (const id of ids) {
+        if (typeof id !== 'string' || !id) continue;
+        const key = op.store + '|' + id;
+        if (!targets.has(key)) targets.set(key, []);
+        targets.get(key).push({ opId, legacyReason });
+      }
     }
-    // Q05（GPT 第四轮）：**回执不是可信执行授权**——receipt 候选与重建候选**共用同一核验**：目标须为计划成员、
-    //   库内墓碑身份须匹配（`sleep_plan_id` 精确或锚定旧格式）、豁免面一律拒绝；已撤销墓碑排除（重建侧）。
+    // V07：回执与重建共用核验。结构化 plan/op 不匹配时不得退回文本匹配；旧墓碑只认该操作的完整 reason。
     const tombById = new Map();
+    const recordById = new Map();
     const revokedTombs = new Set();
     for (const store of STORES) {
       const recs0 = loadStore(store, fileOf(store)).records;
       for (const r of recs0) {
+        if (r.id) recordById.set(store + '|' + r.id, r);
         if (typeof r.revokes === 'string' && r.revokes) revokedTombs.add(store + '|' + r.revokes);
         if (typeof r.retires === 'string' && r.id) tombById.set(store + '|' + r.id, r);
       }
     }
-    const tombOk = (store, tombId, targetId) => {
+    const tombOk = (store, tombId, targetId, receiptOpId) => {
+      if (!STORES.includes(store) || typeof tombId !== 'string' || !tombId || typeof targetId !== 'string' || !targetId) return false;
       const t = tombById.get(store + '|' + tombId);
       // 三态：true=可撤；'missing'=引用不存在（**无恢复动作**，保留为如实 missing 报告）；false=拒绝（计划外/豁免/身份不符）。
       if (!t) return 'missing';
-      if (typeof t.retires !== 'string' || t.retires !== String(targetId)) return false;            // 目标一致
-      if (!members.size || !members.has(String(targetId))) return false;                            // 计划成员（空成员表=拒绝）
-      if (isExemptRecord(t, targetId)) return false;                                                // 豁免面（协议条等）
-      const byField = typeof t.sleep_plan_id === 'string' && t.sleep_plan_id === planId;
-      const byLegacy = typeof t.retired_reason === 'string'
-        && /(?:^| · )plan [^\s·]+$/.test(t.retired_reason) && t.retired_reason.endsWith('plan ' + planId);
-      return byField || byLegacy;
+      if (t.retires !== targetId) return false;
+      if (isExemptRecord(t, targetId) || isExemptRecord(recordById.get(store + '|' + targetId), targetId)) return false;
+      const allowed = (targets.get(store + '|' + targetId) || []).filter((op) => receiptOpId === undefined || op.opId === receiptOpId);
+      if (!allowed.length) return false;
+      if (t.sleep_plan_id !== undefined || t.sleep_op_id !== undefined) {
+        return t.sleep_plan_id === planId && allowed.some((op) => t.sleep_op_id === op.opId);
+      }
+      return allowed.some((op) => t.retired_reason === op.legacyReason);
     };
     const tombs = [];
     const have = new Set();
@@ -938,12 +959,12 @@ export function revokePlan(planRef, opts = {}) {
     if (receipt) {
       for (const r of receipt.ops || []) {
         if (r.op === 'merge') for (const d of r.detail || []) if (d.tombstone) {
-          const v = tombOk(r.store, d.tombstone, d.id);
+          const v = tombOk(r.store, d.tombstone, d.id, 'merge|' + r.store + '|' + r.keep);
           if (v === true) push({ store: r.store, tombstone: d.tombstone, id: d.id });
           else if (v === 'missing') push({ store: r.store, tombstone: d.tombstone, id: d.id, missingRef: true });   // 如实 missing（不谎报、不恢复）
         }
         if (r.op === 'discard' && r.tombstone) {
-          const v = tombOk(r.store, r.tombstone, r.id);
+          const v = tombOk(r.store, r.tombstone, r.id, 'discard|' + r.store + '|' + r.id);
           if (v === true) push({ store: r.store, tombstone: r.tombstone, id: r.id });
           else if (v === 'missing') push({ store: r.store, tombstone: r.tombstone, id: r.id, missingRef: true });
         }
@@ -952,17 +973,15 @@ export function revokePlan(planRef, opts = {}) {
     for (const [key, r] of tombById) {
       if (revokedTombs.has(key)) continue;                                                         // N03/N07：已撤销墓碑不再认领
       const store = key.slice(0, key.indexOf('|'));
-      const byField = typeof r.sleep_plan_id === 'string' && r.sleep_plan_id === planId;
-      const byLegacy = typeof r.retired_reason === 'string'
-        && /(?:^| · )plan [^\s·]+$/.test(r.retired_reason) && r.retired_reason.endsWith('plan ' + planId);
-      if (!(byField || byLegacy)) continue;
-      if (!members.size || !members.has(r.retires)) continue;                                      // N03：只认计划成员
+      if (tombOk(store, r.id, r.retires) !== true) continue;
       push({ store, tombstone: r.id, id: r.retires, rebuilt: true });
     }
     if (!tombs.length) return { ok: false, error: '找不到执行回执：' + rf + '，且库内无 plan ' + planId + ' 的有效墓碑可重建（仅撤销已执行过的合并）' };
     const dry = opts.dry !== false;
     const results = [];
     for (const t of tombs) {
+      // missing 引用绝不进入 revokeRetire：后者还支持把输入当原 ID 再找墓碑，不能借此绕过上面的身份校验。
+      if (t.missingRef) { results.push({ ...t, status: 'missing', record: null }); continue; }
       if (dry) { results.push({ ...t, status: 'would-revoke' }); continue; }
       const r = revokeRetire(t.store, t.tombstone, { file: fileOf(t.store), reason: 'sleep --revoke ' + planId });
       // 2026-10-14 整体复检修：墓碑已不在（被硬删等）时 revokeRetire 返回 revoked:null —— **不得谎报 'revoked'**（诚实报告）。

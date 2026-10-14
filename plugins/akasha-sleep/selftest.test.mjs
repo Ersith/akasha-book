@@ -15,6 +15,7 @@ const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');
 const seedCore = (dir) => {
   copyFileSync(join(CORE, 'sleep.mjs'), join(dir, 'sleep.mjs'));
   copyFileSync(join(CORE, 'lib.mjs'), join(dir, 'lib.mjs'));
+  copyFileSync(join(CORE, 'json-redaction.mjs'), join(dir, 'json-redaction.mjs'));
 };
 
 // —— 1. distillHooks 纯函数 ——

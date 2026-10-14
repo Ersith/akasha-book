@@ -366,7 +366,7 @@ export function apply(ctx, config = {}) {
    * { ok:null, reason:'debounced' } = 去抖跳过（不作结论）。opts.force（压缩路径）绕过去抖与失败背压。
    */
   const indexNow = (sidIn, trigger, extra = {}, opts = {}) => {
-    const sid = String(sidIn ?? ''); // Q06（GPT 第四轮）：**存完整原始宿主 ID**（不再剥 `session-` 前缀——两个合法 ID 得以区分；resolveSessionFile 自带双向目录兼容、读端亦有旧数据单前缀兜底）
+    const sid = String(sidIn ?? ''); // 完整原始宿主 ID：inline/worker/compaction 共用此入口，读端仅精确匹配。
     try {
       if (!sid) return { ok: false, reason: 'no-session' }; // 空 id：静默跳过（正常路径不出现；见 README 降级节）
       const now = Date.now();

@@ -188,6 +188,7 @@ assert.equal(typeof c.section.text, 'function', 'text 为渲染函数（库自�
 const STUB = join(TMP, 'stub-akasha');
 mkdirSync(join(STUB, 'data'), { recursive: true });
 copyFileSync(join(CORE, 'lib.mjs'), join(STUB, 'lib.mjs'));
+copyFileSync(join(CORE, 'json-redaction.mjs'), join(STUB, 'json-redaction.mjs'));
 writeFileSync(join(STUB, 'data', 'canon.jsonl'),
   JSON.stringify({
     id: 'canon-akasha-usage',
