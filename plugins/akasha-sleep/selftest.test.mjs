@@ -5,12 +5,15 @@ import assert from 'node:assert/strict';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { apply, buildWakeNote, isWakeNoteworthy } from './lib/index.js';
-import { buildTodos, distillHooks, renderContextLine, renderPulseLine, renderRecallLine, shouldSleep } from '../../core/sleep.mjs';
+// 静态 import 会被提升到 CORE 计算之前（oss 布局可，工作源布局不可）——改 CORE 之后动态 import（2026-10-15 DS 合入修）。
 
 // 活树布局：插件在 <LOCAL_PATH> <AKASHA_DIR>/（仓布局则是 ../../core）
-const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');
+const here = dirname(fileURLToPath(import.meta.url));
+// 兼容双布局（2026-10-15 DS 合入修）：oss 仓库 = <repo>/plugins/<pkg> ⇒ <repo>/core；工作源 = H:/Harness/dsh-* ⇒ H:/Harness/akasha。
+const CORE = existsSync(join(here, '..', '..', 'core', 'lib.mjs')) ? join(here, '..', '..', 'core') : join(here, '..', 'akasha');
+const { buildTodos, distillHooks, renderContextLine, renderPulseLine, renderRecallLine, shouldSleep } = await import(pathToFileURL(join(CORE, 'sleep.mjs')).href);
 /** 把核心（sleep.mjs + lib.mjs）拷进桩目录——插件通过 akashaDir 动态加载它们。 */
 const seedCore = (dir) => {
   copyFileSync(join(CORE, 'sleep.mjs'), join(dir, 'sleep.mjs'));
