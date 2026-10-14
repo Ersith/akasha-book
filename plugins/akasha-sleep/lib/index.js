@@ -109,11 +109,15 @@ export function tailReadText(file, maxBytes = TAIL_WINDOW_BYTES) {
     return { text, bytes: n, truncated: start > 0 };
   } finally { closeSync(fd); }
 }
-export function latestIntentGist(text) {
+export function latestIntentGist(text, session) {
+  // R04（GPT 复核二轮）：**按 session 过滤**——intent 记录带 session 字段；`session===null`（来源不明）⇒ 不读，
+  //   绝不把上一会话的意图喂给当前会话（复现：A 的 intent 触发 B 的 C3）。
+  if (session === null) return null;
   const lines = String(text ?? '').split('\n');
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (!lines[i].includes('"kind":"intent"')) continue;
     let r; try { r = JSON.parse(lines[i]); } catch { continue; }
+    if (session !== undefined && String(r.session ?? '') !== String(session)) continue;
     const g = String(r.gist || '');
     if (!g) continue;
     // 规则化跳过注入段（2026-10-10 生产核对：除 runtime context 外还有 openviking / hindsight 等注入块被记成 intent）
@@ -275,7 +279,8 @@ export function apply(ctx, config = {}) {
   ctx.systemPrompt.context({
     name: 'akasha:sleep',
     order: cfg.contextOrder,
-    text: () => {
+    text: (context) => {
+      retarget(renderSidOf(context));
       try { return core().renderContextLine(readState()); }
       catch { return '阿卡夏·睡眠：核心库不可用（akasha\\sleep.mjs 缺失或损坏）。'; }
     }
@@ -312,7 +317,7 @@ export function apply(ctx, config = {}) {
   const sidOf = (p) => {
     try {
       const a = p?.agent ?? p?.data?.agent;
-      const s = a?.session?.id ?? a?.id ?? p?.session?.id ?? p?.session ?? p?.data?.session ?? p?.sessionId;
+      const s = (typeof p === 'string' ? p : null) ?? p?.id ?? a?.session?.id ?? a?.id ?? p?.session?.id ?? p?.session ?? p?.data?.session ?? p?.sessionId;
       return s === undefined || s === null || s === '' ? null : String(s);
     } catch { return null; }
   };
@@ -320,7 +325,7 @@ export function apply(ctx, config = {}) {
     obs: { turn: 0, steps: 0, compactions: 0, usedToolsN: 0, lastRecallTurn: null, lastCompactionTurn: null },
     recentFailures: [], usedTools: new Set(), announcedTraps: new Set(),
     lastUserText: { text: '', at: 0 }, firedTriggers: new Map(), broughtUp: { at: 0, id: null },
-    gateState: { c3Cat: null, c3At: 0, c3Turn: -1 },
+    gateState: { c3Cat: null, c3At: 0, c3Turn: -1 }, preflight: { tool: null, at: 0 },
   });
   const S = () => {
     if (!sessionStates.has(curSid)) sessionStates.set(curSid, freshState());
@@ -329,7 +334,9 @@ export function apply(ctx, config = {}) {
     while (sessionStates.size > 8) sessionStates.delete(sessionStates.keys().next().value);
     return s;
   };
-  const retarget = (sid) => { if (sid && sid !== curSid) curSid = sid; };
+  // R04：**无 sid 不继承**——缺身份的输入归 `(unknown)` 桶，绝不沿用上一会话（来源不明 ⇒ 不碰敏感提醒）。
+  const retarget = (sid) => { curSid = sid ? String(sid) : '(unknown)'; };
+  const renderSidOf = (context) => sidOf(context?.agent ?? context?.session ?? context);
   const noteFailure = (tool) => {
     try {
       S().recentFailures.push({ ts: Date.now(), tool: String(tool ?? '?') });
@@ -359,9 +366,15 @@ export function apply(ctx, config = {}) {
   try { ctx.on('agent/turn-stopping', (p) => { retarget(sidOf(p)); if (p && typeof p.turn === 'number') S().obs.turn = p.turn; }); } catch { /* 事件不存在 */ }
   try { ctx.on('agent/turn-end', (p) => { retarget(sidOf(p)); if (p && typeof p.turn === 'number') S().obs.turn = Math.max(S().obs.turn, p.turn); }); } catch { /* 事件不存在 */ }
   try {
-    ctx.on('session/event', (p) => {
-      retarget(sidOf(p));
+    ctx.on('session/event', (sessOrP, maybeEvent) => {
+      // R05（GPT 复核二轮）：宿主实际按 **(session, event)** 发布（dsh-session：callbackArgs=[session,event]）；
+      //   兼容旧单参夹具：event 缺省时退化。身份取 session.id；内容取 event（type/data）。
+      const sess = maybeEvent !== undefined ? sessOrP : null;
+      const p = maybeEvent !== undefined ? maybeEvent : sessOrP;
+      retarget(sidOf(sess) ?? sidOf(p));
       const t = String(p?.type ?? p?.name ?? p?.eventType ?? '');
+      // R04/R05：回合真值也接 **turn/start**（取消/异常回合不更新 turn-stopping ⇒ C3 当轮标记须靠 start 失效）。
+      if (t === 'turn/start') { const tn = Number(p?.data?.turn ?? p?.turn); if (Number.isFinite(tn)) S().obs.turn = Math.max(S().obs.turn, tn); }
       if (t.startsWith('compaction/end') || (t === 'compaction' && p?.phase === 'end')) {
         S().obs.compactions++;
         S().obs.lastCompactionTurn = S().obs.turn;      // 脆弱窗判据（压缩补偿行用）
@@ -381,7 +394,8 @@ export function apply(ctx, config = {}) {
   ctx.systemPrompt.context({
     name: 'akasha:pulse',
     order: cfg.pulseOrder,
-    text: () => {
+    text: (context) => {
+      retarget(renderSidOf(context));
       try {
         const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
         const lines = [core().renderPulseLine(lib.pulse())];
@@ -399,7 +413,8 @@ export function apply(ctx, config = {}) {
   ctx.systemPrompt.context({
     name: 'akasha:address',
     order: cfg.addressOrder,
-    text: () => {
+    text: (context) => {
+      retarget(renderSidOf(context));
       try {
         const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
         const recs = lib.currentRecords(lib.loadStore('canon').records);
@@ -432,11 +447,12 @@ export function apply(ctx, config = {}) {
     ctx.systemPrompt.context({
       name: "akasha:stateful",
       order: cfg.statefulOrder,
-      text: () => {
+      text: (context) => {
+        retarget(renderSidOf(context));
         try {
           const path = join(cfg.akashaDir, "data", "session.jsonl");
           let gist = null;
-          try { gist = latestIntentGist(tailReadText(path).text); } catch { /* 文件缺失/半行等 → 走 null */ }
+          try { gist = latestIntentGist(tailReadText(path).text, curSid === '(unknown)' ? null : curSid); } catch { /* 文件缺失/半行等 → 走 null */ }
           if (!gist) return null;
           const hit = STATEFUL.find((k) => k.re.test(gist));
           if (!hit) return null;
@@ -459,12 +475,12 @@ export function apply(ctx, config = {}) {
   // 近似说明（如实）：context 行在**回合开始**渲染，此刻还不知道本回合会调用什么工具，
   //   故用"最近失败的工具"作为**预提示**（近 30 分钟窗口 + 同工具去重）；"本回合尚未查库"这一前置
   //   在渲染时无法判定，改为"上一个回合没有查库动作时更倾向提示"的弱化版（v1 取"总是可提示"，由去重与上限约束）。
-  const preflightState = { tool: null, at: 0 };
   if (cfg.preflightHints !== false) {
     ctx.systemPrompt.context({
       name: 'akasha:preflight',
       order: cfg.preflightOrder,
-      text: () => {
+      text: (context) => {
+        retarget(renderSidOf(context));
         try {
           if (S().gateState.c3Turn === S().obs.turn) return null;   // F10：仅同轮让位   // C3 优先（同回合只出一条）
           const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
@@ -520,11 +536,11 @@ export function apply(ctx, config = {}) {
           // ① 失败驱动（原逻辑）：近 30 分钟内有过失败 ⇒ 给"那件工具"的反射
           if (recent.length) {
             const tool = String(recent[recent.length - 1].tool || '');
-            const fresh = !(preflightState.tool === tool && now - preflightState.at < WINDOW);  // 同工具 30 分钟去重
+            const fresh = !(S().preflight.tool === tool && now - S().preflight.at < WINDOW);  // 同工具 30 分钟去重
             if (fresh && map[tool]) {
               const h = hintForTool(tool);
               if (h) {
-                preflightState.tool = tool; preflightState.at = now;
+                S().preflight.tool = tool; S().preflight.at = now;
                 emitPreflight({ tool, entry: h.id, hintSource: h.hintSource, mode: 'failure' });
                 return trim80('[坑前提示] ' + tool + ' 前：' + safeInjectInline(h.act) + ' —— 条目 ' + h.id);
               }
@@ -648,7 +664,8 @@ export function apply(ctx, config = {}) {
     ctx.systemPrompt.context({
       name: 'akasha:extreme',
       order: (cfg.pulseOrder ?? 132) + 2,
-      text: () => {
+      text: (context) => {
+        retarget(renderSidOf(context));
         try {
           if (!S().obs.turn) return null;
           const gap = S().obs.lastRecallTurn === null ? '(本进程尚未查库)' : '距今 ' + Math.max(0, S().obs.turn - S().obs.lastRecallTurn) + ' 轮';
@@ -670,7 +687,8 @@ export function apply(ctx, config = {}) {
     ctx.systemPrompt.context({
       name: 'akasha:compensate',
       order: (cfg.pulseOrder ?? 132) + 3,
-      text: () => {
+      text: (context) => {
+        retarget(renderSidOf(context));
         try {
           if (!S().obs.turn || !S().obs.compactions) return null;                  // 没压缩过 ⇒ 不打扰
           const sinceComp = S().obs.lastCompactionTurn === null ? null : Math.max(0, S().obs.turn - S().obs.lastCompactionTurn);
@@ -702,7 +720,8 @@ export function apply(ctx, config = {}) {
     ctx.systemPrompt.context({
       name: 'akasha:conventions',
       order: (cfg.pulseOrder ?? 132) + 4,
-      text: () => {
+      text: (context) => {
+        retarget(renderSidOf(context));
         try {
           const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
           const recs = lib.currentRecords(lib.loadStore('canon').records);
@@ -734,7 +753,8 @@ export function apply(ctx, config = {}) {
     ctx.systemPrompt.context({
       name: 'akasha:recall',
       order: (cfg.pulseOrder ?? 132) + 5,
-      text: () => {
+      text: (context) => {
+        retarget(renderSidOf(context));
         try {
           const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
           // 显式钩子（指代）

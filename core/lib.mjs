@@ -68,9 +68,13 @@ const REDACT_RES = [
   [/\b(Authorization\s*:\s*)(Basic|token|Token|ApiKey)\s+[A-Za-z0-9._\-+/=]{6,}/g, '$1$2 [redacted]'],
   // F02（2026-10-14 外部审查 · GPT）：**带引号 / JSON 形态**此前漏遮——`password="xxx"`、`{"api_key":"xxx"}`
   //   会原样落库。两条规则：① JSON 键值对（敏感键名 + 双引号值）；② 赋值形态的引号值（单/双引号）。
-  //   例外沿用既有口径（占位值与短数字不动：False/True/None/null、1–4 位数字）。
-  [/("[A-Za-z0-9_-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential|authorization)[A-Za-z0-9_-]*"\s*:\s*")(?!False|True|None|null|n\/a)([^"]{6,})(")/gi, '$1[redacted]$3'],
-  [/((?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential|authorization)\s*[=:]\s*)(["'])(?!False|True|None|null|n\/a)([^"']{6,})\2/gi, '$1$2[redacted]$2'],
+  //   **R10（GPT 复核二轮）**：占位豁免从「前缀就放过」改为**整个值等于占位词才放过**（`FalseSYNTHETIC_…` 不再漏遮）。
+  //   **R11（GPT 复核二轮）**：键名从「任意子串」收窄为「**敏感词结尾**」形态——`tokenizer` / `token_count_source` /
+  //   `password_policy` / `secretary` 等合法字段保真；`access_token` / `client_secret` / `api_key` 等照遮。
+  [/((?:[A-Za-z0-9]*[_-])?(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential)"\s*:\s*")([^"]{6,})(")/gi,
+    (m, p1, v, p3) => (/^(?:False|True|None|null|n\/a)$/i.test(v) ? m : p1 + '[redacted]' + p3)],
+  [/((?:[A-Za-z0-9]*[_-])?(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential)\s*[=:]\s*)(["'])([^"']{6,})\2/gi,
+    (m, p1, q, v) => (/^(?:False|True|None|null|n\/a)$/i.test(v) ? m : p1 + q + '[redacted]' + q)],
   // **明确不做**（2026-10-11 裁定）：通用「长随机串」规则（如 [A-Za-z0-9_-]{32,}）—— 它与**我们自己的 id 形态**
   //   冲突（`node-7fe8ec84-L2-2781-4441-eb9ff212` / `canon-…-20261011` 都会命中）⇒ **必然误伤** ⇒ 违反口径①。
   //   此条即「独立令牌形态」的具体取舍：宁可漏报，不做泛化长串遮蔽 ✓
@@ -83,11 +87,15 @@ export function redact(value) {
 
 /** 递归脱敏（对象 / 数组 / 字符串）——只有字符串才过规则，结构原样保留。
  *  F02（2026-10-14 外部审查 · GPT）：**按键判定**——值本身不带凭据前缀时文本规则抓不到，
- *  而键名（api_key / password / token…）已经点名「这是凭据字段」⇒ 直接遮蔽；占位值与短数字仍是例外。 */
-const SENSITIVE_KEY_RE = /(api[_-]?key|apikey|password|passwd|pwd|secret|token|authorization|credential)/i;
+ *  而键名（api_key / password / token…）已经点名「这是凭据字段」⇒ 直接遮蔽；占位值与短数字仍是例外。
+ *  R11（GPT 复核二轮）：键名判定收窄为**完整键或敏感词结尾**（不再任意子串）——`tokenizer` /
+ *  `token_count_source` / `password_policy` / `secretary` 等正常知识保真。 */
+const SENSITIVE_KEY_RE = /^(?:api[_-]?key|apikey|password|passwd|pwd|secret|token|authorization|credential)$/i;
+const SENSITIVE_KEY_TAIL_RE = /(^|[_-])(?:token|secret|password|passwd|pwd|apikey|api[_-]?key|credential)$/i;
+const isSensitiveKey = (k) => SENSITIVE_KEY_RE.test(String(k)) || SENSITIVE_KEY_TAIL_RE.test(String(k));
 export function redactDeep(v, keyHint) {
   if (typeof v === 'string') {
-    if (keyHint && SENSITIVE_KEY_RE.test(keyHint) && v.length >= 6 && !/^(true|false|null|none|yes|no)$/i.test(v) && !/^\d{1,4}$/.test(v)) return '[redacted]';
+    if (keyHint && isSensitiveKey(keyHint) && v.length >= 6 && !/^(true|false|null|none|yes|no)$/i.test(v) && !/^\d{1,4}$/.test(v)) return '[redacted]';
     return redact(v);
   }
   if (Array.isArray(v)) return v.map((x) => redactDeep(x, keyHint));
@@ -939,12 +947,22 @@ export function clipByBudget(result, opts = {}) {
       used += t; kept.push(it); lastKeptIdx = i + 1;
     }
     // F08：地板**只给全局第一条**（多组时后面的组不得各自保底——否则每组各留一条，预算被打穿、账不再实）。
+    // R08（GPT 复核二轮）：**严格上限**——超大条目以**短占位**保底（存在但未展开；全文走 show/--full），
+    //   不再以「首条全文」突破 cap（旧行为 brief 8328/4096、cross 1114/200 均可穿透）。摘要长度随 cap 收缩。
     if (kept.length === 0 && list.length > 0 && used === 0 && !floorDone) {
       const first = list[0];
-      kept.push(first);
-      used += usedOf(first);
-      floorApplied = true; floorDone = true;
-      trimmed = Math.max(0, list.length - 1);        // 首条算留下，其余未显示
+      const BODY = ['snippet', 'gist', 'claim', 'line', 'title', 'situation', 'behavior', 'outcome', 'social_reaction', 'emotion'];
+      const ph = {};
+      for (const k of Object.keys(first)) if (!BODY.includes(k)) ph[k] = first[k];
+      const bodyText = String(first.snippet ?? first.gist ?? first.claim ?? first.line ?? first.title ?? first.situation ?? '');
+      const capChars = Math.max(60, Math.min(300, cap - reserve - 80));
+      ph.snippet = bodyText.slice(0, capChars);
+      ph.oversizeOmitted = true;
+      ph.fullHint = '单条超预算：此处为前 ' + capChars + ' 字摘要；全文用 show ' + String(first.id ?? '') + ' / --full';
+      kept.push(ph);
+      used += usedOf(ph);
+      floorApplied = true; floorDone = true; oversize++;
+      trimmed = Math.max(0, list.length - 1);        // 占位算留下
       lastKeptIdx = Math.max(lastKeptIdx, 1);
     }
     return { kept, lastIndex: lastKeptIdx };
@@ -3482,6 +3500,9 @@ export function rollbackBatch(store, opts = {}) {
       for (;;) { const n = records.find((x) => x.supersedes === c.id); if (!n) break; c = n; ch.push(n); }
       const tip = ch[ch.length - 1];
       if (!isStr(tip.id) || tip.id === rootId) continue;                                          // 只有追加、无修订 ⇒ 无可回滚
+      // R12（GPT 复核二轮）：**重跑零新增**——链尾已是**本窗口**的回滚产物时跳过（原漏洞：重跑时链内第一次修订
+      //   仍符合候选条件 ⇒ 反复追加 r2r1、r2r1r1…）。跨日窗口由候选的日期条件另管。
+      if (tip.rollback_of !== undefined && String(tip.logged_at ?? '').slice(0, 10) >= day) continue;
       // 候选 = 窗口内「未回滚过的修订」（rollback 记录自身不是候选）——重跑/链尾已是回滚记录时自然为空 ⇒ 幂等。
       const firstIdx = ch.findIndex((x, k) => k > 0 && x.rollback_of === undefined && String(x.logged_at ?? '').slice(0, 10) >= day && !rolledBy.has(x.id));
       if (firstIdx < 1) continue;                                                                 // 窗口内无未回滚修订 ⇒ 无可回滚
@@ -4013,6 +4034,9 @@ function reviseUnlocked(store, id, patch, opts) {
   const newId = `${root.id}-r${chain.length}`;
   if (byId.has(newId)) throw new Error('修订 id 冲突：' + newId);
   const next = { ...tip, ...patch, id: newId, supersedes: tip.id };
+  // R13（GPT 复核二轮）：**内容修订不继承状态事件元数据**——tip 若是回滚产物（带 `rollback_of`），普通 revise 复制它
+  //   会让后续 rollback 把这条内容修订当「回滚事件自身」跳过（"回滚后编辑无法再次回滚"）。一次性状态字段在此清除。
+  delete next.rollback_of;
   // 修订 = 一次新写入：logged_at 不继承旧版（SCHEMA：修订链每行都有 ⇒「何时被改」可查）；补丁显式自带则保留
   if (patch.logged_at === undefined) delete next.logged_at;
   const errs = validateRecord(store, next);

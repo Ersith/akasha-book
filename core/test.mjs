@@ -4222,7 +4222,8 @@ t('睡眠 apply · discard 验收（独立）：退役生效 / 链历史仍在 /
   assert.ok(!lib.currentRecords(recs).some((r) => r.id === 'canon-dc-old-20261001'), '旧快照离当前集');
   assert.ok(lib.allIds(recs).has('canon-dc-old-20261001'), '链历史仍在（行只增）');
   const tomb = recs.find((r) => r.id === 'canon-dc-old-20261001-retired');
-  assert.equal(tomb.retired_reason, 'snapshot-superseded');
+  assert.ok(String(tomb.retired_reason).startsWith('snapshot-superseded'), 'reason 前缀保留：' + tomb.retired_reason);
+  assert.ok(String(tomb.retired_reason).includes('plan plan-dc-test'), 'R03：墓碑须带 planId（回执丢失时据此重建撤销）：' + tomb.retired_reason);
   const rv = sleepMod.revokePlan(plan, { files, dry: false, receipt: rcpt, out: join(dir, 'rv.json'), reviewLog: rlog });
   assert.ok(rv.ok);
   const after = lib.loadStore('canon', files.canon).records;

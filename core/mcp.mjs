@@ -63,7 +63,7 @@ function handle(msg) {
           const detailed = a.recall === true
             ? multiRecall(a.query, { via: 'mcp', reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens })
             : lookupDetailed(a.query, { via: 'mcp', reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
-          value = a.report === true ? detailed : (a.recall === true ? detailed : detailed.hits);
+          value = a.report === true || a.recall === true || a.maxTokens !== undefined || a.offset !== undefined ? detailed : detailed.hits;   // R15（GPT 复核二轮）：显式分页时返回完整对象（含 budget.nextOffset/total），默认保持纯 hits 数组的旧契约
         }
       }
       else if (name === 'akasha_price') {
