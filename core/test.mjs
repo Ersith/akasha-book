@@ -4636,8 +4636,11 @@ t('默认档零差：不传 depth 的 lookup/brief/cross/show 与 main 逐字节
   const dir = mkdtempSync(join(SCRATCH, 'akasha-golden-'));
   const mainLib = join(dir, 'main-lib.mjs');
   const script = join(dir, 'golden.mjs');
-  const shown = spawnSync('git', ['show', 'origin/main:core/lib.mjs'], { cwd: join(ROOT, '..'), encoding: 'utf8' });
-  assert.equal(shown.status, 0, shown.stderr || 'git show origin/main:core/lib.mjs 失败');
+  // 2026-10-14 合并落地注：对照对象**钉住** PR 合入前的 main（`de5144c`）——`origin/main` 在合并后会前移、
+  // 使对照失效；`de5144c` 永存于仓历史。工作区树（无 git）回退到 `dist/akasha-oss`（发布仓）取该对象。
+  let shown = spawnSync('git', ['show', 'de5144c:core/lib.mjs'], { cwd: join(ROOT, '..'), encoding: 'utf8' });
+  if (shown.status !== 0) shown = spawnSync('git', ['show', 'de5144c:core/lib.mjs'], { cwd: join(ROOT, '..', 'dist', 'akasha-oss'), encoding: 'utf8' });
+  assert.equal(shown.status, 0, shown.stderr || 'git show de5144c:core/lib.mjs 失败');
   writeFileSync(mainLib, shown.stdout);
   const dataDir = join(dir, 'data');
   const logsDir = join(dir, 'logs');
