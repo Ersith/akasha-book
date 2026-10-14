@@ -107,7 +107,7 @@ for (const f of files) {
     .replace(/[A-Za-z]:[\\/]+DSHHarness[\\/]+[^\s"'`)]*/g, '<DSH_INSTALL>')
     .replace(/[A-Za-z]:[\\/]+个人资料整理_[0-9]+[^\s"'`)]*/g, '<LOCAL_PATH>')
     // 2026-10-14（用户提醒「公开仓，去隐私与我们的 API」）：环境事实族加宽——代理/回环端口与其余本机路径族
-    .replace(/(?:127\.0\.0\.1|localhost):\d{2,5}/g, '127.0.0.1:<PORT>')
+    .replace(/(?:127\.0\.0\.1|localhost):\d{2,5}/g, '127.0.0.1:<PORT>')   // 数据侧只脱敏「带冒号」形（裸数字形会误伤年份/计数等正文，故不做——2026-10-14 裁定）
     .replace(/[A-Za-z]:[\\/]+ServerPackCreator[^\s"'`,)\]}]*/g, '<LOCAL_PATH>')
     .replace(/[A-Za-z]:[\\/]+h[\\/]+all[\\/][^\s"'`,)\]}]*/g, '<LOCAL_PATH>')
     .replace(/[A-Za-z]:[\\/]+dsh-temp[^\s"'`,)\]}]*/g, '<LOCAL_PATH>')

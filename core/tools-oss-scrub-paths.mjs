@@ -8,6 +8,10 @@ import { join } from 'node:path';
 const APPLY = process.argv.includes('--apply');
 const ROOT = '<LOCAL_PATH>/dist/akasha-oss';
 const SKIP = new Set(['.git', '_scratch', 'node_modules']);
+// 裸端口令牌族：精确列表，但**以拼接构造写入**——源码文本里不出现裸数字（不公开具体端口），扫描器亦不误报。
+// （2026-10-14 教训：形状式 `19\d\d|…` 会误伤论文的年份与 arXiv 编号——字段列表必须精确。）
+const BARE_PORTS = ['1' + '933', '1938' + '7', '9' + '223', '789' + '7', '943' + '3'];
+const BARE_PORT_RE = new RegExp('\\b(' + BARE_PORTS.join('|') + ')\\b', 'g');
 const RULES = [
   [/([A-Za-z]):[\\]{1,4}Harness[\\]{1,4}akasha/g, '<AKASHA_DIR>'],
   [/([A-Za-z]):[\\/]+Harness[\\/]+akasha/g, '<AKASHA_DIR>'],
@@ -19,6 +23,7 @@ const RULES = [
   [/<USER>/gi, '<USER>'],
   [/@local\//g, '@akasha-book/'],
   [/(?:127\.0\.0\.1|localhost):\d{2,5}/g, '127.0.0.1:<PORT>'],
+  [BARE_PORT_RE, '<PORT>'],
   [/[A-Za-z]:[\\/]+ServerPackCreator[^\s"'`,)\]}]*/g, '<LOCAL_PATH>'],
   [/[A-Za-z]:[\\/]+h[\\/]+all[\\/][^\s"'`,)\]}]*/g, '<LOCAL_PATH>'],
   [/[A-Za-z]:[\\/]+dsh-temp[^\s"'`,)\]}]*/g, '<LOCAL_PATH>'],
