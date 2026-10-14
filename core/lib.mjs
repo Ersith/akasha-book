@@ -969,9 +969,12 @@ export function clipByBudget(result, opts = {}) {
   };
   const out = { ...result };
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
-  // F08：预留——外围（query + hint + 结构符）在装载时尚未知，按「查询词 + 75 tok」预留（hint 实测
-  //   ~60-70 tok 中文；200 会吃掉小 cap 的装载量——#29 的「后续补齐」即被它误伤，已校准回 75）。
-  const reserve = estimateTokens(String(out.query ?? '')) + 75;
+  // F08-r3（GPT 复核二轮 R09 · 她 token 脚本复跑揭出）：预留改为**真实元数据口径**——report/trace/citeAllowlist/
+  //   stats 等顶层内容此前进不了装填判定（lookup report 20 条小条目全装后整响应 5414>4096）。先把「除条目本体
+  //   与 budget 外的一切」序列化估一遍作为 reserve；条目裁剪据此收缩。极小 cap 低于元数据体量时，overCap 如实标注。
+  const stripItems = { ...out }; delete stripItems.hits; delete stripItems.groups; delete stripItems.budget;
+  const metaTok = estimateTokens(JSON.stringify(stripItems));
+  const reserve = metaTok + 20;
   if (Array.isArray(out.hits)) {
     const all = out.hits;
     if (offset > 0) out.hits = all.slice(offset);          // ② 分页：先跳过后裁剪（排序稳定）
@@ -992,6 +995,17 @@ export function clipByBudget(result, opts = {}) {
     const t1 = trim(sliced, reserve);
     const kept = new Set(t1.kept);
     out.__nextRaw = offset + t1.lastIndex;                  // F08：原始序号口径（同 hits 分支）
+    // R08 补（GPT 复核二轮 · 她 core 脚本复跑揭出）：**floor 占位在 groups 分支必须回位**——否则重组时
+    //   占位不在原列表 ⇒ 被 filter 丢掉（用例：单条超大 brief ⇒ itemsAfter=0，用户看不到「存在但未展开」）。
+    if (t1.kept.length && t1.kept[0] !== sliced[0] && t1.kept[0].oversizeOmitted === true && sliced.length) {
+      const gi = out.groups.findIndex((g) => (Array.isArray(g.hits) ? g.hits : (g.items || [])).includes(sliced[0]));
+      if (gi >= 0) {
+        const g = out.groups[gi];
+        const src = [...(Array.isArray(g.hits) ? g.hits : (g.items || []))];
+        src[src.indexOf(sliced[0])] = t1.kept[0];
+        out.groups[gi] = Array.isArray(g.hits) ? { ...g, hits: src } : { ...g, items: src };
+      }
+    }
     out.groups = out.groups.map((g) => {
       const own = (Array.isArray(g.hits) ? g.hits : (g.items || [])).filter((it) => kept.has(it));
       return Array.isArray(g.hits) ? { ...g, hits: own } : { ...g, items: own };
@@ -1026,7 +1040,7 @@ export function clipByBudget(result, opts = {}) {
     delete probe.budget;
     used = estimateTokens(JSON.stringify(probe));
   }
-  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint };
+  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint, metaTokens: metaTok, overCap: used > cap };
   return out;
 }
 
