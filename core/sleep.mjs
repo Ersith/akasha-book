@@ -714,6 +714,17 @@ const planRefLoad = (ref) => {
 };
 const isExemptRecord = (rec, id) => isProtocolId(String(id)) || isSelfLayerRecord(rec ?? {});
 
+/** 生产路径硬闸：非演练的 `--force` 拒绝。演练（dry）仍可带 force，用来看过期计划会做什么。
+ *  库函数 `applyPlan` 只在 `opts.production === true`（CLI 生产入口）时执行本闸，
+ *  以便既有回执合并回归仍能以编程方式重跑。 */
+export function productionForceRejected(opts = {}) {
+  const dry = opts.dry !== false;
+  if (!dry && opts.force === true) {
+    return '生产路径拒绝非演练的 --force：指纹过期请重新 sleep --plan。--force 只可与演练同用（不加 --yes），用来查看过期计划会做什么，不会写库。';
+  }
+  return null;
+}
+
 /** F04（2026-10-14 外部审查 · GPT）：合并的**决定性字段**必须一致——「同正文 ≠ 同事实」。
  *  canon/mirror：`source.type`（R1 跨来源禁令）；pricing：`behavior` + `valence`（正负定价相反的规则不可并）；
  *  lexicon：定义类字段（word/term/label/category/emotion，见字段才比）。**计划生成与执行共用本函数**（同一资格检查）。
@@ -734,6 +745,11 @@ export function mergeEligiblePair(store, a, b) {
 
 export function applyPlan(planRef, opts = {}) {
   try {
+    const dry0 = opts.dry !== false;
+    if (opts.production === true) {
+      const blocked = productionForceRejected({ dry: dry0, force: opts.force === true });
+      if (blocked) return { ok: false, error: blocked };
+    }
     const plan = planRefLoad(planRef);
     if (!plan || !Array.isArray(plan.ops)) return { ok: false, error: '找不到可用计划：' + String(planRef) };
     const fileOf = (store) => (opts.files && opts.files[store]) || storePath(store);

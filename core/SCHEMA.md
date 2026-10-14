@@ -88,6 +88,7 @@ id；term / trigger / behavior / resolution / source 全部必填（string）。
 - 两轴分开：`event_time` 回答「何时发生的」；`logged_at` 回答「何时记下的」——修订链每行都有 `logged_at` ⇒「某条何时被改」可查。
 - 校验：两字段若存在须为非空字符串。
 - 检索过滤口径：`--since / --until` 按「`event_time` 优先、`logged_at` 回退」的日期级字符串比较（UTC）；无时间戳条目在带过滤时被排除（**2026-10-07 起：输出默认提示「另有 N 条日期未知」——未知≠该时段没有；`--undated` 并入、`--report` 出完整报告**）。
+- 读侧年龄前缀（2026-10-14）：lookup / brief / cross / show / session lookup 的命中行带 `[过去·N天]`（或 `[未来·N天]` / `[日期未知]`）。锚＝`event_time`，否则 `logged_at`，否则段上的 `time`。只渲染，不回写。
 
 ## 退役与删除（2026-10-08，用户裁定）
 
@@ -126,7 +127,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 - 主题词按空格/逗号切分，对六库 `LOOKUP_FIELDS` 计分：整词命中 ×1；含中文且 ≥3 字的词追加相邻二字（bigram）回退 ×0.25（2026-10-07 起）——词组未原样出现也能召回；**回退分 <1 = 弱命中（疑似相关），整词级 ≥1 = 强命中**。`brief` 在强命中为零时明确写「确定不知道」（弱命中仍列出，但不算证据）。孤案 `zeroWeight`：可见、不加权、不算强命中。
 - `--since / --until`（YYYY-MM-DD，lookup / brief / cross 通用）：按 `event_time`（优先）|| `logged_at` 的日期级比较过滤（UTC 口径）；无时间戳条目被排除（**默认提示「另有 N 条日期未知」；`--undated` 并入、`--report` 完整报告；非法日期即拒**）；brief 每条命中带 `time` 坐标；
-- frontier 命中附加状态权重（已实践 3 > 已复现 2 > 高引用 1 > 待验证 0），每库默认 top 3（`--per` 可调）；
+- frontier 命中附加状态权重（已实践 3 > 已复现 2 > 高引用 1 > 待验证 0），每库默认 top **2**（`READ_TIER.briefPerStore`；`--per` 可调）；主字段日常截到约 400 字（`--reflect` / `--depth full` 给全文）；
 - 输出带来源态提示：库内强命中标注「记得·库内」；仅弱命中 →「不确定」并引用 cites；无可用证据 →「确定不知道，不要编」（见「知识分层」）。
 
 ## 起床包（kit）
@@ -144,7 +145,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 `node akasha.mjs cross <词> [--per N]`（MCP：`akasha_cross`）——同一主题词在六库的**全部**命中按库并排：
 
-- 当前版本、按命中数排序、**主行不截断**（`cross()` 不再 `slice(0, 240)`；canon=claim；mirror=境况→反应；orphan=摘要；pricing=行为；lexicon=词条：行为；frontier=题名）；
+- 当前版本、按命中数排序。主行字段仍是全文来源（canon=claim；mirror=境况→反应；orphan=摘要；pricing=行为；lexicon=词条：行为；frontier=题名），**日常渲染截到约 300 字并剥完成态符号**；`--reflect` / `--depth full` 给原文、不截断；
 - 「同题多源」提示 + 处置姿势：**矛盾不合并**——留档用孤案（orphan add），定论用修订链（revise）；
 - 与 `brief` 的分工：brief 是「按相关度取前 N 条」（快速了解），cross 是「全摆出来对位」（裁决用）；两者与 lookup 均支持 `--since / --until` 时间过滤。
 
@@ -158,7 +159,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 ## 直读（show）
 
-`node akasha.mjs show <id>`——按 id 跨六库取**当前版本**全文（JSON 原样）；命中被修订的旧版本时，提示链尾 id 并回显旧版原文。配合 lookup / brief 构成「先搜后读」。
+`node akasha.mjs show <id> [--reflect] [--depth pointer|summary|full]`——按 id 跨六库直读。**默认摘要档**（单条硬顶约 1500 字，非全文）；`--reflect` 或 `--depth full` 取所查版本全文。命中被修订的旧版本时，提示链尾 id，record 仍是所查版本（日常可能已按硬顶截断，全文用 `--reflect`）。配合 lookup / brief 构成「先搜后读」。
 
 ## 候选转正（promote）
 
@@ -201,7 +202,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
   - `near-duplicate`：主文本 token Jaccard ≥ θ。主文本：canon=`claim`；mirror=`situation`+`behavior`；lexicon=`term`+`trigger`；pricing=`behavior`。token = `tokenize` 切词，含中文的词再拆相邻二字。orphan 零权重，不参与合并。
   - `duplicate-url`（frontier）：url 精确相等（与 `audit` 同口径）。
   - keep 按 **R4 代际规则**（2026-10-14 用户裁定落地；草案 R4）：同源快照两代（版本标记可解析且互异）⇒ **取最新**；真重复（无版本标记）⇒ 取链根 `logged_at` 最早（同则根 id 字典序）；判不了（标记混用/重复）⇒ `keep: null` + `needsHuman: true`（`--apply` 拒绝该 op）。keep 只吸收与它**本身** ≥ θ 的条目（每个 absorb 在 `evidence.pairs` 里都有直接相似度；换 keep 后 absorb 从全组重算）。`mergedText` 恒为 `null`——合并文本由模型 / 人填，代码不生成语义文本。
-  - **执行（2026-10-14 实现 A 档）**：`sleep --apply <planId|文件> [--yes] [--only <id>] [--force]`——keep **一字不动**，absorb 逐条软退役（`retired_reason: 'merged-into <keep>'`）；默认 dry；basis 指纹过期 ⇒ 拒绝（除非 `--force`）；豁免面/needsHuman ⇒ 拒绝；审计＝review-log（verdict 合并/退役）+ `logs/sleep-apply-<planId>.json` 回执。`sleep --revoke` 同款复位。
+  - **执行（2026-10-14 实现 A 档）**：`sleep --apply <planId|文件> [--yes] [--only <id>] [--force]`——keep **一字不动**，absorb 逐条软退役（`retired_reason: 'merged-into <keep>'`）；默认 dry；basis 指纹过期 ⇒ 拒绝。**生产路径拒绝非演练的 `--force`**（`sleep --apply --yes --force` 直接退出，不写库）；指纹过期请重新 `sleep --plan`。`--force` 只可与演练同用（不加 `--yes`），用来查看过期计划会做什么。豁免面/needsHuman ⇒ 拒绝；审计＝review-log（verdict 合并/退役）+ `logs/sleep-apply-<planId>.json` 回执。`sleep --revoke` 同款复位。
 - **discard**（先于 merge 判定）：
   - `snapshot-superseded`：canon 链根 id 形如 `<主题>-YYYYMMDD`，同主题存在日期更晚的当前快照；
   - `canon-stale-unused`：`last_reviewed` 超过 `staleDays`，且 hooks 日志里 `kind:"usage"` 从未引用该链上任何 id。**日志缺失 = 引用数未知 → 不出此类 op**（记入 `skipped`）；
@@ -433,10 +434,11 @@ verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", a
 - **空策略不假装合规**：外置某面为空 ⇒ 记 `warnings`（gate 侧同样告警），绝不静默放行。
 - **#34 落点**：`data-direct-write` 保持 **gate 硬拦**；`ops_replace` / `ops_bash` 补进拦截面（dsh-ops 落地后的新写盘入口）；gate selftest 覆盖清单同步 +2 条。**gate 1.3.0-h5 已装（restart-required，待下次重启激活）**。
 
-**citeAllowlist（#30；lookup / brief / --recall 三处返回）**
+**citeAllowlist（#30；lookup / brief / cross / show / session lookup / --recall 返回）**
 
-- 形状：`[{id, store, tier, strong}]`——**本回合取回的 id 清单**（事前形状；事后仍由 `output-audit` 抓假 id）。
+- 形状：`[{id, store, tier, strong}]`——**本回合取回的 id 清单**（事前形状；事后仍由 `output-audit` 抓假 id）。裁剪之后按实际返回重建。
 - 软协议：本回合断言**优先引用清单内 id**；清单外 = 无据（要么先查、要么明说不知道）；**零命中 ⇒ 空清单**（不冒充有据）。
+- 轻量核对：`checkCitations(cited, allowlist)` 返回 `{ok, outside, allowed}`，只报引用是否落在本轮清单内，**不拦截**任何读/写通道。
 
 ## 回滚命令化 + 自治读数族（#19 / #1，2026-10-12 窗口 3）
 

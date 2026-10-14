@@ -749,7 +749,7 @@ if (lib) {
       const flushSkip = sessionMod.extractSegments([recs[0]], { session: 'sY', emitFrom: 0, recordedUnpaired: new Set([1]) });
       assert.equal(flushSkip.length, 0, '已记录的未配对调用不得重复冲刷：' + JSON.stringify(flushSkip.map((s) => s.gist)));
     });
-    t('session：indexSession 端到端（水位推进后结果到 ⇒ 完成版落库；二跑幂等）', () => {
+    tz('session：indexSession 端到端（水位推进后结果到 ⇒ 完成版落库；二跑幂等）', () => {
       const dir = mkdtempSync(join(SCRATCH, 'akasha-ses-emit-'));
       const fx = join(dir, 'fx.jsonl.zstd'), store = join(dir, 'session.jsonl'), meta = join(dir, 'meta.json');
       const rec = (o) => JSON.stringify(o);
@@ -4538,6 +4538,221 @@ t('F08 修复批（预算账实 ≤cap / 整条上账 / 分页原始序号口径
   const br = run('brief', '青雀', '--max-tokens', '300');
   assert.equal(br.status, 0, br.stderr);
   rmSync(dir, { recursive: true, force: true });
+});
+
+t('读档三档：指针短于摘要、摘要硬顶、reflect/depth full 给原文且不改库（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-tier-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const claim = '三档夹具词⇒' + '甲'.repeat(1800) + 'TAILMARK';
+  const rec = { id: 'canon-tier-1', claim, source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-01', event_time: '2026-10-01' };
+  writeFileSync(files.canon, JSON.stringify(rec) + '\n');
+  const before = readFileSync(files.canon);
+  const base = { files, contextBudget: false, today: '2026-10-14', queryLog: false, doseThreshold: 0 };
+  const pointer = lib.lookupDetailed('三档夹具词', { ...base, depth: 'pointer' });
+  const summary = lib.lookupDetailed('三档夹具词', base);
+  const full = lib.lookupDetailed('三档夹具词', { ...base, reflect: true });
+  const byDepth = lib.lookupDetailed('三档夹具词', { ...base, depth: 'full' });
+  assert.equal(pointer.depth, 'pointer');
+  assert.equal(summary.depth, 'summary');
+  assert.equal(full.depth, 'full');
+  assert.ok(pointer.hits[0].snippet.length <= lib.READ_TIER.pointerChars, '指针摘应 ≤80：' + pointer.hits[0].snippet.length);
+  assert.ok(summary.hits[0].snippet.length <= lib.READ_TIER.lookupSummaryChars, '摘要摘应 ≤120：' + summary.hits[0].snippet.length);
+  assert.ok(pointer.hits[0].snippet.length < summary.hits[0].snippet.length, '指针应短于摘要');
+  assert.ok(!summary.hits[0].snippet.includes('TAILMARK'), '日常 lookup 不得带出尾部全文');
+  assert.ok(full.hits[0].snippet.includes('TAILMARK') && byDepth.hits[0].snippet.includes('TAILMARK'), 'reflect 与 depth:full 须含原文尾');
+  assert.equal(full.hits[0].snippet, byDepth.hits[0].snippet);
+  const shown = lib.show('canon-tier-1', { file: files.canon, store: 'canon', today: '2026-10-14' });
+  const shownFull = lib.show('canon-tier-1', { file: files.canon, store: 'canon', reflect: true });
+  assert.equal(shown.depth, 'summary');
+  assert.equal(shown.truncated, true);
+  assert.ok(shown.record.claim.length <= lib.READ_TIER.claimCapChars + 1, 'show 日常硬顶：' + shown.record.claim.length);
+  assert.ok(!shown.record.claim.includes('TAILMARK'), 'show 默认非全文');
+  assert.equal(shownFull.record.claim, claim, 'reflect 须逐字取回 claim');
+  assert.equal(shownFull.depth, 'full');
+  assert.equal(shownFull.truncated, false);
+  assert.equal(lib.show('canon-tier-1', { file: files.canon, store: 'canon', depth: 'full' }).record.claim, claim);
+  const briefSum = lib.brief('三档夹具词', base);
+  const briefFull = lib.brief('三档夹具词', { ...base, depth: 'full' });
+  const bClaim = briefSum.groups[0].hits[0].claim;
+  assert.ok(bClaim.length <= lib.READ_TIER.summaryChars + 1 && !bClaim.includes('TAILMARK'), 'brief 主字段日常截断');
+  assert.equal(briefFull.groups[0].hits[0].claim, claim, 'brief depth:full 给全文');
+  const longFiles = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, 'b-' + n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(longFiles[n], '');
+  const rows = [1, 2, 3].map((i) => JSON.stringify({ id: 'canon-tier-n' + i, claim: '三档条数夹具 ' + i, source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-01', event_time: '2026-10-01' }));
+  writeFileSync(longFiles.canon, rows.join('\n') + '\n');
+  const perDefault = lib.brief('三档条数夹具', { files: longFiles, contextBudget: false, queryLog: false, doseThreshold: 0 });
+  assert.equal(perDefault.groups[0].hits.length, lib.READ_TIER.briefPerStore, 'brief 默认每库条数应是 briefPerStore');
+  assert.equal(perDefault.groups[0].total, 3, 'total 仍报全部命中，截的是返回条');
+  const crossSum = lib.cross('三档夹具词', { ...base });
+  const crossFull = lib.cross('三档夹具词', { ...base, reflect: true });
+  const line = crossSum.groups[0].items[0].line;
+  assert.ok(line.length <= lib.READ_TIER.crossLineChars + 1 && !line.includes('TAILMARK'), 'cross 日常行截断：' + line.length);
+  assert.ok(!line.includes('⇒'), 'cross 日常剥皮');
+  assert.equal(crossFull.groups[0].items[0].line, claim, 'cross reflect 不截断、不剥皮');
+  const sfile = join(dir, 'session.jsonl');
+  const gist = '三档会话夹具⇒' + '乙'.repeat(1800) + 'TAILMARK';
+  writeFileSync(sfile, JSON.stringify({ kind: 'conclusion', session: 'sT', seq: 1, id: 'seg-sT-1', gist, keywords: ['三档会话夹具'], time: '2026-10-01T00:00:00Z', event_time: '2026-10-01' }) + '\n');
+  const sess = sessionMod.lookupSegmentsDetailed('三档会话夹具', { storeFile: sfile, today: '2026-10-14', doseThreshold: 0, queryLog: false });
+  const sessFull = sessionMod.lookupSegmentsDetailed('三档会话夹具', { storeFile: sfile, reflect: true, doseThreshold: 0, queryLog: false });
+  assert.equal(sess.depth, 'summary');
+  assert.ok(sess.hits[0].gist.length <= lib.READ_TIER.summaryChars + 1 && !sess.hits[0].gist.includes('TAILMARK'));
+  assert.equal(sessFull.hits[0].gist, gist, 'session reflect 给原文');
+  assert.equal(sessFull.depth, 'full');
+  assert.ok(sessFull.hits.every((h) => h.kind !== 'process'), 'reflect 不自动纳入过程段');
+  assert.equal(readFileSync(files.canon).equals ? readFileSync(files.canon).equals(before) : readFileSync(files.canon).toString() === before.toString(), true, '读档不得改 JSONL');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('轻量 L4：citeAllowlist 覆盖本轮返回，checkCitations 只核对不拦截（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-l4-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  writeFileSync(files.canon, JSON.stringify({ id: 'canon-l4', claim: '引用核对夹具词', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-01', event_time: '2026-10-01' }) + '\n');
+  const opts = { files, contextBudget: false, queryLog: false, doseThreshold: 0 };
+  const l = lib.lookupDetailed('引用核对夹具词', opts);
+  const c = lib.cross('引用核对夹具词', opts);
+  const s = lib.show('canon-l4', { file: files.canon, store: 'canon' });
+  const allow = l.citeAllowlist.map((x) => x.id);
+  assert.deepEqual(allow, l.hits.map((h) => h.id), 'lookup 清单须等于本轮 hits');
+  assert.deepEqual(c.citeAllowlist.map((x) => x.id), c.groups.flatMap((g) => g.items.map((it) => it.id)));
+  assert.deepEqual(s.citeAllowlist.map((x) => x.id), ['canon-l4']);
+  const ok = lib.checkCitations(allow, l.citeAllowlist);
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.outside, []);
+  const bad = lib.checkCitations(['canon-l4', 'canon-not-in-round'], l.citeAllowlist);
+  assert.equal(bad.ok, false);
+  assert.deepEqual(bad.outside, ['canon-not-in-round']);
+  const sfile = join(dir, 'session.jsonl');
+  writeFileSync(sfile, JSON.stringify({ kind: 'conclusion', session: 'sL', seq: 1, id: 'seg-sL-1', gist: '引用核对夹具词', keywords: [], time: '2026-10-01T00:00:00Z' }) + '\n');
+  const sess = sessionMod.lookupSegmentsDetailed('引用核对夹具词', { storeFile: sfile, queryLog: false });
+  assert.equal(sess.citeAllowlist[0].store, 'session');
+  assert.equal(sess.citeAllowlist[0].id, 'seg-sL-1');
+  assert.equal(lib.checkCitations([{ id: 'seg-sL-1' }], sess.citeAllowlist).ok, true);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('读侧时间前缀：event_time|logged_at 渲染 [过去·N天]，不写库（能红）', () => {
+  assert.equal(lib.agePrefix({ event_time: '2026-10-01' }, { today: '2026-10-14' }), '[过去·13天]');
+  assert.equal(lib.agePrefix({ logged_at: '2026-10-10T00:00:00Z' }, { today: '2026-10-14' }), '[过去·4天]');
+  assert.equal(lib.agePrefix({ event_time: '2026-10-20' }, { today: '2026-10-14' }), '[未来·6天]');
+  assert.equal(lib.agePrefix({}, { today: '2026-10-14' }), '[日期未知]');
+  assert.equal(lib.agePrefix({ event_time: 'not-a-date' }, { today: '2026-10-14' }), '[日期未知]');
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-age-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const raw = JSON.stringify({ id: 'canon-age', claim: '年龄前缀夹具', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-01', event_time: '2026-10-01' }) + '\n';
+  writeFileSync(files.canon, raw);
+  const hit = lib.lookupDetailed('年龄前缀夹具', { files, contextBudget: false, today: '2026-10-14', queryLog: false }).hits[0];
+  assert.equal(hit.agePrefix, '[过去·13天]');
+  const shown = lib.show('canon-age', { file: files.canon, store: 'canon', today: '2026-10-14' });
+  assert.equal(shown.agePrefix, '[过去·13天]');
+  const line = lib.cross('年龄前缀夹具', { files, today: '2026-10-14', queryLog: false }).groups[0].items[0];
+  assert.equal(line.agePrefix, '[过去·13天]');
+  const bHit = lib.brief('年龄前缀夹具', { files, contextBudget: false, today: '2026-10-14', queryLog: false, doseThreshold: 0 }).groups[0].hits[0];
+  assert.equal(bHit.agePrefix, '[过去·13天]');
+  assert.equal(readFileSync(files.canon, 'utf8'), raw, '前缀不得回写');
+  const cliAge = cli(['lookup', '龟兔']);
+  assert.equal(cliAge.status, 0, cliAge.stderr || '');
+  assert.match(cliAge.stdout || '', /\[(过去|未来)·\d+天\]|\[日期未知\]/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('genre_render：日常读侧线为 true，reflect/depth full 为 false（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-grender-'));
+  const qlog = join(dir, 'query-log.jsonl');
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  writeFileSync(files.canon, JSON.stringify({ id: 'canon-gr', claim: '体裁侧线夹具', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-13' }) + '\n');
+  const sfile = join(dir, 'session.jsonl');
+  writeFileSync(sfile, JSON.stringify({ kind: 'conclusion', session: 'sG', seq: 1, id: 'seg-sG-1', gist: '体裁侧线夹具', keywords: [], time: '2026-10-13T00:00:00Z' }) + '\n');
+  lib.lookupDetailed('体裁侧线夹具', { files, contextBudget: false, queryLog: qlog });
+  lib.lookupDetailed('体裁侧线夹具', { files, contextBudget: false, queryLog: qlog, reflect: true });
+  lib.brief('体裁侧线夹具', { files, contextBudget: false, queryLog: qlog });
+  lib.cross('体裁侧线夹具', { files, queryLog: qlog, depth: 'full' });
+  sessionMod.lookupSegmentsDetailed('体裁侧线夹具', { storeFile: sfile, queryLog: qlog, via: 'lib' });
+  sessionMod.lookupSegmentsDetailed('体裁侧线夹具', { storeFile: sfile, queryLog: qlog, via: 'lib', rawProcess: true });
+  const lines = readFileSync(qlog, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((x) => [x.cmd, x.genre_render]), [
+    ['lookup', true], ['lookup', false], ['brief', true], ['cross', false], ['session', true], ['session', false]
+  ], JSON.stringify(lines.map((x) => [x.cmd, x.genre_render])));
+  assert.equal(lib.genreRenderOf({}), true);
+  assert.equal(lib.genreRenderOf({ reflect: true }), false);
+  assert.equal(lib.genreRenderOf({ rawProcess: true }), false);
+  assert.equal(lib.genreRenderOf({ depth: 'full' }), false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('sleep --force：生产路径拒绝非演练 force，演练仍可看过期计划（能红）', () => {
+  const msg = sleepMod.productionForceRejected({ dry: false, force: true });
+  assert.equal(typeof msg, 'string');
+  assert.match(msg, /生产路径拒绝/);
+  assert.equal(sleepMod.productionForceRejected({ dry: true, force: true }), null);
+  assert.equal(sleepMod.productionForceRejected({ dry: false, force: false }), null);
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-force-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const body = JSON.stringify({ id: 'canon-fg', claim: 'force 闸夹具', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-14', event_time: '2026-10-14' }) + '\n';
+  writeFileSync(files.canon, body);
+  const plan = { planId: 'plan-force-gate', version: 1, basis: {}, ops: [
+    { op: 'discard', store: 'canon', id: 'canon-fg', reason: 'snapshot-superseded', evidence: {} }
+  ] };
+  const blocked = sleepMod.applyPlan(plan, { files, dry: false, force: true, production: true, out: false });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /生产路径拒绝/);
+  assert.equal(readFileSync(files.canon, 'utf8'), body, '生产 force 不得写库');
+  const cliNo = cli(['sleep', '--apply', 'no-such-plan-force', '--yes', '--force']);
+  assert.equal(cliNo.status, 1);
+  assert.match(cliNo.stderr || '', /生产路径拒绝/);
+  const cliDry = cli(['sleep', '--apply', 'no-such-plan-force', '--force']);
+  assert.equal(cliDry.status, 1);
+  assert.doesNotMatch(cliDry.stderr || '', /生产路径拒绝/);
+  assert.match(cliDry.stderr || '', /执行失败|找不到/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('复审小样本：宪章原文进 audit.sample，核心档最多 10 条（能红）', () => {
+  assert.ok(lib.REVIEW_CHARTER_NO_PRESSURE.startsWith('不给压力：复审是对照，不是考核。'));
+  const live = lib.audit({ today: '2026-10-14' });
+  assert.equal(live.review.sample.charter, lib.REVIEW_CHARTER_NO_PRESSURE);
+  assert.ok(live.review.sample.window.taken <= 10);
+  assert.ok(live.review.sample.steps[0].startsWith('排期'));
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-rsample-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const rows = [];
+  for (let i = 0; i < 12; i += 1) {
+    rows.push(JSON.stringify({ id: 'canon-due-' + i, claim: '核心到期 ' + i, source: { type: '复现', ref: 'r' }, last_reviewed: '2026-01-01', event_time: '2026-01-01' }));
+  }
+  rows.push(JSON.stringify({ id: 'canon-general', claim: '一般档不到期窗', source: { type: '官方', ref: 'r' }, last_reviewed: '2026-01-01', event_time: '2026-01-01' }));
+  writeFileSync(files.canon, rows.join('\n') + '\n');
+  const due = lib.reviewDue({ files, today: '2026-10-14' });
+  const sample = lib.reviewSample({ due, limit: 100 });
+  assert.equal(sample.window.coreDue, 12);
+  assert.equal(sample.window.taken, 10, '窗上限 10，不把一般档补进来');
+  assert.ok(sample.items.every((x) => x.intervalDays === 30 && x.id.startsWith('canon-due-')));
+  assert.equal(lib.reviewSample({ due, limit: 3 }).window.taken, 3);
+  assert.equal(sample.charter, lib.REVIEW_CHARTER_NO_PRESSURE);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('MCP 读返回默认紧凑 JSON，pretty 才缩进（能红）', () => {
+  const probe = [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'akasha_show', arguments: { id: 'canon-akasha-usage-r10' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'akasha_show', arguments: { id: 'canon-akasha-usage-r10', pretty: true } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'akasha_show', arguments: { id: 'canon-akasha-usage-r10', depth: 'full' } } })
+  ].join('\n') + '\n';
+  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe });
+  const lines = (r.stdout || '').trim().split(/\r?\n/).map((l) => JSON.parse(l));
+  assert.equal(lines.length, 3, (r.stderr || '') + (r.stdout || '').slice(0, 200));
+  const compact = lines[0].result.content[0].text;
+  const pretty = lines[1].result.content[0].text;
+  assert.ok(!compact.includes('\n'), '默认不得 pretty');
+  assert.ok(pretty.includes('\n') && pretty.length > compact.length, 'pretty:true 才换行展开');
+  const parsed = JSON.parse(compact);
+  assert.equal(parsed.depth, 'summary');
+  assert.ok(Array.isArray(parsed.citeAllowlist) && parsed.citeAllowlist.some((x) => x.id === 'canon-akasha-usage-r10'));
+  assert.equal(JSON.parse(lines[2].result.content[0].text).depth, 'full');
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);

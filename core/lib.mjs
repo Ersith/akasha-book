@@ -670,7 +670,8 @@ export function cross(query, opts = {}) {
         hits.push({
           id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan', line: PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : hay,
           rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
-          tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
+          tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted),
+          time: tsOf(r) ? String(tsOf(r)).slice(0, 10) : null, agePrefix: agePrefix(r, { today: opts.today })
         });
       }
     }
@@ -683,16 +684,21 @@ export function cross(query, opts = {}) {
   const hint = multi.length
     ? `同题多源：${multi.join('、')}——对位时若见矛盾：不合并；矛盾留档用「孤案」（orphan add），定论用「修订链」（revise）。`
     : null;
-  // cross = 对位视图（并排对账），契约＝「主行不截断」⇒ **豁免**「每次查阅上限」（那是取料类的事，2026-10-11）
-  // 体裁隔离 P0（2026-10-13 复查补齐）：cross 的主行＝**全文**（六库对位最重的文本面），同属读侧 ⇒ **默认剥皮**；
-  //   仅剥符号、**不截断**（契约不破）；反思通道 `--reflect` / MCP `reflect:true` 给原文；**不套剂量闸**（摘要会破「不截断」契约）。
-  if (opts.reflect !== true) {
+  // cross = 对位视图（并排对账）⇒ **豁免**「每次查阅上限」（那是取料类的事，2026-10-11）。
+  // 体裁隔离＝渲染策略：默认剥皮。读档三档：日常摘要行宽 crossLineChars；reflect / depth:full ＝全文不截断。
+  const depth = readDepthOf(opts);
+  if (depth !== 'full') {
     for (const g of groups) for (const it of g.items) it.line = stripGenre(String(it.line ?? ''));
+    const cap = depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.crossLineChars;
+    for (const g of groups) for (const it of g.items) it.line = projectText(it.line, depth, cap);
   }
-  const __out = { query: q, groups, total, hint };
-  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'cross', query: __qRaw, hits: total, ms: Date.now() - __t0, ids: groups.flatMap((g) => g.items.map((it) => it.id)) }, opts);
+  const citeAllowlist = [];
+  for (const g of groups) for (const it of g.items) citeAllowlist.push({ id: it.id, store: g.store, tier: it.tier ?? null, strong: !!it.strong });
+  const __out = { query: q, groups, total, hint, depth, citeAllowlist };
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'cross', query: __qRaw, hits: total, ms: Date.now() - __t0, ids: citeAllowlist.map((x) => x.id), genreRender: genreRenderOf(opts) }, opts);
   // F08（2026-10-14 外部审查 · GPT）：**显式给了 maxTokens / offset 才守预算**——默认仍豁免全量（「性能优先」：
   //   对位视图的完整可达性优先，削减只在调用方明确要求时发生；分页可续取 `budget.nextOffset`，不丢内容）。
+  //   clipByBudget 原样保留（账实 + 原始序号）；depth / citeAllowlist 随结果对象带过去，不改裁剪算法。
   if (opts.maxTokens !== undefined || Math.floor(opts.offset ?? 0) > 0) return clipByBudget(__out, { ...opts });
   return __out;
 }
@@ -1811,8 +1817,12 @@ export function lookupDetailed(query, opts = {}) {
       // strong 只看整词命中；严重度×可信度×复杂度只进 rank，不进 score。
       const strong = name !== 'orphan' && sc.whole >= 1;
       const rf = applyRank(sc.score, name, r, cred, { ...rankOpts, strong });
+      const __depth0 = readDepthOf(opts);
+      const __snipCap = __depth0 === 'full' ? null : (__depth0 === 'pointer' ? READ_TIER.pointerChars : READ_TIER.lookupSummaryChars);
       const hit = {
-        store: name, id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan', snippet: redact(hay.slice(0, 120)),
+        store: name, id: r.id, score: sc.score, strong, zeroWeight: name === 'orphan',
+        snippet: redact(__snipCap == null ? hay : hay.slice(0, __snipCap)),
+        time: tsOf(r) ? String(tsOf(r)).slice(0, 10) : null, agePrefix: agePrefix(r, { today: opts.today }),
         rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
         tier: cred ? cred.tier : null, displayTier: cred ? cred.displayTier : null, stale: !!(cred && cred.stale), refuted: !!(cred && cred.refuted)
       };
@@ -1847,7 +1857,7 @@ export function lookupDetailed(query, opts = {}) {
   const __res = { hits: ranked, stats, knowledge, citeAllowlist, trace, blindspots: blindspotsFor({ perspective: opts.perspective }) };
   // I-12 P1-③ 剂量闸（2026-10-13）：符号负荷超阈 ⇒「后续条目」snippet 摘要化（保 id / 序位；反思通道与 doseThreshold:0 不受限）。
   const __doseThreshold = Number.isInteger(opts.doseThreshold) ? opts.doseThreshold : GENRE_DOSE_DEFAULTS.threshold;
-  if (opts.reflect !== true && __doseThreshold > 0 && ranked.length) {
+  if (readDepthOf(opts) !== 'full' && __doseThreshold > 0 && ranked.length) {
     const dg = doseGate(ranked.map((h) => h.snippet), { threshold: __doseThreshold });
     if (dg.cutoff !== null) {
       for (let i = dg.cutoff; i < ranked.length; i += 1) ranked[i] = { ...ranked[i], snippet: doseSummary(ranked[i].snippet), dose: true };
@@ -1855,8 +1865,10 @@ export function lookupDetailed(query, opts = {}) {
     }
   }
   const __out = opts.contextBudget === false ? __res : clipByBudget(__res, { ...opts, offset: opts.offset });
+  __out.depth = readDepthOf(opts);
+  if (Array.isArray(__out.hits)) __out.citeAllowlist = citeRows(__out.hits);
   // I-02 查询侧线（append-only；失败静默，绝不影响返回值）
-  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'lookup', query: __qRaw, hits: ranked.length, ms: Date.now() - __t0, ids: ranked.map((h) => h.id) }, opts);
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'lookup', query: __qRaw, hits: (__out.hits || []).length, ms: Date.now() - __t0, ids: (__out.hits || []).map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
   return __out;
 }
 
@@ -1911,7 +1923,9 @@ export function multiRecall(query, opts = {}) {
       || String(a.id).localeCompare(String(b.id), 'en'));
   const out = { ...base, hits: fused, rrf: { lexical: lexical.length, citation: citHits.length, k }, citeAllowlist: [...base.citeAllowlist || [], ...fused.filter((h) => isStr(h.id)).map((h) => ({ id: h.id, store: h.store ?? null, tier: h.tier ?? null, strong: !!h.strong }))] };
   const __out = opts.contextBudget === false ? out : clipByBudget(out, { ...opts, offset: opts.offset });
-  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'recall', query: String(query ?? '').trim(), hits: fused.length, ms: Date.now() - __t0, ids: fused.map((h) => h.id) }, opts);
+  __out.depth = readDepthOf(opts);
+  if (Array.isArray(__out.hits)) __out.citeAllowlist = citeRows(__out.hits);
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'recall', query: String(query ?? '').trim(), hits: (__out.hits || []).length, ms: Date.now() - __t0, ids: (__out.hits || []).map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
   return __out;
 }
 
@@ -1939,7 +1953,7 @@ export function brief(query, opts = {}) {
   const filtered = { refuted: 0, tagMismatch: 0, outOfRange: 0, noKeyword: 0, deduped: 0, belowThreshold: 0 };
   if (!q) return { query: q, tokens: [], groups: [], strongHits: 0, note: '空查询：给一个主题词（多个词用空格分隔）。', knowledge: knowledgeRoute({ query: '', strongHits: 0, cites: [] }), stats: { filtered } };
   const tokens = tokenize(q);
-  const perStore = Number.isInteger(opts.perStore) && opts.perStore > 0 ? opts.perStore : 3;
+  const perStore = Number.isInteger(opts.perStore) && opts.perStore > 0 ? opts.perStore : READ_TIER.briefPerStore;
   const groups = [];
   const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
   for (const name of STORES) {
@@ -1984,7 +1998,7 @@ export function brief(query, opts = {}) {
         const base = x.score + (name === 'frontier' ? (STATUS_WEIGHT[x.r.status] ?? 0) : 0) + valenceTip(x.r);
         const rf = applyRank(base, name, x.r, x.cred, { ...rankOpts, strong: x.strong });
         return {
-          ...briefHit(name, x.r, x.score), strong: x.strong, zeroWeight: x.zeroWeight,
+          ...briefHit(name, x.r, x.score), agePrefix: agePrefix(x.r, { today: opts.today }), strong: x.strong, zeroWeight: x.zeroWeight,
           rank: rf.rank, factor: rf.factor, severity: rf.severity, complexity: rf.complexity, factorApplied: rf.factorApplied, balance: rf.balance,
           tier: x.cred ? x.cred.tier : null, displayTier: x.cred ? x.cred.displayTier : null,
           stale: !!(x.cred && x.cred.stale), refuted: !!(x.cred && x.cred.refuted)
@@ -1995,7 +2009,7 @@ export function brief(query, opts = {}) {
   // I-12 P1-③ 剂量闸（2026-10-13）：按「主文本字段」计符号负荷，超阈 ⇒「后续条目」该字段摘要化（反思通道与 doseThreshold:0 不受限）。
   const __doseThresholdB = Number.isInteger(opts.doseThreshold) ? opts.doseThreshold : GENRE_DOSE_DEFAULTS.threshold;
   let __doseB = null;
-  if (opts.reflect !== true && __doseThresholdB > 0 && groups.length) {
+  if (readDepthOf(opts) !== 'full' && __doseThresholdB > 0 && groups.length) {
     const seq = [];
     for (const g of groups) for (const h of g.hits) seq.push({ g, h });
     const dg = doseGate(seq.map((x) => String(x.h[DOSE_TEXT_FIELD[x.g.store]] ?? '')), { threshold: __doseThresholdB });
@@ -2007,6 +2021,11 @@ export function brief(query, opts = {}) {
       }
       __doseB = { threshold: __doseThresholdB, total: dg.total, from: dg.cutoff, trimmed: seq.length - dg.cutoff };
     }
+  }
+  const __bDepth = readDepthOf(opts);
+  if (__bDepth !== 'full') {
+    const cap = __bDepth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.summaryChars;
+    for (const g of groups) g.hits = g.hits.map((h) => projectHitFields(h, __bDepth, cap));
   }
   const flat = [];
   for (const g of groups) for (const h of g.hits) flat.push({ ...h, store: g.store });
@@ -2040,7 +2059,11 @@ export function brief(query, opts = {}) {
       return layers;
     })() };
   const __out = opts.contextBudget === false ? __bres : clipByBudget(__bres, opts);   // 取料类：每次查阅上限默认生效
-  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'brief', query: q, hits: groups.reduce((n, g) => n + g.total, 0), ms: Date.now() - __t0, ids: flat.map((h) => h.id) }, opts);
+  __out.depth = readDepthOf(opts);
+  const __cited = [];
+  for (const g of __out.groups || []) for (const h of g.hits || []) if (isStr(h.id)) __cited.push({ id: h.id, store: g.store, tier: h.tier ?? null, strong: !!h.strong });
+  __out.citeAllowlist = __cited;
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'brief', query: q, hits: groups.reduce((n, g) => n + g.total, 0), ms: Date.now() - __t0, ids: __cited.map((h) => h.id), genreRender: genreRenderOf(opts) }, opts);
   return __out;
 }
 
@@ -2077,13 +2100,30 @@ export function summary(opts = {}) {
 // 直读一条：按 id 跨库取全文；命中**旧版本**时返回所查版本全文 + 附注链尾 id（不自动跳转；Letta「needle+expand」的 expand 最小形态）。
 export function show(id, opts = {}) {
   const target = String(id || '').trim();
-  if (!target) return { found: false, note: '给一个记录 id' };
+  const depth = readDepthOf(opts);
+  const pack = (name, rec, extra) => {
+    const projected = projectRecord(rec, name, depth);
+    const cred = extra.credibility;
+    const note = extra.note && projected.truncated
+      ? extra.note + `（日常读档已按单条硬顶 ${depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.claimCapChars} 字截断；全文用 reflect / depth:full）`
+      : extra.note;
+    return {
+      ...extra,
+      ...(note ? { note } : {}),
+      record: projected.record,
+      depth,
+      truncated: projected.truncated,
+      agePrefix: agePrefix(rec, { today: opts.today }),
+      citeAllowlist: isStr(rec && rec.id) ? [{ id: rec.id, store: name, tier: cred ? (cred.tier ?? null) : null, strong: true }] : []
+    };
+  };
+  if (!target) return { found: false, note: '给一个记录 id', citeAllowlist: [], depth };
   const stores = opts.store ? [opts.store] : STORES;
   for (const name of stores) {
     const records = loadStore(name, opts.file || storePath(name)).records;
     const credOf = (rec) => credibilityOf(name, chainEndingAt(records, rec), opts);
     const rec = currentRecords(records).find(r => r.id === target);
-    if (rec) return { found: true, store: name, id: rec.id, record: rec, credibility: credOf(rec) };
+    if (rec) return pack(name, rec, { found: true, store: name, id: rec.id, credibility: credOf(rec) });
     const old = records.find(r => r.id === target);
     if (old) {
       let tip = old;
@@ -2091,16 +2131,16 @@ export function show(id, opts = {}) {
       // 退役态优先判定（2026-10-08）：链尾被墓碑 retires 时，不能再提示「当前版本：<链尾>」——链尾本身也已退役。
       const tomb = records.find(r => r.retires === tip.id);
       if (tomb) {
-        return {
+        return pack(name, old, {
           found: false, store: name, id: target, retired: true,
           note: `该 id 已退役（${tomb.retired_at || '时间未记'}）${tomb.retired_reason ? '：' + tomb.retired_reason : ''}——已不属于当前集（lookup / brief / cross / summary / audit / 列表均不再命中）；历史仍在库里可追溯。`,
-          record: old, credibility: credOf(old),
-        };
+          credibility: credOf(old),
+        });
       }
-      return { found: false, store: name, id: target, note: '该 id 为旧版本（record 字段＝所查版本全文，不会自动跳转）；当前版本：' + tip.id, record: old, credibility: credOf(old) };
+      return pack(name, old, { found: false, store: name, id: target, note: '该 id 为旧版本（record 字段＝所查版本全文，不会自动跳转）；当前版本：' + tip.id, credibility: credOf(old) });
     }
   }
-  return { found: false, note: '六库均无此 id：' + target };
+  return { found: false, note: '六库均无此 id：' + target, citeAllowlist: [], depth };
 }
 
 /** 抽出五元组（纯函数；不写库）。顺序见 MIRROR_TUPLE_FIELDS。 */
@@ -2421,7 +2461,7 @@ export function recallToolTraps(opts = {}) {
  *  纪律：**不碰主流程**——本函数任何失败都吞掉（只回执 ok:false），检索结果与耗时不受影响。
  *  session：宿主当前不给子进程传会话号（bash 环境实测无 DSH_*）⇒ 记 `AKASHA_SESSION_ID` / `DSH_SESSION_ID`（有则写、无则 null）；
  *  归因路径＝用 ts 对 `logs/hooks.jsonl` 的 tool / preflight 线（后验 join，不猜）。
- *  genre_render＝该次结果是否经体裁渲染（I-11 落地前恒 false——有它才能以后分清「召回差」还是「剥皮过度」）。
+ *  genre_render＝该次结果是否经体裁渲染（剥皮 / 非全文）。反思通道与 depth:full 为 false，用来分清「召回差」还是「剥皮过度」。
  *  关断：调用侧 `queryLog:false`；或环境变量 `AKASHA_QUERY_LOG=off`（自测 / 批量脚本用——防污染真日志）。 */
 export function queryLogPathOf(opts = {}) {
   if (opts.queryLog === false) return null;
@@ -3115,6 +3155,141 @@ export function conflictReport(input, opts = {}) {
   };
 }
 
+// ── 读路径三档（2026-10-14）· 指针 → 摘要 → 全文 ─────────────────────────────
+// 体裁隔离是**渲染策略**，不是删记忆：JSONL 原文不动。日常默认摘要；
+// `--reflect` / `reflect:true` / `rawProcess` / `depth:'full'` ＝全文（不截断、不剥皮由调用侧配合）。
+// 单条 claim 日常硬顶 `claimCapChars`（1–2k 字档）。反思高保真路径必须留着。
+export const READ_TIER = Object.freeze({
+  depth: 'summary',
+  pointerChars: 80,
+  lookupSummaryChars: 120, // lookup 摘要＝既有短 snippet（指针 + 短摘要）；勿放长
+  summaryChars: 400,       // brief / 会话 gist 主字段日常截断
+  crossLineChars: 300,     // cross 日常行宽；reflect / full 恢复不截断
+  claimCapChars: 1500,     // show 与任何非全文投影的单条硬顶
+  briefPerStore: 2
+});
+
+/** `pointer` | `summary`（默认）| `full`。reflect / rawProcess 强制全文。 */
+export function readDepthOf(opts = {}) {
+  if (opts.reflect === true || opts.rawProcess === true || opts.depth === 'full') return 'full';
+  if (opts.depth === 'pointer') return 'pointer';
+  return 'summary';
+}
+
+/** 该次结果是否走体裁渲染（剥皮 / 非全文）。反思通道＝false，便于侧线分清「召回差」与「剥皮」。 */
+export function genreRenderOf(opts = {}) {
+  return opts.reflect !== true && opts.rawProcess !== true && opts.depth !== 'full';
+}
+
+/** 非全文投影。未超出则原样返回（不加省略号）。 */
+export function projectText(text, depth, cap) {
+  const s = String(text ?? '');
+  if (depth === 'full') return s;
+  const n = Number.isInteger(cap) && cap > 0 ? cap
+    : (depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.summaryChars);
+  const limit = Math.min(n, READ_TIER.claimCapChars);
+  if (s.length <= limit) return s;
+  return s.slice(0, limit) + '…';
+}
+
+const BRIEF_TEXT_FIELDS = ['claim', 'title', 'situation', 'outcome', 'story', 'summary', 'behavior', 'resolution', 'term'];
+const SHOW_TEXT_FIELDS = Object.freeze({
+  canon: ['claim'],
+  mirror: ['situation', 'behavior', 'outcome', 'social_reaction', 'emotion', 'story'],
+  orphan: ['summary', 'observed', 'hypothesis'],
+  pricing: ['behavior'],
+  lexicon: ['term', 'resolution', 'behavior'],
+  frontier: ['title', 'topic']
+});
+
+/** 浅拷贝后截主字段。全文档返回原对象（不拷、不改库内记录）。 */
+export function projectRecord(rec, store, depth) {
+  if (!rec || depth === 'full') return { record: rec, truncated: false };
+  const cap = depth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.claimCapChars;
+  const copy = { ...rec };
+  let truncated = false;
+  for (const f of (SHOW_TEXT_FIELDS[store] || ['claim', 'summary', 'title'])) {
+    if (typeof copy[f] !== 'string') continue;
+    const next = projectText(copy[f], depth, cap);
+    if (next !== copy[f]) { copy[f] = next; truncated = true; }
+  }
+  return { record: copy, truncated };
+}
+
+export function projectHitFields(hit, depth, cap) {
+  if (!hit || depth === 'full') return hit;
+  const out = { ...hit };
+  let truncated = false;
+  for (const f of BRIEF_TEXT_FIELDS) {
+    if (typeof out[f] !== 'string') continue;
+    const next = projectText(out[f], depth, cap);
+    if (next !== out[f]) { out[f] = next; truncated = true; }
+  }
+  if (truncated) out.truncated = true;
+  return out;
+}
+
+/** 读侧年龄前缀。锚＝event_time，否则 logged_at，否则 time。不写库。 */
+export function agePrefix(rec, opts = {}) {
+  const raw = rec && (rec.event_time || rec.logged_at || rec.time || null);
+  if (!raw) return '[日期未知]';
+  const s = String(raw);
+  const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T00:00:00Z' : s);
+  if (!Number.isFinite(t)) return '[日期未知]';
+  const now = opts.now != null ? Number(opts.now)
+    : (opts.today ? Date.parse(String(opts.today).slice(0, 10) + 'T00:00:00Z') : Date.now());
+  if (!Number.isFinite(now)) return '[日期未知]';
+  const days = Math.floor((now - t) / 86400000);
+  if (days < 0) return `[未来·${-days}天]`;
+  return `[过去·${days}天]`;
+}
+
+export function citeRows(hits) {
+  return (Array.isArray(hits) ? hits : []).filter((h) => h && isStr(h.id)).map((h) => ({
+    id: h.id, store: h.store ?? null, tier: h.tier ?? null, strong: !!h.strong
+  }));
+}
+
+/**
+ * 轻量 L4：核对「引用 id ⊆ 本轮 citeAllowlist」。
+ * 只返回 { ok, outside }，**不拦截**任何读/写通道——先能核对，再谈闸门。
+ * cited / allowlist 元素可以是 id 字符串，或 `{id}`。
+ */
+export function checkCitations(cited, allowlist) {
+  const allowed = new Set();
+  for (const x of Array.isArray(allowlist) ? allowlist : []) {
+    if (typeof x === 'string' && x) allowed.add(x);
+    else if (x && isStr(x.id)) allowed.add(x.id);
+  }
+  const ids = [];
+  for (const x of Array.isArray(cited) ? cited : []) {
+    if (typeof x === 'string' && x) ids.push(x);
+    else if (x && isStr(x.id)) ids.push(x.id);
+  }
+  const outside = [...new Set(ids.filter((id) => !allowed.has(id)))];
+  return { ok: outside.length === 0, outside, allowed: [...allowed] };
+}
+
+/** 宪章原文（复审抽样与协议共用；审计只读挂钩，不施压）。 */
+export const REVIEW_CHARTER_NO_PRESSURE = '不给压力：复审是对照，不是考核。子 agent 不必凑出问题才算完成；「维持」与「没有更好的解法」是合格结论。不设「必须找出 N 处错误」的配额，不因零疑点而重审，不把到期条数当成未完成的债。小样本（5–10 条核心到期）按排期做完即可停。';
+
+/** 只读：从复审到期清单里取核心档小样本（目标 5–10，不足则全取，不编造）。不写库、不派审。 */
+export function reviewSample(opts = {}) {
+  const due = opts.due || reviewDue(opts);
+  const coreDays = due && due.policy ? due.policy.coreDays : REVIEW_DEFAULTS.coreDays;
+  const core = (due && Array.isArray(due.items) ? due.items : []).filter((x) => x && x.intervalDays === coreDays);
+  const want = Number.isInteger(opts.limit) ? opts.limit : 8;
+  const takeN = Math.min(10, Math.max(0, want));
+  const items = core.slice(0, takeN);
+  return {
+    charter: REVIEW_CHARTER_NO_PRESSURE,
+    window: { min: 5, max: 10, taken: items.length, coreDue: core.length },
+    items,
+    steps: ['排期（audit --due / reviewSample）', '审查（review pack → fresh 子 agent）', '修订链追加（revise；维持则只打复审戳）', 'review-cycle 留痕（review log）'],
+    note: '只读抽样，不写库、不自动派审。样本不足 5 条时如实少取，不凑数。'
+  };
+}
+
 // ── 批次 2 · 体裁隔离 P0（2026-10-13；设计 = `research/genre-isolation-design-20261013.md` §7）──
 
 /** P0-② **符号骨架剥皮**（读侧渲染专用；单点实现，CLI / MCP 桥 / 会话层共用）：
@@ -3438,7 +3613,8 @@ export function readReviewLog(opts = {}) {
 /** 复审输入包（只读）：条目全文 + 来源证据 + 必要上下文（因果 / 修订链邻居）+ 审查协议（交给 **fresh 子 agent**）。
  *  设计＝《复审机制》A.2「输入三件」；子 agent 以**零上下文**派出（对照参照的价值所在），输出结构化审查报告。 */
 export function reviewPack(id, opts = {}) {
-  const s = show(String(id), opts);
+  // 复审要看链尾全文（高保真）。日常 show 的摘要硬顶不适用于输入包；体裁剥皮仍由 CLI/MCP 渲染层决定。
+  const s = show(String(id), { ...opts, depth: 'full' });
   if (!s || !s.record) return { found: false, id: String(id), note: (s && s.note) || '未找到' };
   // 复审对象＝**当前版本**：show 契约不自动跳转 ⇒ 这里显式沿 supersedes 走到链尾（2026-10-14 复查补齐）。
   let tip = s.record;
@@ -3552,7 +3728,7 @@ export function audit(opts = {}) {
 
   return {
     today, ok: findings.every(f => f.level !== 'warn'), findings, summary: stats(),
-    review: { counts: review.counts, policy: review.policy, top: review.items.slice(0, 20), undated: review.undated }
+    review: { counts: review.counts, policy: review.policy, top: review.items.slice(0, 20), undated: review.undated, sample: reviewSample({ due: review }) }
   };
 }
 

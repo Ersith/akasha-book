@@ -7,19 +7,19 @@ import { sleepPlan } from './sleep.mjs';
 
 const TOOLS = [
   { name: 'akasha_check', description: '校验阿卡夏之书（akasha）全部数据文件（含段升格标记三向核对；不读会话原档）', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'akasha_lookup', description: '在六库中机械检索；since / until 可选（YYYY-MM-DD，按事件时间/记录时间过滤）。**有日期过滤时建议 report:true**——返回 { hits, stats }（含「日期未知 N 条」与样本、范围外计数、timeSource）；undated:true 把日期未知并入 hits（标 undated）。recall:true ⇒ #7 多路召回（词法＋引用路，RRF 融合，带 rrf 计数与 paths）。**体裁隔离**：P0 返回文本默认剥完成态符号（⇒→→ / ✓ 删 / 好。→。）；P1 剂量闸（符号负荷超阈 ⇒ 后续条目摘要化，返回带 dose）；reflect:true＝反思通道（不剥皮、不受剂量闸）。maxTokens/offset 可选：显式定额 + 分页续取（budget.nextOffset；默认维持原装载量级）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, report: { type: 'boolean' }, undated: { type: 'boolean' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' }, loadBalance: { type: 'boolean' }, recall: { type: 'boolean' }, reflect: { type: 'boolean' }, doseThreshold: { type: 'number' }, offset: { type: 'number' }, maxTokens: { type: 'number' } }, required: ['query'] } },
+  { name: 'akasha_lookup', description: '在六库中机械检索；since / until 可选（YYYY-MM-DD，按事件时间/记录时间过滤）。**有日期过滤时建议 report:true**——返回 { hits, stats }（含「日期未知 N 条」与样本、范围外计数、timeSource）；undated:true 把日期未知并入 hits（标 undated）。recall:true ⇒ #7 多路召回（词法＋引用路，RRF 融合，带 rrf 计数与 paths）。**体裁隔离**：P0 返回文本默认剥完成态符号（⇒→→ / ✓ 删 / 好。→。）；P1 剂量闸（符号负荷超阈 ⇒ 后续条目摘要化，返回带 dose）；reflect:true＝反思通道（不剥皮、不受剂量闸）。不传 depth＝全文（与既有读档一致）；depth=summary|pointer 才按档截断。maxTokens/offset 可选：显式定额 + 分页续取（budget.nextOffset；默认维持原装载量级）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, report: { type: 'boolean' }, undated: { type: 'boolean' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' }, loadBalance: { type: 'boolean' }, recall: { type: 'boolean' }, reflect: { type: 'boolean' }, depth: { type: 'string', enum: ['pointer', 'summary', 'full'] }, doseThreshold: { type: 'number' }, offset: { type: 'number' }, maxTokens: { type: 'number' } }, required: ['query'] } },
   { name: 'akasha_price', description: '按 严重度 × 不可逆性 × 代价 计算情绪定价标签（valence / arousal）；applyStore/applyId 可选=计算后回写该条目（修订链）', inputSchema: { type: 'object', properties: { severity: { type: 'number' }, irreversibility: { type: 'number' }, cost: { type: 'number' }, good: { type: 'boolean' }, applyStore: { type: 'string' }, applyId: { type: 'string' } }, required: ['severity', 'irreversibility', 'cost'] } },
   { name: 'akasha_stats', description: '结果计数器：各存储计数与来源分布', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'akasha_frontier_due', description: '列出到期需复审的前沿层（frontier）条目', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'akasha_audit', description: '机械审计：到期复审 / 陈旧复核 / 重复链接 / 孤案积压（可传 today 模拟）；返回含 review＝复审到期清单原型（信任级 × 时龄：核心 30d / 一般 90d / 年审 365d，只报不裁）', inputSchema: { type: 'object', properties: { today: { type: 'string' } }, additionalProperties: false } },
-  { name: 'akasha_brief', description: '主题简报：跨六库按主题取料（带来源态与基石映射与时间坐标，替代多次 lookup）；since / until 可选（YYYY-MM-DD）。**体裁隔离**：P0 返回文本默认剥皮；P1 剂量闸（超阈后条目摘要化，返回带 dose）；reflect:true＝反思通道（不剥皮、不受闸）。maxTokens/offset 可选：显式定额 + 分页续取（budget.nextOffset）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, perStore: { type: 'number' }, since: { type: 'string' }, until: { type: 'string' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' }, loadBalance: { type: 'boolean' }, reflect: { type: 'boolean' }, doseThreshold: { type: 'number' }, offset: { type: 'number' }, maxTokens: { type: 'number' } }, required: ['query'] } },
+  { name: 'akasha_brief', description: '主题简报：跨六库按主题取料（带来源态与基石映射与时间坐标，替代多次 lookup）；since / until 可选（YYYY-MM-DD）。**体裁隔离**：P0 返回文本默认剥皮；P1 剂量闸（超阈后条目摘要化，返回带 dose）；reflect:true＝反思通道（不剥皮、不受闸）。不传 depth＝全文（每库默认 3 条）；depth=summary|pointer 才截主字段。maxTokens/offset 可选：显式定额 + 分页续取（budget.nextOffset）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, perStore: { type: 'number' }, since: { type: 'string' }, until: { type: 'string' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' }, loadBalance: { type: 'boolean' }, reflect: { type: 'boolean' }, depth: { type: 'string', enum: ['pointer', 'summary', 'full'] }, doseThreshold: { type: 'number' }, offset: { type: 'number' }, maxTokens: { type: 'number' } }, required: ['query'] } },
   { name: 'akasha_kit', description: '起床包：开工前一次装配（睡眠摘要 + 待办 inbox + 当前审计 + 库况 + 提示）。**体裁隔离**：病史行默认剥皮；reflect:true＝反思通道（不剥皮）。', inputSchema: { type: 'object', properties: { today: { type: 'string' }, reflect: { type: 'boolean' } }, additionalProperties: false } },
   { name: 'akasha_promote', description: '候选转正：把 inbox 里的孤案候选（失败回查素材）机械落成孤案条目（零权重留档；dry 只报不写）', inputSchema: { type: 'object', properties: { dry: { type: 'boolean' } }, additionalProperties: false } },
   { name: 'akasha_revise', description: '修订链：为记录追加新版本（supersedes 旧版，追加不改原文）；patch 打补丁，未列字段自动保留', inputSchema: { type: 'object', properties: { store: { type: 'string' }, id: { type: 'string' }, patch: { type: 'object' } }, required: ['store', 'id'] } },
-  { name: 'akasha_cross', description: '对位比较：同一主题词在六库的全部命中按库并排（当前版本、主行不截断），并提示同题多源；since / until 可选（YYYY-MM-DD）。**体裁隔离**：主行默认剥皮（⇒→→ / ✓ 删 / 好。→。；只剥符号、不截断）；reflect:true＝反思通道（不剥皮、给原文）。maxTokens/offset 可选：**默认全量豁免**；显式给出才守预算并返回 budget.nextOffset（分页续取不丢内容）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, perStore: { type: 'number' }, since: { type: 'string' }, until: { type: 'string' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' }, loadBalance: { type: 'boolean' }, reflect: { type: 'boolean' }, offset: { type: 'number' }, maxTokens: { type: 'number' } }, required: ['query'] } },
+  { name: 'akasha_cross', description: '对位比较：同一主题词在六库的全部命中按库并排（当前版本、主行默认不截断），并提示同题多源；since / until 可选（YYYY-MM-DD）。**体裁隔离**：主行默认剥皮（⇒→→ / ✓ 删 / 好。→。）；depth=summary|pointer 才按行宽截断；reflect:true 或 depth:full＝原文不剥。maxTokens/offset 可选：**默认全量豁免**；显式给出才守预算并返回 budget.nextOffset（分页续取不丢内容）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, perStore: { type: 'number' }, since: { type: 'string' }, until: { type: 'string' }, includeRefuted: { type: 'boolean' }, today: { type: 'string' }, loadBalance: { type: 'boolean' }, reflect: { type: 'boolean' }, depth: { type: 'string', enum: ['pointer', 'summary', 'full'] }, offset: { type: 'number' }, maxTokens: { type: 'number' } }, required: ['query'] } },
   { name: 'akasha_summary', description: '全库摘要：六库计数 + 各库最近条目 + frontier 状态分布 + 审计概要 + 最近写入（不带问题看一眼全库）。**体裁隔离**：最近条目行默认剥皮；reflect:true＝反思通道（不剥皮）。', inputSchema: { type: 'object', properties: { per: { type: 'number' }, reflect: { type: 'boolean' } }, additionalProperties: false } },
   { name: 'akasha_orphan_add', description: '追加一条孤案（零权重留档，带钩子的问号）；event_time 可选=事件时间（YYYY-MM-DD）', inputSchema: { type: 'object', properties: { summary: { type: 'string' }, observed: { type: 'string' }, severity: { type: 'string', enum: ['高', '中', '低'] }, event_time: { type: 'string' } }, required: ['summary'] } },
-  { name: 'akasha_show', description: '按 id 跨六库直读（命中旧版本时返回所查版本全文 + 附注当前版本 id，不自动跳转）。**体裁隔离 P0**：返回文本默认剥皮；reflect:true＝反思通道（不剥皮、给原文）。', inputSchema: { type: 'object', properties: { id: { type: 'string' }, reflect: { type: 'boolean' } }, required: ['id'] } },
+  { name: 'akasha_show', description: '按 id 跨六库直读（命中旧版本时附注当前版本 id，不自动跳转）。默认摘要档（单条硬顶，非全文）；reflect:true 或 depth:full＝全文。**体裁隔离**：默认剥皮；反思通道不剥皮。', inputSchema: { type: 'object', properties: { id: { type: 'string' }, reflect: { type: 'boolean' }, depth: { type: 'string', enum: ['pointer', 'summary', 'full'] } }, required: ['id'] } },
   { name: 'akasha_mirror_match', description: '镜像结构匹配：按情境文本匹配镜像库五元组（situation→behavior→outcome→social_reaction→emotion；situation 权重×2 + patterns 加权）。每条带回 role / evidence(story|own-log) / era / context。mode=task 解法优先；mode=improve 边界优先；evidence/era/context 可选过滤（抗教材偏见可只要 own-log）。**体裁隔离**：叙事正文默认剥皮；reflect:true＝反思通道（不剥皮、给原文）。', inputSchema: { type: 'object', properties: { text: { type: 'string' }, limit: { type: 'number' }, mode: { type: 'string', enum: ['all', 'task', 'improve'] }, role: { type: 'string', enum: ['solution', 'boundary'] }, evidence: { type: 'string', enum: ['story', 'own-log'] }, era: { type: 'string' }, context: { type: 'string' }, reflect: { type: 'boolean' } }, required: ['text'] } },
   { name: 'akasha_metrics', description: '结果计数器：工具成功率 / 门控拦截 / 审计线 / 引用命中 / 修订链统计 / 回看-纠正（K3：复审线·退役·近7天修订·矛盾检测调用，全量口径）（since 可选）；queries＝查询维度（**检索面口径** lookup/brief/cross/recall 的零结果率 / 高频 top / 命中被引用率；诊断类调用只计 byCmd，另见 logs/query-log.jsonl）', inputSchema: { type: 'object', properties: { since: { type: 'string' } }, additionalProperties: false } },
   { name: 'akasha_sleep_plan', description: '睡眠合并/丢弃计划（只读）：不写六库、不写计划文件、不动水位线。返回与 CLI sleep --plan 相同的计划对象（planId / basis 指纹 / ops）。没有 apply（执行走 CLI `sleep --apply`，人工确认路径）。**体裁隔离**：why 串默认剥皮；reflect:true＝反思通道。', inputSchema: { type: 'object', properties: { today: { type: 'string' }, theta: { type: 'number' }, maxOps: { type: 'number' }, orphanDays: { type: 'number' }, staleDays: { type: 'number' }, reflect: { type: 'boolean' } }, additionalProperties: false } },
@@ -27,7 +27,7 @@ const TOOLS = [
   { name: 'akasha_review_pack', description: '复审输入包（只读）：条目**链尾**全文 + 来源 + 因果/链邻居 + 三问协议——交给 **fresh 子 agent** 做零上下文审查（I-10 流程第一件）。**体裁隔离**：默认剥皮；reflect:true＝原文。', inputSchema: { type: 'object', properties: { id: { type: 'string' }, reflect: { type: 'boolean' } }, required: ['id'] } },
   { name: 'akasha_review_log', description: '复审留痕（写 logs/review-log.jsonl，**不写六库**）：主会话裁决后记录一条（verdict ∈ 维持/修正/升级/合并/退役/回滚…；by/note 可选）。维持会自动给 last_reviewed 打复审戳由 CLI 侧 `review log` 处理，本工具只追加一行。', inputSchema: { type: 'object', properties: { store: { type: 'string' }, id: { type: 'string' }, verdict: { type: 'string' }, by: { type: 'string' }, note: { type: 'string' } }, required: ['store', 'id', 'verdict'] } },
   { name: 'akasha_review_list', description: '复审留痕读回（只读）：默认最近 20 条，`since`（YYYY-MM-DD）过滤；返回 {ts, store, id, verdict, by, note}。', inputSchema: { type: 'object', properties: { limit: { type: 'number' }, since: { type: 'string' } }, additionalProperties: false } },
-  { name: 'akasha_session_lookup', description: '小阿卡夏（会话层，同库分层，不是第二套库）：只查当前会话记忆，结论优先。与主库 akasha_lookup/brief 分开调用、分开分级。返回 { hits, matched, sessionTotal, withheld, reflect, dose }。**体裁隔离**：P0 process 段默认不回放（withheld＝「存在 N 段过程记录」+ 指引）+ 默认剥皮（结论/过程/节点；用户原话与工具记录不剥）；P1 剂量闸（长会话自动收紧档，超阈后条目摘要化）；rawProcess:true＝反思通道（含过程段原文、不剥皮、不受闸）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, process: { type: 'boolean' }, rawProcess: { type: 'boolean' }, doseThreshold: { type: 'number' }, all: { type: 'boolean' }, limit: { type: 'number' } }, required: ['query'] } }
+  { name: 'akasha_session_lookup', description: '小阿卡夏（会话层，同库分层，不是第二套库）：只查当前会话记忆，结论优先。与主库 akasha_lookup/brief 分开调用、分开分级。返回 { hits, matched, sessionTotal, withheld, reflect, dose }。**体裁隔离**：P0 process 段默认不回放（withheld＝「存在 N 段过程记录」+ 指引）+ 默认剥皮（结论/过程/节点；用户原话与工具记录不剥）；P1 剂量闸（长会话自动收紧档，超阈后条目摘要化）；rawProcess:true＝反思通道（含过程段原文、不剥皮、不受闸）。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, process: { type: 'boolean' }, rawProcess: { type: 'boolean' }, reflect: { type: 'boolean' }, depth: { type: 'string', enum: ['pointer', 'summary', 'full'] }, doseThreshold: { type: 'number' }, all: { type: 'boolean' }, limit: { type: 'number' } }, required: ['query'] } }
 ];
 
 // I-11 体裁隔离 P0-②（2026-10-13）：MCP 面＝模型侧**真正读到的返回** ⇒ 读工具默认剥皮（reflect/rawProcess 走反思通道）。
@@ -61,8 +61,8 @@ function handle(msg) {
         if (!since.ok || !until.ok) { value = { error: since.error || until.error }; }
         else {
           const detailed = a.recall === true
-            ? multiRecall(a.query, { via: 'mcp', reflect: a.reflect === true, doseThreshold: a.doseThreshold, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens })
-            : lookupDetailed(a.query, { via: 'mcp', reflect: a.reflect === true, doseThreshold: a.doseThreshold, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
+            ? multiRecall(a.query, { via: 'mcp', reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens })
+            : lookupDetailed(a.query, { via: 'mcp', reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
           value = a.report === true ? detailed : (a.recall === true ? detailed : detailed.hits);
         }
       }
@@ -78,13 +78,13 @@ function handle(msg) {
       // 2026-10-08 复查修复：与 CLI `frontier due` 口径对齐——统一走 frontierDue()（只看当前版本；退役条目不再出现在到期清单）。
       else if (name === 'akasha_frontier_due') value = frontierDue();
       else if (name === 'akasha_audit') value = audit(a);
-      else if (name === 'akasha_brief') value = brief(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, doseThreshold: a.doseThreshold, perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
+      else if (name === 'akasha_brief') value = brief(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
       else if (name === 'akasha_kit') value = kit(a);
       else if (name === 'akasha_promote') value = promoteInbox({ dry: a.dry === true });
       else if (name === 'akasha_revise') value = revise(a.store, a.id, a.patch || {});
-      else if (name === 'akasha_cross') value = cross(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
+      else if (name === 'akasha_cross') value = cross(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth, perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
       else if (name === 'akasha_summary') value = summary({ per: a.per });
-      else if (name === 'akasha_show') value = show(String(a.id ?? ''));
+      else if (name === 'akasha_show') value = show(String(a.id ?? ''), { reflect: a.reflect === true, depth: a.depth, today: a.today });
       else if (name === 'akasha_mirror_match') value = mirrorMatch(String(a.text ?? ''), { reflect: a.reflect === true, limit: a.limit, mode: a.mode, role: a.role, evidence: a.evidence, era: a.era, context: a.context, notApplicable: a.notApplicable && typeof a.notApplicable === 'object' ? a.notApplicable : undefined });
       else if (name === 'akasha_now') value = nowSnapshot({ at: Array.isArray(a.at) ? a.at : undefined });
       else if (name === 'akasha_review_pack') value = reviewPack(String(a.id ?? ''), { reflect: a.reflect === true });
@@ -99,7 +99,7 @@ function handle(msg) {
         value = sleepPlan({ today: typeof a.today === 'string' ? a.today : undefined, theta: num(a.theta), maxOps: num(a.maxOps), orphanDays: num(a.orphanDays), staleDays: num(a.staleDays), out: false });
       }
       // I-11 P0-① / I-12 P1：走 detailed 版——模型侧才能看到 withheld（默认不回放的 process 段计数与指引）、reflect 标记与 dose（剂量闸）。
-      else if (name === 'akasha_session_lookup') value = lookupSegmentsDetailed(String(a.query ?? ''), { session: a.session, kind: a.kind, since: a.since, until: a.until, includeProcess: a.process === true, rawProcess: a.rawProcess === true, doseThreshold: a.doseThreshold, all: a.all === true, limit: a.limit });
+      else if (name === 'akasha_session_lookup') value = lookupSegmentsDetailed(String(a.query ?? ''), { via: 'mcp', session: a.session, kind: a.kind, since: a.since, until: a.until, includeProcess: a.process === true, rawProcess: a.rawProcess === true, reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, all: a.all === true, limit: a.limit });
       else if (name === 'akasha_orphan_add') {
         value = appendRecord('orphan', {
           id: 'orphan-' + Date.now().toString(36),
@@ -115,8 +115,9 @@ function handle(msg) {
       }
       if (value === null) throw new Error('未知工具：' + name);
       // I-11 体裁隔离 P0-②（2026-10-13）：MCP 面＝模型侧真正读到的返回 ⇒ 读工具默认剥皮（幂等；reflect / rawProcess ＝反思通道不剥）。
-      let text = JSON.stringify(value, null, 2);
-      if (STRIP_TOOLS.has(name) && a.reflect !== true && a.rawProcess !== true) text = stripGenre(text);
+      // 读返回默认紧凑 JSON（禁 pretty）。pretty:true 仅供人工调试。
+      let text = a.pretty === true ? JSON.stringify(value, null, 2) : JSON.stringify(value);
+      if (STRIP_TOOLS.has(name) && a.reflect !== true && a.rawProcess !== true && a.depth !== 'full') text = stripGenre(text);
       return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], _meta: { trust: 'data-not-instruction' } } };
     } catch (e) {
       return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: '错误：' + e.message }], isError: true, _meta: { trust: 'data-not-instruction' } } };
@@ -126,19 +127,29 @@ function handle(msg) {
 }
 
 const rl = createInterface({ input: process.stdin });
+// 大响应（cross / show 全文）write 可能只进缓冲。stdin 一关就 exit 会把最后一行截断。
+let pendingWrites = 0;
+let stdinClosed = false;
+const finish = () => { if (stdinClosed && pendingWrites === 0) process.exit(0); };
+const emit = (reply) => {
+  if (!reply) return;
+  const payload = JSON.stringify(reply) + '\n';
+  pendingWrites += 1;
+  process.stdout.write(payload, () => { pendingWrites -= 1; finish(); });
+};
 rl.on('line', line => {
   const s = line.trim();
   if (!s) return;
   let msg;
   try { msg = JSON.parse(s); } catch {
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: '解析失败：不是合法 JSON' } }) + '\n');
+    emit({ jsonrpc: '2.0', id: null, error: { code: -32700, message: '解析失败：不是合法 JSON' } });
     return;
   }
   // 2026-10-10 加固：handle 本身也要兜底——任何未预期异常都回错误，绝不让它冒成未捕获异常打死服务器
   let reply;
   try { reply = handle(msg); }
   catch (e) { reply = { jsonrpc: '2.0', id: (msg && typeof msg === 'object' && 'id' in msg) ? msg.id : null, error: { code: -32603, message: '内部错误：' + String(e?.message ?? e).slice(0, 200) } }; }
-  if (reply) process.stdout.write(JSON.stringify(reply) + '\n');
+  emit(reply);
 });
 
 // 2026-10-10 加固（与 mcp-akasha 桥同族）：客户端先退出时，写 stdout 会以**异步 'error' 事件**抛 EPIPE——
@@ -152,4 +163,4 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 process.stdin.on('error', () => process.exit(0));
-rl.on('close', () => process.exit(0));
+rl.on('close', () => { stdinClosed = true; finish(); });

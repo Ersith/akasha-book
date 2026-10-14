@@ -6,7 +6,7 @@ import { readFileSync, appendFileSync, writeFileSync, readdirSync, mkdirSync } f
 import { dirname, join } from 'node:path';
 import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
-import { ROOT, STORES, loadStore, storePath, tokenize, scoreTokens, redact, writeFileAtomic, appendRecord, retiredIds, withFileLock, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary } from './lib.mjs';
+import { ROOT, STORES, loadStore, storePath, tokenize, scoreTokens, redact, writeFileAtomic, appendRecord, retiredIds, withFileLock, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary, recordQuery, readDepthOf, projectText, agePrefix, READ_TIER, genreRenderOf } from './lib.mjs';
 
 export const SESSION_DEFAULTS = {
   storeFile: join(ROOT, 'data', 'session.jsonl'),
@@ -354,13 +354,17 @@ export function lookupSegments(query, opts = {}) {
 
 /** (a) 带覆盖度的会话层检索（2026-10-11）：返回 {hits, matched, sessionTotal, offset, nextOffset, exhausted}
  *  —— matched = 主题相关段总数（裁剪前），sessionTotal = 本次作用域内段总数（用户可据此知道自己看了多少）。 */
-export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, rawProcess = false, doseThreshold, longSessionSegs, limit = 10, offset = 0, level, all = false, storeRecords = null } = {}) {
+export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, rawProcess = false, reflect = false, doseThreshold, longSessionSegs, limit = 10, offset = 0, level, all = false, storeRecords = null, depth, via, queryLog, today } = {}) {
   // 体裁隔离 P0-①（2026-10-13）：`rawProcess` ＝**反思通道**（显式要过程）——含过程段、且**不剥皮**（§4.7 原则 3）。
+  // `reflect` 同样走全文（不剥、不截）；过程段是否纳入仍只看 rawProcess / includeProcess。
+  const highFidelity = rawProcess || reflect === true;
+  const readDepth = highFidelity ? 'full' : readDepthOf({ depth });
   const incProcess = includeProcess || rawProcess;
   const q = String(query ?? '').trim();
-  if (!q) return { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true };
+  const empty = { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true, citeAllowlist: [], depth: readDepth, reflect: highFidelity, withheld: null };
+  if (!q) return empty;
   const tokens = tokenize(q);
-  if (!tokens.length) return { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true };
+  if (!tokens.length) return empty;
   // (1) 2026-10-11：**默认面只给 conclusion + intent**——实测发现动作段（646 条）gist 是工具调用参数，
   //     排到结论前会把"我调过什么"误读成"我们想过什么"。要动作/节点/过程须显式指定（kind / level / --actions）。
   const SEG_KINDS = ['intent', 'action', 'conclusion', ...(incProcess ? ['process'] : [])];
@@ -402,7 +406,8 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
     const weight = score + (r.kind === 'conclusion' ? 1.0 : 0);
     // 体裁隔离（2026-10-13）：读侧剥皮（P0-②）与剂量闸（P1-③）统一在**排序后**做——
     //   ⚠ 实测教训：先在构造时剥皮 ⇒ 剂量闸拿到的是已剥文本 ⇒ 负荷恒 0（哑闸）。剂量必须按**原文**计。
-    const hit = { id: r.id, session: r.session, seq: r.seq, time: r.kind === 'node' ? (r.time_from ?? '') : r.time, turn: r.turn ?? null, step: r.step ?? null, kind: r.kind, score: +score.toFixed(3), strong: sc.whole >= 1, weight: +weight.toFixed(3), gist: r.gist };
+    const hitTime = r.kind === 'node' ? (r.time_from ?? '') : r.time;
+    const hit = { id: r.id, session: r.session, seq: r.seq, time: hitTime, turn: r.turn ?? null, step: r.step ?? null, kind: r.kind, score: +score.toFixed(3), strong: sc.whole >= 1, weight: +weight.toFixed(3), gist: r.gist, agePrefix: agePrefix({ event_time: r.event_time || hitTime }, { today }) };
     if (r.kind === 'node') {
       hit.level = r.level;
       hit.children = r.children ?? [];
@@ -463,21 +468,29 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   const scopedSegCount = records.filter((r) => r.kind !== 'promotion' && (!sess || r.session === sess)).length;
   const autoStrict = !!sess && scopedSegCount >= longSegs;
   const doseTh = Number.isInteger(doseThreshold) ? doseThreshold : (autoStrict ? GENRE_DOSE_DEFAULTS.strictThreshold : GENRE_DOSE_DEFAULTS.threshold);
-  const dg = (!rawProcess && doseTh > 0 && ranked.length) ? doseGate(ranked.map((h) => h.gist), { threshold: doseTh }) : null;
+  const dg = (readDepth !== 'full' && doseTh > 0 && ranked.length) ? doseGate(ranked.map((h) => h.gist), { threshold: doseTh }) : null;
+  const gistCap = readDepth === 'pointer' ? READ_TIER.pointerChars : READ_TIER.summaryChars;
   for (let i = 0; i < ranked.length; i += 1) {
     const over = !!dg && dg.cutoff !== null && i >= dg.cutoff;
-    // P0-②：`conclusion`/`process`/`node`（模型产出）剥；`intent`（用户原话）/`action`（工具记录）不剥；反思通道全不剥。
-    const base = rawProcess ? ranked[i].gist : (SEG_STRIP_KINDS.has(ranked[i].kind) ? stripGenre(String(ranked[i].gist ?? '')) : ranked[i].gist);
-    ranked[i] = over ? { ...ranked[i], gist: doseSummary(base), dose: true } : { ...ranked[i], gist: base };
+    // P0-②：`conclusion`/`process`/`node`（模型产出）剥；`intent`（用户原话）/`action`（工具记录）不剥；全文档（rawProcess / reflect / depth:full）全不剥。
+    // 顺序：先按原文计负荷（上面的 doseGate），再剥皮，再按读档截断。短文本截断是恒等，既有剥皮断言不变。
+    const base = readDepth === 'full' ? ranked[i].gist : (SEG_STRIP_KINDS.has(ranked[i].kind) ? stripGenre(String(ranked[i].gist ?? '')) : ranked[i].gist);
+    const gist = over ? doseSummary(base) : (readDepth === 'full' ? base : projectText(base, readDepth, gistCap));
+    ranked[i] = over ? { ...ranked[i], gist, dose: true } : { ...ranked[i], gist };
   }
   if (dg && dg.cutoff !== null) dose = { threshold: doseTh, total: dg.total, from: dg.cutoff, trimmed: ranked.length - dg.cutoff, strict: autoStrict };
   const nextOffset = off + ranked.length;
-  return {
+  const citeAllowlist = ranked.filter((h) => typeof h.id === 'string' && h.id).map((h) => ({ id: h.id, store: 'session', tier: null, strong: !!h.strong }));
+  const __out = {
     hits: ranked, matched, sessionTotal: scopeTotal, offset: off, nextOffset, exhausted: nextOffset >= matched,
-    reflect: rawProcess,
+    reflect: highFidelity,
+    depth: readDepth,
     dose,
+    citeAllowlist,
     withheld: withheldProcess ? { process: withheldProcess, hint: `存在 ${withheldProcess} 段过程记录（默认不回放）；--raw-process 可调取原文（反思通道，不剥皮）` } : null
   };
+  recordQuery({ cmd: 'session', query: q, hits: ranked.length, ids: citeAllowlist.map((x) => x.id), genreRender: genreRenderOf({ reflect: highFidelity, rawProcess: highFidelity, depth: readDepth }), via }, { queryLog, via });
+  return __out;
 }
 
 /** 薄封装：解析会话名前缀（供 renderSessionContext / sessionClusters 用）。 */

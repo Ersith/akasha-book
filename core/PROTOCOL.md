@@ -170,5 +170,31 @@
    - 两者都落 `review log`（`logs/review-log.jsonl`，`review-cycle` 事件）。
 **纪律**：`review list` 可读回留痕；**免复审**＝会话层条目；子 agent 报告若与主会话结论冲突——**如实并记**（同题多源不合并）。
 
+**小样本（2026-10-14）**：不把全库到期一次派完。`audit` 的 `review.sample`（`reviewSample`）只取**核心档到期**里的 5–10 条（不足则如实少取，不凑数）。流程仍是排期 → 审查 → 修订链追加 → `review-cycle` 留痕。细则与只读挂钩见 `research/review-cycle-sample-protocol-20261014.md`。
+
+**不给压力：复审是对照，不是考核。** 子 agent 不必凑出问题才算完成；「维持」与「没有更好的解法」是合格结论。不设「必须找出 N 处错误」的配额，不因零疑点而重审，不把到期条数当成未完成的债。小样本按排期做完即可停。
+
 **输出侧（I-15，2026-10-14）**：`audit` 另有 **`credibility-decay`** 建议线——**时龄 ≥90d ＋ 链上无 `verification` ＋ 使用窗口零引用** ⇒ 列「降权 / 复核建议」（**建议而非自动**）；**引用侧读不到时整体跳过、不假报零**（宁可不出建议，不可出假建议）。
+
+---
+
+## 十五、读档三档与长会话剂量（2026-10-14）
+
+体裁隔离是**渲染策略**：JSONL 原文不动。日常读停在摘要；全文只走反思通道。
+
+| 档 | 何时 | 行为 |
+|---|---|---|
+| 指针 `depth:pointer` / `--depth pointer` | 只要 id 与极短摘 | 主字段约 80 字 |
+| 摘要（默认） | lookup / brief / show / cross / session lookup，及 MCP 对等工具 | lookup 短摘约 120 字；brief / 会话主字段约 400 字、brief 每库默认 2 条；cross 行约 300 字；show 单条硬顶 1500 字 |
+| 全文 | `--reflect`、MCP `reflect:true`、会话 `rawProcess`、或 `depth:full` / `--depth full` | 不截断。CLI / MCP 的剥皮也跳过。过程段是否纳入仍只看 `rawProcess` / `--raw-process` / `--process`，`--reflect` 不自动打开过程段 |
+
+命中行、brief、show 的渲染带读侧年龄前缀 `[过去·N天]` / `[未来·N天]` / `[日期未知]`，锚是 `event_time`，否则 `logged_at`（会话段用 `event_time` 或段时间）。**不写库。**
+
+每轮读返回 `citeAllowlist`。`checkCitations(cited, allowlist)` 只核对「引用 id ⊆ 本轮返回」，返回 `{ok, outside}`，**不拦截**读写通道。
+
+查询侧线 `genre_render`：日常读（剥皮 / 非全文）为 `true`；反思通道与 `depth:full` 为 `false`。直接 `recordQuery` 不传该标记仍记 `false`。
+
+**长会话剂量**：`GENRE_DOSE_DEFAULTS.longSessionSegs` **＝ 2000**。指定会话段数达到该值时，剂量阈值从 15 收到 8。这是代码里的数；旧稿里的 3000 已作废（案发会话 2179 段须被覆盖）。
+
+**睡眠 `--force`**：生产路径（CLI `sleep --apply --yes --force`）拒绝。指纹过期请重新 `sleep --plan`。`--force` 只可与演练同用（不加 `--yes`），用来查看过期计划会做什么，不写库。
 

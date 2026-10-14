@@ -3,7 +3,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkAll, detectConflicts, multiRecall, rollbackBatch, memoryDiff, conflictReport, stripGenre, autonomyReadings, expandRecord, assertDataRoot, recordRejected, listRejected, blindspotsFor, progressiveRecall, calibrationOf, generationInfo, committedOf, blindspotMap, renderDiscipline, verifyDiscipline, STORES, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS, reviewPack, appendReviewLog, readReviewLog, nowSnapshot } from './lib.mjs';
-import { applyPlan, replayHistory, revokePlan, sleepPlan, sleepRun } from './sleep.mjs';
+import { applyPlan, replayHistory, revokePlan, sleepPlan, sleepRun, productionForceRejected } from './sleep.mjs';
 import { indexSession, autoBuildTree, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, buildTopics, lookupTopics, appendSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
 const argv = process.argv.slice(2);
@@ -64,8 +64,8 @@ switch (cmd) {
     if (perspective && !['world', 'experience'].includes(perspective)) { console.error('--perspective 须为 world|experience'); code = 1; break; }
     const __doseTh = Number.isFinite(Number(flags['dose-threshold'])) ? Number(flags['dose-threshold']) : undefined;   // I-12 P1-③：0=关闸
     const { hits, stats, knowledge, budget, rrf, trace, dose } = recallMode
-      ? multiRecall(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, doseThreshold: __doseTh, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, ...__paging })
-      : lookupDetailed(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, doseThreshold: __doseTh, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, perspective, ...__paging });
+      ? multiRecall(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, doseThreshold: __doseTh, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, ...__paging })
+      : lookupDetailed(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, doseThreshold: __doseTh, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, perspective, ...__paging });
     const tierOf = (h) => (h.displayTier ? ' ' + h.displayTier : '') + (h.stale ? ' 待复核' : '') + (h.refuted ? ' refuted' : '');
     // #35 --trace（2026-10-12 窗口 5）：逐条列出计分零件（可审、可复核、可 A/B）。
     const renderTrace = (t) => [
@@ -77,8 +77,8 @@ switch (cmd) {
       print(trace, ['命中 ' + hits.length + ' 条（trace 视图）', ...trace.map(renderTrace)].join('\n'));
       break;
     }
-    const G = (t) => flags.reflect ? String(t ?? '') : stripGenre(String(t ?? ''));   // I-11 P0-②：读侧剥皮（--reflect＝反思通道，不剥）
-    const lines = hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score})${tierOf(h)}${h.undated ? ' [未定年]' : ''} ${G(h.snippet)}`) : ['（无结果）'];
+    const G = (t) => (flags.reflect || flags.depth === 'full') ? String(t ?? '') : stripGenre(String(t ?? ''));   // I-11 P0-②：读侧剥皮（--reflect / --depth full＝全文，不剥）
+    const lines = hits.length ? hits.map(h => `${h.agePrefix ? h.agePrefix + ' ' : ''}[${h.store}] ${h.id} (${h.score})${tierOf(h)}${h.undated ? ' [未定年]' : ''} ${G(h.snippet)}`) : ['（无结果）'];
     if (knowledge) {
       const tag = { known: '记得·库内', uncertain: '不确定', 'confirmed-unknown': '确定不知道' }[knowledge.stance] || knowledge.stance;
       lines.push(`· 认知态：${tag}（${knowledge.stance}）`);
@@ -99,18 +99,18 @@ switch (cmd) {
     if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
     if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
     const __doseThB = Number.isFinite(Number(flags['dose-threshold'])) ? Number(flags['dose-threshold']) : undefined;   // I-12 P1-③：0=关闸
-    const b = brief(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, doseThreshold: __doseThB, perStore: Number(flags.per) || 3, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
+    const b = brief(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, doseThreshold: __doseThB, perStore: Number(flags.per) || 3, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
     const lines = [`主题简报「${b.query}」：` + (b.groups.length ? `命中 ${b.groups.length} 库` : '无命中')];
     // #31 --ladder（2026-10-12 窗口 5）：先亮「停在哪一层、为何没下钻」。
     if (flags.ladder && Array.isArray(b.ladder)) {
       lines.push('检索梯：');
       for (const x of b.ladder) lines.push(`  ${x.stopped ? '★' : '·'} ${x.layer} ×${x.hit}  — ${x.why}`);
     }
-    const G = (t) => flags.reflect ? String(t ?? '') : stripGenre(String(t ?? ''));   // I-11 P0-②：读侧剥皮（--reflect＝反思通道，不剥）
+    const G = (t) => (flags.reflect || flags.depth === 'full') ? String(t ?? '') : stripGenre(String(t ?? ''));   // I-11 P0-②：读侧剥皮（--reflect / --depth full＝全文，不剥）
     for (const g of b.groups) {
       lines.push(`[${g.store} ×${g.total}${g.hits.length < g.total ? ` → top${g.hits.length}` : ''}]`);
       for (const h of g.hits) {
-        const t = (h.time ? `[${h.time}] ` : '') + (typeof h.valence === 'number' && h.valence < 0 ? '⚠ ' : '');
+        const t = (h.agePrefix ? h.agePrefix + ' ' : '') + (h.time ? `[${h.time}] ` : '') + (typeof h.valence === 'number' && h.valence < 0 ? '⚠ ' : '');
         if (g.store === 'frontier') lines.push(`  - ${t}${G(h.title)} [${h.status}] ${h.topic}${h.supports.length ? '  supports=' + h.supports.join(' ') : ''}`);
         else if (g.store === 'canon') lines.push(`  - ${t}${h.displayTier ? h.displayTier + ' ' : ''}${h.stale ? '待复核 ' : ''}${h.id}: ${G(h.claim)}（${h.source} · ${h.ref}）`);
         else if (g.store === 'mirror') lines.push(`  - ${t}${h.id}: ${G(h.situation)} → ${G(h.outcome)}`);
@@ -196,7 +196,7 @@ switch (cmd) {
     if (flags.all) { console.error('六库 cross 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
     if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
     if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
-    const c = cross(rest[0] || '', { via: 'cli', reflect: !!flags.reflect, perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
+    const c = cross(rest[0] || '', { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
     const lines = [];
     const dateNote = () => {
       if (!(flags.since || flags.until)) return;
@@ -214,7 +214,7 @@ switch (cmd) {
     lines.push(`对位比较「${c.query}」：命中 ${c.groups.length} 库 / ${c.total} 条（当前版本）`);
     for (const g of c.groups) {
       lines.push(`[${g.store} ×${g.total}]`);
-      for (const item of g.items) lines.push(`  ${item.id} | ${item.line}`);
+      for (const item of g.items) lines.push(`  ${item.agePrefix ? item.agePrefix + ' ' : ''}${item.id} | ${item.line}`);
     }
     if (c.hint) lines.push('· ' + c.hint);
     dateNote();
@@ -323,14 +323,16 @@ switch (cmd) {
       if (!e.found) code = 1;
       break;
     }
-    const r = show(rest[0] || '');
+    const r = show(rest[0] || '', { reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined });
     if (!r.record) { print(r, '（未找到：' + (r.note || '') + '）'); code = 1; break; }
-    const head = r.found ? `[${r.store}] ${r.id}` : `（${r.note}）`;
+    const head = (r.agePrefix ? r.agePrefix + ' ' : '') + (r.found ? `[${r.store}] ${r.id}` : `（${r.note}）`);
     const c = r.credibility;
     const credLines = c ? ['可信度：' + (c.label || '（无层级）') + (c.cls ? ' · ' + c.cls : ''), ...c.steps.map((st) => `  ${st.id}  ${st.why} → ${st.tier || '—'}${st.refuted ? ' refuted' : ''}`)] : [];
     // I-11 P0-②（2026-10-13）：读侧剥皮（--reflect＝反思通道，不剥）——⇒/✓/好。 非 JSON 结构字符，序列化后整段剥安全。
     const recText = JSON.stringify(r.record, null, 2);
-    print(r, [head, ...credLines, flags.reflect ? recText : stripGenre(recText)].join('\n'));
+    const tierNote = r.truncated ? `· 读档 ${r.depth}（已截断）；全文用 --reflect` : '';
+    const fullText = flags.reflect || flags.depth === 'full' || r.depth === 'full';
+    print(r, [head, ...credLines, tierNote, fullText ? recText : stripGenre(recText)].filter((x) => x !== '').join('\n'));
     break;
   }
   case 'sleep': {
@@ -340,7 +342,10 @@ switch (cmd) {
       if (flags.apply) {
         const ref = pick('apply');
         if (!ref) { console.error('用法：sleep --apply <planId|计划文件> [--yes] [--only <id>] [--force]'); code = 1; break; }
-        const r = applyPlan(ref, { dry: flags.yes !== true, force: flags.force === true, only: pick('only') });
+        const dry = flags.yes !== true;
+        const blocked = productionForceRejected({ dry, force: flags.force === true });
+        if (blocked) { console.error(blocked); code = 1; break; }
+        const r = applyPlan(ref, { dry, force: flags.force === true, only: pick('only'), production: true });
         if (!r.ok) { console.error('执行失败：' + r.error); code = 1; break; }
         const rc = r.receipt;
         const lines = [(r.dry ? '演练（未写库；确认后加 --yes 执行）' : '已执行') + '：' + rc.planId + ' · 退役 ' + rc.summary.retired + ' / 跳过 ' + rc.summary.skipped + ' / 拒绝 ' + rc.summary.refused + (rc.basisOk ? '' : ' · ⚠ 指纹过期（--force 强行）')];
@@ -830,6 +835,9 @@ switch (cmd) {
         until: flags.until,
         includeProcess: !!flags.process,
         rawProcess: !!flags['raw-process'],   // I-11 体裁隔离 P0：反思通道（含过程段、不剥皮）
+        reflect: !!flags.reflect,
+        depth: typeof flags.depth === 'string' ? flags.depth : undefined,
+        via: 'cli',
         doseThreshold: Number.isFinite(Number(flags['dose-threshold'])) ? Number(flags['dose-threshold']) : undefined,   // I-12 P1-③：剂量闸（0=关闸）
         all: !!flags.all,
         offset: Number(flags.offset) || 0,
@@ -838,8 +846,8 @@ switch (cmd) {
       const hits = d.hits;
       const lines = hits.length
         ? hits.map((h) => (h.kind === 'node'
-          ? `[node L${h.level}] ${h.id}（${h.score}）${(h.children ?? []).length} 孩子 · ${String(h.gist).slice(0, 160)}`
-          : `[${h.kind}] ${h.id}（${h.score}）turn ${h.turn ?? '?'} · ${h.kind === 'action' ? '[动作·工具调用，非结论] ' : ''}${String(h.gist).slice(0, 160)}`))
+          ? `${h.agePrefix ? h.agePrefix + ' ' : ''}[node L${h.level}] ${h.id}（${h.score}）${(h.children ?? []).length} 孩子 · ${String(h.gist).slice(0, 160)}`
+          : `${h.agePrefix ? h.agePrefix + ' ' : ''}[${h.kind}] ${h.id}（${h.score}）turn ${h.turn ?? '?'} · ${h.kind === 'action' ? '[动作·工具调用，非结论] ' : ''}${String(h.gist).slice(0, 160)}`))
         : ['（无命中——默认不含过程段；需要时加 --process（剥皮）或 --raw-process（反思通道，不剥皮））'];
       if (d.withheld) lines.push('· ' + d.withheld.hint);
       if (d.dose) lines.push(`· 剂量闸：符号负荷 ${d.dose.total} > 阈值 ${d.dose.threshold}${d.dose.strict ? '（长会话·收紧档）' : ''} ⇒ 后 ${d.dose.trimmed} 条已摘要（--dose-threshold N 调闸、--raw-process 不受限）`);
