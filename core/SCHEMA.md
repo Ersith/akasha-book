@@ -15,6 +15,16 @@
 | source.version | string | 可选；版本（如 v24、RFC 9110） |
 | last_reviewed | string | 上次复核 YYYY-MM-DD（慢周期复核的锚） |
 | tags | string[] | 可选 |
+| hint | string | 可选；**反射文本** ≤80 字（"动手前该做什么"）。由插件在**坑前提示**里原样打出 ⇒ **改条目＝改反射**（2026-10-11 用户裁定：反射要能随工程知识纠错与优化）|
+| hint_until | string | 可选；`hint` 的**有效期** YYYY-MM-DD，过期即不再打（防过期反射照打）|
+| **triggers** | string[] | 可选；**触发词路由**用（2026-10-11 解冻后新增，外部对照启发）。命中"当前任务文本"里的任一触发词 ⇒ 在**动手前**把该条的 `hint` 端上来。取**专指**词（如"改文件"而非"改"），避免误触；无 `hint` 不触发（fail closed）|
+| **when** | object | 可选；**可判定谓词**（2026-10-11 解冻后新增，#9 条件谓词化）。求值器 `lib.mjs::evalCondition`：原子 `eq/ne/gte/lte/in/contains`、逻辑 `and/or/not`；**条件非法 ⇒ 抛错且不打**（fail closed，绝不静默放宽）。可用事实：`turn` / `date` / `usedTools` / `failedRecently`。**不写编译器**——那 290 KB 换的是可编程性，我们要的是可审计性 ✓ |
+
+> **合成禁互引（2026-10-11 立，#32；外部对照启发＝Hindsight 的 `exclude_mental_models`）**：**摘要 / 派生类段落（`kind ∈ {promotion, topic, node}`）只许引用「叶」——普通段（intent/conclusion/action/process）或六库记录 id；禁止引用别的摘要。** 理由：防止错误主张在摘要之间**循环放大**（页 A 引页 B、页 B 引页 A，错误就被"多数票"固化）✓ **可机检**：`check` 报 `summary-cites-summary`（摘要引摘要）与 `promotion-source-not-leaf`（`promoted_from` 指向摘要）✓ **口径（实测标定，勿改宽）**：只查**引用类字段**（`based_on`/`cites`/`refs`/`source`）；**`children` 是树的父子结构，不算引用** —— 第一版判定器漏了这条，把 12 处 L2→L1 的 `children` 误报成"互引" ✗ ⇒ 已立永久守卫（`test.mjs` 三例）✓
+
+> **自动端上来（2026-10-11 立，#13）**：触发词**未命中**时退化为**一次轻量词法召回**，把最相关的一条**直接端上来**（不再只是"提示我去查"）。接受判据经**实测标定**：**归一 ≥1.0 且 绝对分 ≥8**（切题样本 归一 1.59/1.68/3.45 ⇒ 全端；不切题样本 0.82/0.45/0.29 ⇒ 全不端）。技术上**额外做 bigram 展开**（`tokenize` 会把中文长句当**一个 token** ⇒ 不展开则 146 条并列 0.90、阈值失效），**不改全局 tokenize** 以免污染既有检索口径。开关 `autoBringUp`（默认开）；同一条消息只端一次；上限 1 条。
+
+> **触发词路由（2026-10-11 立）**：`triggers` 与 `hint` 配套 —— **事件里记录用户消息、注入时匹配**（宿主注入面拿不到当前用户消息，故用两步式：`session/event` 捕获 ⇒ `system-prompt` 渲染时匹配）。分支优先级：**失败驱动 → 触发词路由 → 首用预告**（同回合只出一条）；去重＝同条目 30 分钟一次；开关＝插件 config `triggerRouting`（默认开）；每次触发落一条 `kind: preflight`（`mode: trigger`）观测线。
 
 > **快照类条目**（版本清单 / 依赖拓扑 / 生态现状等会随时间漂移的观察）：id 带日期后缀（`canon-<主题>-YYYYMMDD`）、`claim` 里写明观测时点与适用的版本坐标、`last_reviewed` = 快照日；更新一律走 `revise` 追加新版，不改原文。**不要写成无日期的常青断言**——过期后会误导下一个会话（用户 2026-10-07 裁定）。示例：`canon-dsh-plugin-inventory-20261007`、`canon-harness-reparse-topology-20261007`。
 
@@ -66,6 +76,8 @@ id；term / trigger / behavior / resolution / source 全部必填（string）。
 
 基石随 `node init-example.mjs` 从 `data-example/frontier.jsonl` 拷入（仓库里没有 `tools/import-frontier.mjs`）。手工增补走 `add --store frontier --data '<json>'`。
 
+> **写入侧脱敏是"深度"的（2026-10-11 修）**：六库写入统一入口 `appendRecord` 会对记录**递归**过脱敏（`redactDeep` ✓ 覆盖嵌套对象与数组），**不只洗顶层字符串** —— 此前只洗顶层 ⇒ `{nested:{deep:"npm_…"}}` 这类**漏洗** ✗。口径见 `REDACT_RES` 注释（**宁可漏报也不误伤** · **识别面宽为拦得住、受理面窄为说得准**）✓
+
 ## 时间字段（双时态，2026-10-07 起）
 
 | 字段 | 谁写 | 说明 |
@@ -95,6 +107,9 @@ id；term / trigger / behavior / resolution / source 全部必填（string）。
 node akasha.mjs check        # 人类可读
 node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 ```
+
+
+> **引用完整性（`cite-dangling`，2026-10-11 增）**：摘要/派生段（`kind ∈ {promotion, topic, node}`）的**引用类字段**（`based_on` / `cites` / `refs` / `source`）里写的 id，**必须真实存在**（同文件段 id ∪ 六库记录 id）✓ **只认结构化字段** —— **不做文本扫描**（文本里的 id 形态含大量"400 字截断"产物，扫了就是假警 ✗ 见 PROTOCOL §七.7⑤）✓
 
 ## 审计（可机检的抽样审计）
 
@@ -159,7 +174,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 
 `node akasha.mjs sleep --plan [--out F] [--today YYYY-MM-DD] [--theta 0.8] [--max 20] [--orphan-days 90] [--stale-days 365] [--log F] [--json]`
 
-**只读六库**：不调 `appendRecord` / `revise` / `retire`，不动睡眠水位线（`sleep-state.json`），只写一个计划文件（缺省 `logs/sleep-plan-<today>.json`；`--out` 指定；指向存储文件即拒）。`--apply` / `--rollback` 尚未实现，传入即报错退出 1——等计划输出评审后再做。MCP 只读入口：`akasha_sleep_plan`（见下「可信度」之前的说明）。
+**只读六库**：不调 `appendRecord` / `revise` / `retire`，不动睡眠水位线（`sleep-state.json`），只写一个计划文件（缺省 `logs/sleep-plan-<today>-<planId 短码>.json`——**2026-10-14 起文件名带短码防同日覆盖**；`--out` 指定；指向存储文件即拒）。**`--apply` / `--revoke` 已实现**（2026-10-14，A 档：keep 一字不动＋absorb 软退役；见上文 merge 节执行段）；`--rollback` 无此旗标（回滚走 `--revoke`）。MCP 只读入口：`akasha_sleep_plan`（见下「可信度」之前的说明）。
 
 计划形状：
 
@@ -185,7 +200,8 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 - **merge**（同库、都在当前集）：
   - `near-duplicate`：主文本 token Jaccard ≥ θ。主文本：canon=`claim`；mirror=`situation`+`behavior`；lexicon=`term`+`trigger`；pricing=`behavior`。token = `tokenize` 切词，含中文的词再拆相邻二字。orphan 零权重，不参与合并。
   - `duplicate-url`（frontier）：url 精确相等（与 `audit` 同口径）。
-  - keep = 链根 `logged_at` 最早者（同则根 id 字典序）；keep 只吸收与它**本身** ≥ θ 的条目（每个 absorb 在 `evidence.pairs` 里都有直接相似度）。`mergedText` 恒为 `null`——合并文本由模型 / 人填，代码不生成语义文本。
+  - keep 按 **R4 代际规则**（2026-10-14 用户裁定落地；草案 R4）：同源快照两代（版本标记可解析且互异）⇒ **取最新**；真重复（无版本标记）⇒ 取链根 `logged_at` 最早（同则根 id 字典序）；判不了（标记混用/重复）⇒ `keep: null` + `needsHuman: true`（`--apply` 拒绝该 op）。keep 只吸收与它**本身** ≥ θ 的条目（每个 absorb 在 `evidence.pairs` 里都有直接相似度；换 keep 后 absorb 从全组重算）。`mergedText` 恒为 `null`——合并文本由模型 / 人填，代码不生成语义文本。
+  - **执行（2026-10-14 实现 A 档）**：`sleep --apply <planId|文件> [--yes] [--only <id>] [--force]`——keep **一字不动**，absorb 逐条软退役（`retired_reason: 'merged-into <keep>'`）；默认 dry；basis 指纹过期 ⇒ 拒绝（除非 `--force`）；豁免面/needsHuman ⇒ 拒绝；审计＝review-log（verdict 合并/退役）+ `logs/sleep-apply-<planId>.json` 回执。`sleep --revoke` 同款复位。
 - **discard**（先于 merge 判定）：
   - `snapshot-superseded`：canon 链根 id 形如 `<主题>-YYYYMMDD`，同主题存在日期更晚的当前快照；
   - `canon-stale-unused`：`last_reviewed` 超过 `staleDays`，且 hooks 日志里 `kind:"usage"` 从未引用该链上任何 id。**日志缺失 = 引用数未知 → 不出此类 op**（记入 `skipped`）；
@@ -193,7 +209,7 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 - **永不进计划**：协议条（`isProtocolId`）、带 `promoted_from` 的链（升格记录，§1 的源段关系不在这里动）、已退役条目（不在当前集）、frontier 的 discard（只走 `frontier recheck`）。每条记录至多出现在一个 op 里。
 - **上限**：按（merge 先于 discard → 库序 → reason → id）排序后取前 K（`--max`，缺省 20），截去数记在 `truncated`。
 
-**P4 立场（已定，下一批实现，本批未实现）**：`revokes` 不走 `allowResurrect` 的门——存在撤销某墓碑的 `revokes` 时，即便 `allowResurrect:true` 也拒绝再追加同一 id（文案「已恢复为当前版本，要改走 revise」）；回滚验收比**当前集**的 `(根 id, 正文)`，不比逐行，历史行一条不删。
+**P4 立场（已定；2026-10-14 已实现）**：`revokes` 不走 `allowResurrect` 的门——存在撤销某墓碑的 `revokes` 时，即便 `allowResurrect:true` 也拒绝再追加同一 id（文案「已恢复为当前版本，要改走 revise」）；回滚验收比**当前集**的 `(根 id, 正文)`，不比逐行，历史行一条不删。**实现**：撤销记录＝`{id: <墓碑>-revoked, revokes: <墓碑 id>, revoked_at}` 元数据行（不进当前集）；`currentRecords`/`retiredIds` 视被撤墓碑为未退役；`revokeRetire(store, id)` 追加之；`sleep --revoke <planId>` 按回执把已执行合并/退役整批复位。悬空 `revokes` 由 `check` 报错。
 
 ## MCP：`akasha_sleep_plan`（wave2 §2.2，只读）
 
@@ -209,6 +225,8 @@ node akasha.mjs check --json # 机器可读（退出码 1 = 有错）
 - **对照口径（不采用，防幸存者偏差）**：把「点名的 id 全部落在将被 absorb/discard、或当前已 refute 的集合」的召回行从日志里删掉再数。这个数上升，只说明「假装那些查库没发生」会多出漏召——**不能**拿 apply 之后的 miss 率证明合并无害。没点名 id 的查库行保留（无法证明它依赖被删条目）。`keep` 留下，只把 `absorb` 与 `discard` 的 id 算作移出。
 
 ## 可信度（wave2 §3，2026-10-08）
+
+> **`verification.kind` 的取值**（2026-10-11 手检补；常量 `lib.mjs::VERIFY_KINDS` ✓ 此前 SCHEMA 未列）：`replay`（历史回放复现）· `experiment`（新做实验）· `doc`（官方文档／规格）· `incident`（事故实证）· `refute`（**证伪**——把"不是这样"也记下来 ✓ 与落码记录的「证伪·剔除」同精神）。校验在写入侧强制（非法值拒写 ✓）。
 
 存量不重写：没有 `credibility` 字段。层级由代码从 `source.type` 和修订链上的 `verification` 推导（`credibilityOf`）。升格（`promoted_from`）**没有加成**，层级就是写下的 `source.type`。
 
@@ -274,7 +292,7 @@ verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", a
 |---|---|---|
 | 模型内建 | `model` | 官方模型知识；不可审计，只作起点 |
 | 技能/插件 | `skill` | 宿主 skill / 工具说明 |
-| 本地大图馆 | `library` | 六库已核共识；原文不可变，注释走 `revise`；frontier 继续用 `frontier due` / `recheck` **排期刷新** |
+| 本地大图馆 | `library` | 本地库同步；**级别看 tier**（T1 已复现 / T2 自证·不升共识 / T4 他人·待补引）；原文不可变，注释走 `revise`；frontier 继续用 `frontier due` / `recheck` **排期刷新** |
 | 外网检索 | `web` | **宿主可插**；core 只暴露 `webSearchRequest` / `knowledge.search` 契约（`interface: akasha.hostWebSearch`），按 **citation × credibility**（对齐 T1..T5 权重）排序建议；**不**在 core 实现搜索器 |
 
 认知态（`knowledgeRoute` → `brief` / `lookupDetailed.knowledge`）：
@@ -286,6 +304,196 @@ verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", a
 | `confirmed-unknown` | 无可用证据 | 「确定不知道」——不要编；`search` 契约供宿主接外网 |
 
 与既有可信度（wave2 §3）正交：T1..T5 只描述 **library** 层条目质量；分层决定「查到哪一层、如何开口」。
+
+> **与 PROTOCOL「来源态四标签」的关系（2026-10-11 手检补）**：**本表是「检索侧」的机检结论**——库里有没有、命中强还是弱，由 `knowledgeRoute` **自动算**，用在 `brief` / `lookup` 的开口句 ✓（`akasha.mjs:48` 的映射：`known`→「记得·库内」· `uncertain`→「不确定」· `confirmed-unknown`→「确定不知道」）。**PROTOCOL 的四标签（学过 / 接触过 / 记得·库内 / 搜到）是「输出侧」的来源声明**——**模型自己标**这条断言从哪来 ✓。二者**正交、不互替**：一次回答完全可以「检索侧 `known`（库里确实查到）」而「输出侧标 `学过`（这条判据其实来自权重）」⇒ **混用会让人读不懂开口句** ✗（手检时确认二者不是漂移、是分工，但此前文档没写明 ✓）
+
+## 弧线树 v0.3 · 自动建树（2026-10-12；`autoBuildTree`；CLI `session tree --auto`）
+
+**v0.3.1 调参（2026-10-12 同日追加，用户令「调细吧」）**：新增 **`segCap`（默认 40）**——单块段数上限，与 `chunkTurns`（轮数换块）**并联生效**，先到先切。
+- **病根（实测）**：超长 turn 会把「只按轮数切」憋成巨型块——本会话曾出现 **1006 段/块**，7fe8ec84 最大 **835 段/块**，导致整会话只有 3–4 个节点。
+- **选值依据（13 会话对照，只读测量）**：cap=40 ⇒ 合计 516 块/最大 40；cap=30 ⇒ 687；cap=25 ⇒ 835；cap=20 ⇒ 1032。取 **40**（≈一轮实料；再细则节点翻倍、渲染与检索变吵）。
+- **实测效果**：`391c6ea4` 4 → **48 节点**（36 块）｜`7fe8ec84` 53 → **507 节点**（385 块）｜`f362b992` 37 块；三棵树最大块 **= 40**（硬约束成立）。
+- 关掉上限：显式传 `segCap: 0`（守卫里用它做旧行为对照）。
+- 打包：`@akasha-book/akasha-session` **0.3.2-h5**（restart-required）。
+
+- **两条闸（机械、无 LLM）**：
+  1. **签名未变即复用**——指纹 = `{segCount, latestSeq}`，挂在新代节点的 `treeFingerprint` 字段（**不新增元数据档**）；一致 ⇒ `{built:false, reason:'fingerprint-unchanged'}`。
+  2. **节流**——`minIntervalMs`（默认 10 分钟，从上一代的 `logged_at` 推 lastBuildAt）内不重建 ⇒ `reason:'throttled'`（带 `nextEligibleInMs`）。
+- **旧代留档 + 无损可展开**：重建 = 新 `treegen` 整批追加；旧代原地保留（append-only）；节点带 `children`/`ptr`，全保真仍走 **ptr 回原档**（语义不变）。
+- **接通点**：`@akasha-book/akasha-session` 的索引成功回调（`tree-auto` 观测线：`{built, reason, treegen, nodes, segCount}`；失败落 `tree-auto-error`）。**热替换说明**：本轮把插件 `index.js` 同步进 profile（回滚点 `index.js.bak-pre-treeauto-20261012`）——**插件侧最终仍走下次插件批次统一打包**。
+- CLI：`session tree --auto --session <id> [--interval ms] [--force]`（`--force` 跳过两道闸）。
+- 真库实测：7fe8ec84 首建 **71 节点 / 15388 段**；二跑如实 `fingerprint-unchanged`。
+
+## 英文盲区修复（2026-10-12；`loop-detect.mjs` 双门槛 + 词级 bigram）
+
+- **病灶**：窗口合格线原为「bigram 多样性 ≥10 **且 CJK ≥20%**」⇒ **纯英文/低 CJK 文本整段失明**（挡星号线/代码碎片的设计代价，收口点复核 F3 记录在案）。
+- **修法（选项 B）**：`windowGate()` 双门槛——**中文线** CJK ≥20%（原线保留）**或 字母线** `[A-Za-z]` ≥50%；相似度集合并入 **`wordBigrams()`**（相邻两个纯字母词，如 `the|pipeline`）——英文靠词级、中文仍靠字级。
+- **反侧不破**：星号分隔线 / 纯符号仍不合格（无字母无 CJK）；正常中文散句零误报（守卫 3 条反例）。
+- **复检（旧语料重扫，2026-10-12）**：小会话全 0；两大会话新增命中 **26** 条，全部为**代码/参数在 reasoning 里的重述**（2026-10-07 基线即记为「良性」的同一类）⇒ 新增 `looksLikeCode()` **分级标记**（`exact[].codeLike`，CJK <10% ⇒ true；**只分级不改变检出**）。
+- **口径**：检测器只报「文本重复」事实，**不判良恶**；`codeLike` 让人一眼分辨「代码重述 vs 散文打转」。
+- 守卫：`test.mjs`「英文盲区」正反例 4 条（英文必报 / 分隔线不报 / 中文散句不报 / 中文重复块不回归）。
+
+## 盲区地图 + 纪律单源渲染（#16 / #27，2026-10-12 窗口 9）
+
+**#16 盲区地图（`blindspotMap`；CLI `blindmap <词…>`）**
+
+- 输入一批查询词 → 逐条分级：`blind`（**无强命中**）· `thin`（强命中不足）· `covered`；每条带 `reason`（为什么算盲区）+ `action`（下一步怎么走：progressiveRecall / 标注来源态 / 落 orphan）。
+- `summary` 给计数并明说「**这是法定输出**（不许静默省略）」。
+- 与 #4 BLINDSPOT 的分工：#4＝「**面**没检」（会话层/外网）；本件＝「**查询邻域**空或薄弱」。
+
+**#27 纪律单源渲染（`DISCIPLINE` → `renderDiscipline()` / `verifyDiscipline()`；CLI `discipline [--check F]`）**
+
+- **单源**＝`DISCIPLINE`（version + sections: 来源态 / 排序钉子 / 红线 / 库界 / 写入）；`renderDiscipline()` 出 Markdown（含「勿手改」抬头）。
+- `verifyDiscipline(text)` **逐行比对**：不一致 ⇒ `ok:false` + 前 10 处差异（行号/期望/实得）——**漂移必被抓**（实测：改一个字即报「行 14：期望 «…零编造（一票否决）» 实得 «…零编造（改过）»」）。
+- 用途：对外文档/注入文本改从单源生成；改纪律只改一处。
+
+## 写入回执 + 代际指纹（#23 / #24，2026-10-12 窗口 8）
+
+**#23 committed 语义（`committedOf`；CLI `add` 已接入）**
+
+- 回执形状固定：`{ok, committed, id, reason}`——**未落盘不得口头「已收入」**；成功 `reason:null`，失败 `committed:false` + 原因。
+- CLI `add` 两条路径实测：失败（缺字段）→「未落盘：校验失败…（committed=false）」；成功 →「已追加：…（committed=true）」。
+- 范围（如实）：本轮只统一**核心 CLI 的 add 面**；`revise`/`retire`/promote 等写面**仍走各自返回值**（形状已兼容 `committedOf`，可逐步接入）。
+
+**#24 代际指纹（`generationInfo` + `CODE_GENERATION`；CLI `generation`）**
+
+- `code_generation` = **模块加载时**核心三件（lib/session/sleep）mtime 指纹（进程内恒定）；`disk_generation` = 当前盘上指纹。
+- 不一致 ⇒ `stale_on_disk:true` / `restart_required:true`（**「跑的是旧代码」一眼可辨**）；一致 ⇒ 明确说「无需重启」。
+- 用途：升级/修 bug 后自检（对齐灵枢 `cg(op=info)`；也解释「为什么改了代码没生效」）。
+
+## 校准 / 否定降权 / 渐进式检索（#15 / #25 / #26，2026-10-12 窗口 7）
+
+**#15 来源态校准（`calibrationOf`；CLI `calibration`）**
+
+- 输入 `[{confidence, correct}]` → `{gap, ece, buckets, n, ok, note}`：**gap = 平均自报 − 实际正确率**（>0 过度自信）；`ECE = Σ(桶占比 × |桶内实际−桶内自信|)`。
+- **纪律**：样本 < `minN`（默认 10）⇒ `gap/ece=null` 且 `ok=null`；**当前库无此采样**（自报把握 × 实测对错）⇒ CLI 如实报 `ok=null`——**采样机制本身是下一个缺口**（候选：复盘时顺手记 `confidence`）。
+
+**#25 否定/反事实降权（`negationPenalty`；`lookup --negation-penalty`）**
+
+- 判据：正文含**强否定/撤回标记**（作废/失效/不再成立/被拒/撤回/不采用/不可用…）⇒ 系数 `0.75^n`（最多三档）。
+- **只进排序键**（`rank × negFactor`），**不改 score、不改命中面、不隐藏**（A5）；**默认关**。
+
+**#26 渐进式检索（`progressiveRecall`；CLI `recall`）**
+
+- 宽（原查询）→ 逐步收窄（词数递减）分步实跑，每步给 `{query, tokens, hits, strong, stance}`；**DEFER ≠ 失败**（空查询显式 `deferred:true`）。
+- 用途：残缺 query 也能收敛；把「宽面偏大」变成可执行的多步计划。
+
+## 负记忆两层 + 盲区显式化（#2 / #4，2026-10-12 窗口 6）
+
+**#2 负记忆（`data/negative.jsonl`；`recordRejected` / `listRejected`；CLI `negative [list|add]`）**
+
+- 两层：`kind: 'rejected-write'`（**被拒的写入**——gate/门控拦下的尝试）｜`'undecided'`（**未决**——等数据/等裁定）。
+- 字段：`{id(neg-…), ts, kind, reason, what(≤200 字), ref}`——**只记 kind/reason/短描述，不记正文**（防把负记忆当第二资料库）。
+- **与六库分隔**：独立文件、不进 `STORES`、不参与检索排序与 `check`（它是「走不通的路」的档案，不是知识）。
+- 用途：失败回查原料（「这条路试过、为什么不通」）；下一批可接 `metrics` 读数（回滚/失败面）。
+
+**#4 BLINDSPOT 显式化（`blindspotsFor`；`lookup`/`brief` 返回体 + CLI `blindspots`）**
+
+- 形状：`[{what, why, action}]`——**这次没检的面**必须说出来（对齐「确定不知道」的诚实口径，**不静默省略**）。
+- 常驻两条：会话层（单入口设计，走 `session lookup`）· 外网检索（宿主未接）；带 `--perspective` 时追加「未标 perspective 的条目不参与过滤」。
+
+## fail-loud + perspective（#36 / #37，2026-10-12 窗口 5·2）
+
+**#36 fail-loud（`assertDataRoot`；CLI 启动即验）**
+
+- 判据：数据根**目录存在**且**至少一个库文件存在**；否则 CLI **报错并 exit 2**——**绝不静默建空库装健康**。
+- 覆盖：`AKASHA_ROOT` 环境变量现已真正生效（此前只在文档里；本轮把 `DATA` 改为可覆盖）——迁移/演练/坏根测试都用它。
+- 例外：自举类命令（将来加 init/doctor）不验；其余读命令全部先验。
+
+**#37 perspective（`world` / `experience`）**
+
+- 字段：`perspective: 'world' | 'experience'`（可选，人工填；`experience`＝自己踩过的坑，`world`＝教材/常识）。校验：非法值 `check` 拒。
+- 检索：`lookup --perspective experience|world`——**只过滤命中面、不加权、不改排序**（A5）；缺省条目不参与过滤（视为「没标」）。
+- 现状（如实）：**活库 0 条已标** ⇒ `--perspective experience` 现为「无结果 + confirmed-unknown」（诚实返回，非故障）。标注从下一次复盘起逐步补。
+
+## 可解释性三件（#31 检索梯 / #35 trace / #33 expand，2026-10-12 窗口 5）
+
+**#31 检索梯 `brief.ladder`（+ CLI `brief --ladder`）**
+
+- 形状：`[{layer, hit, stopped, why, note}]`，层级固定：`canon-strong → canon-weak → other-strong → orphan → session → web`。
+- **停点唯一**（有且只有一层 `stopped:true`）：有强命中即停在 `canon-strong`（why=「命中足够，未继续下钻」）；其余层给「为何没下钻」（无命中 / 被上层截停 / 未开——会话层走 `session lookup`、外网宿主未接）。
+- 纪律：**只提示不拦截**（不改检索行为，只是把「停在哪一层」说出来）。
+
+**#35 `lookup --trace`（+ `lookupDetailed().trace`）**
+
+- 形状：逐条 `{id, store, score, rank, strong, tier, displayTier, stale, severity, complexity, factor, factorApplied, balance, zeroWeight}`——**计分零件全摊开**（可审、可复核、可 A/B）。
+- 口径自证：孤案/零权重 ⇒ `factorApplied:false`（rank=score）；`balance.enabled:false` ⇒ 校正 1。
+
+**#33 `show <id> --expand`（+ `expandRecord()`）**
+
+- 行为：先取链尾 → 沿 `promoted_from` 回溯（可多层）→ 返回 `{found, id, store, origin, chain, note}`；id 逐库查找。
+- **悬空如实**：源段不在 `session.jsonl` ⇒ `origin.dangling:true`（不编、不吞）；无 `promoted_from` ⇒ `origin:null` + note「原生条目」；提示全保真路径＝`ptr 回原档`。
+
+## 外置 policy + directive 级门控 + citeAllowlist（#28 / #34 / #30，2026-10-12 窗口 4）
+
+**policy（`loadPolicy` / `isWriteTool` / `policyDeny`，`lib.mjs`；gate 消费）**
+
+- **默认内嵌**（= gate 现行为 + 补面）：`writeTools: edit/write/apply_patch/**ops_replace**` · `shellTools: pwsh/bash/dsh_wsl/**ops_bash**` · `forbidden: [akasha-data-direct-write]`（拦直写 `akasha/data/*.jsonl`）· `directives` 清单（`data-direct-write` = gate 硬拦；`irreversible-backup` = 软提示）。
+- **外置**：`akasha/policy.json`（`AKASHA_POLICY` 可覆盖路径）存在则**并集合并**（默认 ∪ 外置 ⇒ **外置只许更严**）；`forbidden[]` 形状 `{id?, pattern, why?}`，匹配前把 `\` 归一为 `/`（避免转义地狱），命中 ⇒ 拒绝写该目标。
+- **空策略不假装合规**：外置某面为空 ⇒ 记 `warnings`（gate 侧同样告警），绝不静默放行。
+- **#34 落点**：`data-direct-write` 保持 **gate 硬拦**；`ops_replace` / `ops_bash` 补进拦截面（dsh-ops 落地后的新写盘入口）；gate selftest 覆盖清单同步 +2 条。**gate 1.3.0-h5 已装（restart-required，待下次重启激活）**。
+
+**citeAllowlist（#30；lookup / brief / --recall 三处返回）**
+
+- 形状：`[{id, store, tier, strong}]`——**本回合取回的 id 清单**（事前形状；事后仍由 `output-audit` 抓假 id）。
+- 软协议：本回合断言**优先引用清单内 id**；清单外 = 无据（要么先查、要么明说不知道）；**零命中 ⇒ 空清单**（不冒充有据）。
+
+## 回滚命令化 + 自治读数族（#19 / #1，2026-10-12 窗口 3）
+
+**#19 `rollback`（追加反向修订，不删原文）**
+
+- 语义：对「指定日期起**新增的修订版**」，追加一条**反向修订**（内容=前一版；新 id = 被打版 `+r1`；带 `rollback_of` 指回被打版），**绝不删原文**（append-only 不破）。
+- 命令：`node akasha.mjs rollback <store> [--since YYYY-MM-DD] [--apply]`——**默认 dry**（只出计划）；`--apply` 才写；**幂等**（已回滚过 ⇒ 计划清空、重跑无事可做）。
+- 禁止：协议条（`canon-akasha-usage*`）不可批量回滚（须人工 `--allow-protocol`）。
+- 验收：守卫（dry 不写 / apply 还原内容 / 二次 dry 为空 / 行数只增不减）。
+
+**#1 自治读数族 `readings`（只读·如实）**
+
+- 命令：`node akasha.mjs readings`。五读数：`recallMissRate`（失败回合未先查库占比，97 线）/ `toolFailureRate` / `refuteRate`（verifier 行；**当前线未铺 ⇒ null**）/ `samePitRecurrence`（同工具错误 ≥2 次的组数）/ `rollbackChains`（含 `rollback_of` 的修订链占比）。
+- **纪律（用户口径）**：**样本不足 ⇒ `value:null` 且 `ok:null`**（never PASS）；缺失项在 `missing` 点名、每项带 `note`；绝不静默、绝不冒充。
+- 现状如实：`ok=null`（缺 `refuteRate` —— verifier 观测线未铺）；其余四项可算。
+
+
+## 可复现性 · 同分次序（#8，2026-10-12 窗口 3）
+
+- **次序显式化**：`lookup` 排序 = `rank ↓` → `score ↓` → **时间（新者优先）** → **id 升序**。前两级同分时**不再依赖插入序**（数组顺序＝档案顺序，跨索引批次会漂移）；后两级保证「同一查询任意两次运行结果全等」。
+- **验收**：连跑 10 次结果全等（守卫）；真库四个查询复核通过。
+- **不变量**：top-20 上限不变；`strong` 仍只看整词命中；孤案 `rank=score`。
+
+## 多路召回 + RRF 融合（#7，2026-10-12 窗口 3）
+
+- **默认关**：`lookup --recall` / MCP `akasha_lookup {recall:true}`；不带参数行为与并前**完全一致**（route-off 零变化）。
+- **路**：① **词法路**（`lookupDetailed`——现有计分与四因子重排在**路内**生效）；② **引用路**（#6 关系边的**反向索引**：谁引用了词法命中者 ⇒ 带回「结构邻居」）。
+- **融合**：`RRF = Σ 1/(k + rank_i)`（k=60）；**RRF 只定名字与次序，最终仍按现有四因子重排**（A5：修正不替代主语义）。
+- **可审计**：返回 `rrf:{lexical,citation,k}`；每条带 `rrfScore` / `paths:['lexical','citation']`。
+- **边界（如实）**：会话层路未并入（跨库，需要时另开）；引用路只扩「两步内」邻居；真库现仅少量 `relates_to` 边 ⇒ 引用路目前收益有限，随关系边增多而变强。
+- **A/B 实证（真库）**：「三套系统 边界」单路 20 → 多路 20，**引用路 +1**（`canon-rank-controller-view-20261012-r2`，词法本没命中）✓
+
+## 触发词路由与反射字段（#13 / #10，2026-10-11 起、2026-10-12 窗口 2 补校验）
+
+- **字段**（canon 可选）：`hint`（**≤80 字**反射文本——「改条目＝改反射」）、`triggers`（触发词数组，非空字符串）、`hint_until`（到期日 `YYYY-MM-DD`，过期即不打）。
+- **运行时**（`@akasha-book/akasha-sleep` ≥1.5.x，插件侧）：每回合读最近用户消息 → 命中 `triggers` 且条目未退役 / 未过期 / `when`（#9）成立 ⇒ **动手前**注入一行 `[触发] <词> ⇒ <hint> —— 条目 <id>`；**同条 30 分钟一次、每回合最多一条**（防刷屏）；`triggerRouting:false` 可关。
+- **校验**（2026-10-12 窗口 2 补）：写入侧走核心 `validateRecord`——`hint` 非空且 ≤160 字硬上限（超长会被显示侧 80 字裁剪，故拦）、`triggers` 非空字符串数组、`hint_until` 日期形。
+- **与「坑前提示」同族**：后者由工具名/动作自动匹配（`hintForTool`）；本字段是**条自带触发词**的通用形态。
+- 现状：活库 15 行带 `hint`，其中 2 条带 `triggers`（`canon-trap-edit-context-mismatch-r2` / `canon-trap-quoting-escapes-r2`）。
+
+## 条件谓词化 + 不适用条件（#9 / #3，2026-10-11 起、2026-10-12 窗口 2 收口）
+
+**#9 条件谓词化**（`validateCondition` / `evalCondition`，`lib.mjs`）：把「生效条件 / 不适用条件」从散在代码里的 `if` 变成**跟着数据走的 JSON 条件**（可查、可审、可单测）。
+
+- **原子**：`{ field: 值 }` ⇒ 相等；`{ field: { eq|ne|gte|lte|in|contains: 值 } }`。
+- **组合**：`{ and: […] }` · `{ or: […] }` · `{ not: 条件 }`。
+- **纪律**：**非法条件抛错，绝不静默放宽**（未知算子 = 非法）；求值只读、无副作用。
+- **不写编译器**（C 组裁定）：要的是可审计性，不是可编程性。
+
+**#3 mirror `not_applicable`**（2026-10-12 窗口 2）：
+
+- 字段：`not_applicable: <条件>`（可选；命中 ⇒ 该镜像在**当前处境**下不适用，应被排除）。
+- 校验：形状与算子合法性走 #9 校验器（非法条件进 `check` 失败）。
+- 检索：`mirror match <文本> [--na '{"field":"值"}']`——`--na` 传**当前处境的事实对象**；不传 = 不过滤（缺上下文 ≠ 不适用）。MCP `akasha_mirror_match` 同步 `notApplicable`。
+- **只读过滤**：不改写、不删条、不排序加权（A5 纪律：修正不替代）。
+- 活库现状：**10/10 条已按修订链补标**（`-r3`/`-r4`）；`check` 全绿。
+- 验收：`test.mjs` 两条守卫（形状能红 + 接线能红 + 不误伤）。
 
 ## 排序补齐（严重度 × 可信度 × 复杂度，wave3，2026-10-10）
 
@@ -339,6 +547,24 @@ share'     = clamp(baseShare·(1+rawΔ), minShare, maxShare)
 
 **信号**：`budgetSignalsFromRecords` 读 `kind:"budget-rescue"|"budget-idle"`（带 `source`），兼认 gate-self/usage、召回工具等。审计：`sources[s].{share,tokens,rawDelta,reasons,…}` + `phase.method=redundancy+nearest-fetch`。
 
+## 装载/注入面契约（per-call cap，2026-10-12 窗口 1 落地）
+
+> 与 A2（自适应分配器，默认关）**解耦**：本契约＝「每次查阅的 token 天花板」，**默认生效**（`opts.contextBudget === false` 可关）。实现在 `clipByBudget`。
+
+- **地板保底**：**全条目都装不下**时，仍返回**排名第一**（`floorApplied: true`）——不许「空结果 ≈ 库里没有」。
+- **单条自跳**：某条自身超上限 ⇒ 只跳它，**后面更短的照收**（`oversize` 单独记账）；不许大条目卡死整页。
+- **可观测**：每次返回的 `budget` 带 `truncated`（= 被上限裁掉的条数，与 `trimmed` 同值）· `oversize` · `floorApplied` · `nextOffset`，并在 `hint` 里写明续取方式。
+- **默认上限 4096 tok**（天花板的性质、防跑飞；实测 lookup「记忆」1485 / cross「记忆」2544，均不被裁）。
+- 验收：`test.mjs`「#29 装载契约」守卫（地板 + 自跳 + 可观测 + 默认不误裁）。
+
+
+## 视角字段（perspective，预留·2026-10-12 立口径）
+
+- **`perspective: "world" | "experience"`**，**可选**；`world`＝别人说的（教材/公式/常识/典故），`experience`＝我们自己踩过的（亲历的坑、代价、恢复过程）。缺省 = 不填 = 不过滤（旧条目零破坏）。
+- **只许人工 / 升格时填**——**禁止自动 LLM 抽取**（抽取会制造「看起来很真」的伪亲身经历，正撞零编造红线）。
+- **检索**（解冻后接）：可选参数 `--perspective experience|world`，**只做过滤、不改加权、不改排序语义**（A5 纪律：修正不替代）。
+- **校验（待接）**：非法值（如 `"fact"`）→ 应当在 `check` 被拒；**当前 check 尚未校验此字段**（如实标注）——校验器接线与检索过滤同批，列入「窗口 1/2 吸收批次」待解冻。本条与「双时态展示」同属输出/字段口径族——**字段先立、过滤与校验后上**。
+- 来源：Hindsight 对照 #37（2026-10-11 裁定接受）；口径定稿 `docs/hindsight-learnings-evaluation-20261011.md` §二 #37。
 
 ## 情绪字段（valence / arousal，2026-10-07 起）
 
@@ -348,7 +574,7 @@ share'     = clamp(baseShare·(1+rawΔ), minShare, maxShare)
 
 ## 输出审计与使用计数（v0，2026-10-07 起）
 
-- 钩子插件（`@local/akasha-hooks` v1.2）监听 `agent/assistant-stream`，对 committed 的 assistant 文本跑 `auditText`（纯函数）：
+- 钩子插件（`@akasha-book/akasha-hooks` v1.2）监听 `agent/assistant-stream`，对 committed 的 assistant 文本跑 `auditText`（纯函数）：
   - 引用**不存在**的库 id → `output-audit` 观测线（编造引用嫌疑）；
   - 引用**真实**库 id → `usage` 观测线（**条目级使用计数 v0**）。
 - **v1.2 修复（2026-10-07 复查）**：官方 revision **逐帧递增**——累积必须按 `attemptId` 连续（修复前按 revision 重置 ⇒ 每 chunk 清空、`output-audit`/`usage` **恒 0 条**）；id 跨帧切分可还原。
@@ -366,6 +592,27 @@ share'     = clamp(baseShare·(1+rawΔ), minShare, maxShare)
 - 计数：`failureTurns`（有失败的回合）/ `recalledBefore`（失败前查过库）/ `misses`（失败前没查库）/ `lateRecall`（miss 中事后才查）/ `missRate` / `samples`（≤5，`{ts, what, session}`）。
 - 同一口径进睡眠报告 `counters`（`failureTurns` / `recalledBefore` / `recallMisses` / `lateRecall`），门口条子在 `recallMisses>0` 时追「失败前未查库 m/n 回合」；**并进待办（wave1.1）**：`buildTodos` 追加 `{ kind:"review", code:"recall-miss", count, failureTurns, lateRecall, note, samples }`（排在最后，样本带会话 id），随批次写入 `logs/inbox.jsonl`；属复盘项，`promote` 不会把它自动转成孤案。只计数、不判语义：漏召是否「本该查到」由复盘（模型 / 人）判断。
 
+## 关系边（relates_to / relations，2026-10-12 窗口 1 解冻批落地）
+
+- **字段（均可选）**：`relates_to: [id…]`（无类型关联）· `relations: [{ type, id }…]`（带类型；`type` 为**自由字符串**——无白名单，如 `supports` / `contradicts` / `relates` / `promoted_to`）。缺省 = 不过问，旧数据零破坏。
+- **校验分两层**：
+  - **形状层**（`validateRecord`）：`relates_to` 须非空字符串数组；`relations` 须对象数组且每项 `type`/`id` 非空字符串。
+  - **悬空层**（`checkRelations`，同库）：目标须能在同库解析——① 精确命中任何行 id；② **修订 id 形状 `root-rN` 解析到根 id**（防「引用被修订过的条目」误报）。解析不到 ⇒ `check` 报「指向不存在的 id」。
+- **边界（如实）**：只查**同库**；跨库引用（如 canon 引 orphan）暂不校验，需要时再开。`retires` 墓碑 id 可解析（历史可溯）。
+- **用途**：引用完整性从「正文文本扫描」升级为**结构检查**；#18 冲突检测（`contradicts` 边型）依赖本字段。
+- 命令：`node akasha.mjs check`（全库；关系错误随行报出）。测试：`test.mjs`「#6 关系边」守卫（能红 + 不误伤 + 修订 id 不误报）。
+
+## 冲突检测（#18，2026-10-12 窗口 1 落地）
+
+- **纪律**：**只提示不裁决**——检测器只报「同题并存候选」，是否真冲突**永远由人经修订链处置**（对齐红线「同题多源不合并」）。
+- **判据（两段）**：
+  1. **撤回侧**：条目文本含**显式撤回/更正标记**（`作废 / 失效 / 不再成立 / 已废弃 / 已放弃 / 已推翻 / 已排除 / 被拒 / 拒绝采纳 / 撤回 / 取消采用`）——**刻意不用「不/无」等高频字**（凡长文皆有，判据会失效；真库校准实证）。
+  2. **同题侧**：与另一条共享 ≥3 个**稀有词**（document frequency ≤3；词面＝词级 token + **纯 CJK 二字组**，去标点混入），且 **Jaccard（稀有词面）≥ 0.02**。
+- **排除**：已被修订链显式处置的（互为祖先/后代）不算候选——那是「已裁决」。
+- **输出**：按 Jaccard 质量排序，**默认上限 20 对**（去重 A×B / B×A）；每对带 `ratio` / `common` / `markers` / 固定 note。
+- **命令**：`node akasha.mjs check --conflicts [N]`（默认打 12 对；`--json` 取机器面）。实现在 `detectConflicts`（`lib.mjs`）。
+- **已知边界（如实）**：判据是**词面**的——「同义改写说反话」检测不到；词面撞车也可能报出「非真冲突」的候选（故只提示不裁决、且给证据供人快速判读）。
+
 ## 会话层（session，2026-10-07 起）
 
 单会话记忆层（设计稿 `docs\superpowers\specs\2026-10-07-session-akasha-design.md` v0.4；计划 `docs\superpowers\plans\2026-10-07-session-layer-v0.md`）：会话档案（含官方压缩掉的历史）→ 段级条目 → 结论优先检索。
@@ -379,4 +626,23 @@ share'     = clamp(baseShare·(1+rawΔ), minShare, maxShare)
 - **调用分级**：被动行 → 定向轻查（session lookup / 主库 lookup·brief）→ 停靠与导航（session tree / node）→ 深取回档（--process / ptr 回原档 / 主库 cross·show）。
 - 计分：与主库同一 `scoreTokens`（整词 ×1 + min(Σ回退, 0.9)；结论 +1.0 只进排序权重）。`strong` 表示至少一次整词命中。
 - 覆盖边界：旧格式（8–9 月 chunk 型）仅部分可抽取；读取侧 `frameFails` 记录损坏 / 半写帧；会话层条目**免复审**（天然带时间，非知识断言）。
-- 插件（`@local/akasha-session` v0.2.3，2026-10-07 起）：`turn/end` 去抖（30s/会话）自动增量索引 + 压缩事件行（`compaction/end` 真值；成功才记；**wave1 起压缩先强制补索引（绕过去抖/背压），`session-compact` 线带 `indexed`/`reason`——仅 `indexed:true` 时节奏条说「已收入」，否则提示「可能未进会话层」与回退路径；同会话后续索引成功即改口**）+ 每回合节奏条（`systemPrompt.context`，order 134）；**v0.2 起含循环观测 P0（dry 干跑——只观测不干预）**：流环（**现役格式＝`agent/assistant-stream` 帧**：reasoning/text-delta 累积，480 字符节流 + 8K 尾窗；`assistant/chunk` 系 V0 遗物仅兼容保留；chunk 帧的 turn/step 由 start 帧缓存补全）+ turn 环（turn-stopping/`turn/end` 兜底，取数＝事件流缓存全文）+ 帧/类型探针 → `loop-watch` / `loop-watch-probe` 观测线（写 `logs\hooks.jsonl`；汇总 `session loopwatch`）。观测线 `session-armed` / `session-index` / `session-index-skip` / `session-index-error` / `session-compact`。
+- 插件（`@akasha-book/akasha-session` v0.2.3，2026-10-07 起）：`turn/end` 去抖（30s/会话）自动增量索引 + 压缩事件行（`compaction/end` 真值；成功才记；**wave1 起压缩先强制补索引（绕过去抖/背压），`session-compact` 线带 `indexed`/`reason`——仅 `indexed:true` 时节奏条说「已收入」，否则提示「可能未进会话层」与回退路径；同会话后续索引成功即改口**）+ 每回合节奏条（`systemPrompt.context`，order 134）；**v0.2 起含循环观测 P0（dry 干跑——只观测不干预）**：流环（**现役格式＝`agent/assistant-stream` 帧**：reasoning/text-delta 累积，480 字符节流 + 8K 尾窗；`assistant/chunk` 系 V0 遗物仅兼容保留；chunk 帧的 turn/step 由 start 帧缓存补全）+ turn 环（turn-stopping/`turn/end` 兜底，取数＝事件流缓存全文）+ 帧/类型探针 → `loop-watch` / `loop-watch-probe` 观测线（写 `logs\hooks.jsonl`；汇总 `session loopwatch`）。观测线 `session-armed` / `session-index` / `session-index-skip` / `session-index-error` / `session-compact`。
+
+## 因果注释字段（I-09，2026-10-14；**字段先行**）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `caused_by` | string[] | 可选；**估计的因果父**（上游，id 引用）。写入时标注——LLM 近似即可，不必完整因果推断 |
+| `led_to` | string[] | 可选；**已知的下游**（它催生了什么，id 引用）|
+
+- **用途**：复审「为什么」类问题时沿链遍历——`review pack <id>` 已把它作为**必要上下文**呈现；**检索侧暂不改**（「为什么」类检索改造**后置**，2026-10-14 决定）。
+- **纪律**：只标**确有把握**的因果（宁可少标）；双向标注（A `led_to` B ＋ B `caused_by` A）更有用，但不强制；值必须是非空字符串数组（`validateRecord` 拦空数组 / 非字符串）。
+- **试点（2026-10-14）**：`canon-genre-p0-20261013` `led_to` → `canon-genre-p1-dose-20261013` / `canon-idle-resume-v110-20261013`；后者回填 `caused_by`。
+
+## 复审线（review）；I-10，2026-10-14
+
+- **排期**：`audit --due` 复审到期清单（核心 30d / 一般 90d / 年审 365d；I-01 落地）。
+- **输入包**：`node akasha.mjs review pack <id> [--json]` —— 条目全文（**链尾＝当前版本**，显式跳链）＋来源证据（`source.ref`）＋必要上下文（`caused_by` / `led_to` 邻居）＋**审查协议**（三问：① 事实核对 ② 有没有更好解法 ③ 幻觉 / 失效 / 被推翻）。交给 **fresh 子 agent**（零上下文——对照参照的价值所在）。
+- **处置链**：主会话裁决 → `revise` 追加，三种落法：**修正**（纠错）/ **升级**（更好解法）/ **维持**（`last_reviewed` 打复审戳「YYYY-MM-DD 已复审」）。
+- **留痕**：`review log <id> --verdict 维持|修正|升级 [--by self|subagent] [--note "…"]` → 追加 `logs/review-log.jsonl`（`review-cycle` 事件：谁审的 / 审的哪条 / 结论）；读回用 `review list [--limit N] [--since D]`。
+- **免复审**：会话层条目（天然带时间，非知识断言）。

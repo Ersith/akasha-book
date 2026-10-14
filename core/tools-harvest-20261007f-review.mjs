@@ -2,7 +2,7 @@
 // 2026-10-07 第四批留痕：① canon 复查纪律 ② canon 用法同步纪律 ③ canon 时间过滤规格
 // ④ canon 本轮大复查记录 ⑤ canon-akasha-usage → r10（⑱⑲） ⑥ canon-akasha-memory-coexist → r2（十二→十三工具）。
 // 幂等：已有/已修订的跳过；只追加。
-import { appendRecord, loadStore, currentRecords, revise } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise } from './lib.mjs';
 
 let added = 0; let revised = 0; let skipped = 0;
 

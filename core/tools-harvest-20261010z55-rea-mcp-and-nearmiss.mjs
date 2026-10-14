@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z55-rea-mcp-and-nearmiss.mjs
 // 2026-10-10：① REA→MCP 薄壳桥；② 睡眠计划近失报告。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 const has = (pfx) => canon.some((r) => r.id.startsWith(pfx));
@@ -12,7 +12,7 @@ else {
     claim:
       '**REA 接入 DSH：薄壳 MCP 桥（2026-10-10，用户裁定「REA 注册成 MCP」）**。' +
       '**为何不是直连**：REA 原生 `rea --mcp` 暴露 **139 个工具 / 约 1.83 MB schema**（实测），而官方 `@deepseek-ai/dsh-mcp-client` **无工具过滤字段**（"tools appear before the harness starts its first turn"，一次性全量注册）→ 直连会把几十万字符塞进每次请求的 prefill。' +
-      '**做法**：自建 `@local/mcp-rea`（`<LOCAL_PATH>`，~180 行手写 MCP stdio：initialize / tools/list / tools/call），只暴露 **10 个高频工具 + 1 个 CLI 逃生舱（`rea_cli`，命令名白名单校验）**；后端为钉版 `rea-agents@6.3.0`（本地安装于 `_tools\\rea`，避免 `@latest` 漂移）。' +
+      '**做法**：自建 `@akasha-book/mcp-rea`（`<LOCAL_PATH>\\dsh-mcp-rea\\server.mjs`，~180 行手写 MCP stdio：initialize / tools/list / tools/call），只暴露 **10 个高频工具 + 1 个 CLI 逃生舱（`rea_cli`，命令名白名单校验）**；后端为钉版 `rea-agents@6.3.0`（本地安装于 `_tools\\rea`，避免 `@latest` 漂移）。' +
       '**实测**：工具面 11 个 / **3.0 KB schema**（对原生 1.83 MB ≈ 1/600）；selftest 6/6（握手、工具面、真跑 REA capabilities、逃生舱校验、未知方法 -32601）。输出保护：单次上限 64 KB（超限截断注明）、超时 120 s。' +
       '**接线**：profile 装 `local-mcp-rea-0.1.0.tgz`（plugin_manager；39 个 bundle 中已启用），模型侧工具名 `mcp__rea__*`。**环境限制**如实：REA 原生二进制分析仍需 Hopper/Ghidra/IDA 提供方。',
     source: { type: '复现', ref: '本机实测 2026-10-10（rea-mcp-probe 握手、dsh-mcp-rea/selftest.mjs 6/6、plugin_manager install_bundle 返回 applied）' },

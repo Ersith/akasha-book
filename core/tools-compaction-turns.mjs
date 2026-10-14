@@ -2,7 +2,7 @@
 // 目的（2026-10-11 用户观察）：判断「~200 轮后出现的遗忘」是否紧跟某次压缩（假设 b：压缩失真）。
 // 只读；复用 session.mjs 的档案读取路径（与 _scratch/ctx-compare2-20261008.mjs 同源）。
 // 用法：node tools/compaction-turns.mjs [会话前缀，默认 7fe8ec84]
-import { readSessionArchive, resolveSessionFile, SESSION_DEFAULTS } from '../session.mjs';
+import { readSessionArchive, resolveSessionFile, SESSION_DEFAULTS } from './session.mjs';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 

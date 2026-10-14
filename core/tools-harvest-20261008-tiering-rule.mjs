@@ -1,6 +1,6 @@
 // 2026-10-08：把「基石分层规则」立成 canon —— 用户裁定：frontier 只收来源可靠、有学术或前沿背景的组织之论文/文献；
 // 教程 / 工具 / 文档属「半年~一年复核」的慢知识，入 canon（last_reviewed 为慢周期锚），不进 frontier。
-import { appendRecord, loadStore, currentRecords, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, allIds } from './lib.mjs';
 
 const REC = {
   id: 'canon-frontier-tiering-rule-20261008',

@@ -2,7 +2,7 @@
 // 2026-10-07 第九批留痕：① mirror-ghost-citation（编造引文事件——自我案例）
 // ② canon-citation-discipline-20261007（引文与修订纪律）③ canon-akasha-hooks-taxonomy-20261006（五类钩子补录）
 // ④ canon-akasha-origin-20261006 → 修订（补同期讨论指针）。幂等。
-import { appendRecord, loadStore, currentRecords, revise } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise } from './lib.mjs';
 
 let added = 0; let revised = 0; let skipped = 0;
 const has = (store, id) => new Set(loadStore(store).records.map(r => r.id)).has(id);

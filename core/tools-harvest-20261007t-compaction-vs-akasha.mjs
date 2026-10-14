@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007t-compaction-vs-akasha.mjs
 // 2026-10-07 留痕：会话压缩（compaction）与阿卡夏之书对表（用户提问触发）。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-compaction-vs-akasha-20261007',

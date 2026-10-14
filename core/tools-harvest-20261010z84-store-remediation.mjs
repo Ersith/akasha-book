@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z84-store-remediation.mjs
 // 2026-10-10：DSH STORE 整改（五插件 60-64 → 100/100，含 E3 证据）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-dsh-store-remediation'))) { console.log('已存在，跳过'); process.exit(0); }

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007u-junkloop-r2.mjs
 // 2026-10-07 留痕：orphan-thinking-junk-loop → r2（用户两轮实测 + 假说收窄）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const cur = currentRecords(loadStore('orphan').records).find(r => r.id.startsWith('orphan-thinking-junk-loop'));
 if (!cur) console.log('找不到 orphan-thinking-junk-loop（current）');

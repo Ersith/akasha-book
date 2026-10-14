@@ -33,6 +33,6 @@
   SMB2 = True
   RDP_deny = 1
 
-Report : H:\Harness\docs\patrol\patrol-20261011-030422.txt
-State  : H:\Harness\docs\patrol\state-20261011-030422.json  (baseline -> H:\Harness\docs\patrol\last-state.json)
+Report : <LOCAL_PATH>\docs\patrol\patrol-20261011-030422.txt
+State  : <LOCAL_PATH>\docs\patrol\state-20261011-030422.json  (baseline -> <LOCAL_PATH>\docs\patrol\last-state.json)
 === END ===

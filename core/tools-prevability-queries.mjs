@@ -1,9 +1,9 @@
 // tools/prevability-queries.mjs —— 步2（模板卡造问句）+ 步3（按失败日快照切库的机器初筛）
 // 采纳 Claude 2026-10-10 补充：edit 类固定模板、少自由发挥；时序筛选用 snapshot 按失败日切库；报告写明快照哈希。
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { lookupDetailed } from '../lib.mjs';
+import { lookupDetailed } from './lib.mjs';
 
-const OUT = '<LOCAL_PATH>';
+const OUT = '<LOCAL_PATH>\\_scratch\\prevability';
 mkdirSync(OUT, { recursive: true });
 const cases = readFileSync(OUT + '\\cases.jsonl', 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l));
 const snap = JSON.parse(readFileSync(OUT + '\\library-snapshot.json', 'utf8'));

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z46-artex-study.mjs
 // 2026-10-09 留痕：ARTEX 学习（社会学习 v1 的第一个外部系统研究）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 if (tips.some((r) => r.id.startsWith('canon-artex-study'))) { console.log('已存在，跳过'); process.exit(0); }

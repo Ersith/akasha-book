@@ -5,11 +5,17 @@
 //   · 条子二（唤醒条）：agent/created → agent.inject 起床包摘要（不唤醒、不打断）
 //   · 条子三（库脉搏 + 回查，v1.5）：systemPrompt.context（akasha:pulse）——六库计数 + 最近写入；
 //     窗口内（默认 30 分钟）有失败时追一行「回查提示」（错误钩子的注入级动作，不拦截）
+//   · 条子四（行为层，v1.10；2026-10-13 **按裁定重挂·默认关**）：形态 B（无正文 + 无工具）检测 → 观测线 `idle-shape`；
+//     `idleResume:true` 时才自动续行（强信号＝思维链尾部「好。」；冷却 + 限次；文案禁清单/打勾/句号收尾）
 //   · 降级：核心库不可用 → sleep-error 观测线 + 条子提示文案，不炸、不失活。
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+
+// 注入安全（2026-10-11 立）：坑前提示注入的是**库正文**（canon 的 act 字段）⇒ 属"不可信输入"，
+// 须先转义花括号（裸 `{{` 会让宿主插值抛错、该会话永久不可用），并加「库原文·仅参考」标注。
+import { safeInject, safeInjectInline } from './prompt-safety.js';
 
 export const inject = ['systemPrompt', 'timer'];
 
@@ -45,7 +51,13 @@ const DEFAULTS = {
   pulseOrder: 132,
   addressOrder: 133,
   preflightOrder: 135, // C1｜易错点前置
-  statefulOrder: 134   // C3｜断言前把关（order 134 < 135 ⇒ 先渲染，命中时 C1 让位）
+  statefulOrder: 134,  // C3｜断言前把关（order 134 < 135 ⇒ 先渲染，命中时 C1 让位）
+  // I-12b 行为层（2026-10-13 重挂；**默认关**——先观测）：判据＝形态 B；冷却 / 限次防扰动循环。
+  idleResume: false,
+  idleResumeOnWeak: false,
+  idleResumeCooldownMs: 300000,
+  idleResumeMax: 3,
+  idleTailChars: 32
 };
 
 /** 唤醒条是否值得推（有内容才说话）：无睡眠记录 / 有待办 / 审计有警告。 */
@@ -63,6 +75,53 @@ export function buildWakeNote(k) {
   if (warns.length) lines.push(`审计：${warns.map((f) => f.code + '×' + f.count).join('，')}`);
   lines.push('详情：akasha_kit');
   return lines.join('\n');
+}
+
+// —— I-12b 行为层：形态 B 判定（纯函数；2026-10-13 **按裁定重挂**）——
+// 前史：旧钩子 1.8.x（判据＝「流无正文」）因 **形态 A 误报 + 扰动循环（抢险注入被写进思考链）**
+//   被 Master 裁定删除（`canon-idle-hook-removed-20261013`）。本版按机制报告 §⑥ 收窄：
+//   **形态 B ＝ 有思考、无正文、无工具调用**（真卡壳）；**形态 A（无正文 + 有工具）＝正常中间步骤，绝不报**。
+//   先兆信号：思维链尾部「好。」（强，11× 危险比）/「。」（弱）；干预只在开闸（默认关）且强信号时发生。
+export const IDLE_RESUME_TEXT = '【自动续行】请直接继续执行下一步：禁止列清单、禁止打勾、禁止以「。」收尾（想一条做一条）。若确实已无事可做、或需要用户输入，请直接输出正文说明。';
+/** 一回合的流信号 → 判定：shape `normal` | `A`（无正文+有工具）| `B`（无正文+无工具）；signal `hao` | `o` | null。 */
+export function judgeIdleTurn({ hasText, toolCalls, tail } = {}) {
+  const shape = hasText === true ? 'normal' : ((Number(toolCalls) || 0) > 0 ? 'A' : 'B');
+  const t = String(tail ?? '');
+  const signal = t.endsWith('好。') ? 'hao' : (t.endsWith('。') ? 'o' : null);
+  return { shape, signal, stall: shape === 'B' };
+}
+
+/** S4（2026-10-13）：尾部窗口读 + 取「最近一条非注入 intent 的 gist」——两个纯函数。
+ *  做成**顶层导出**（而不是埋在 apply 里）的唯一理由：自测要拿它们做等价对照；
+ *  生产路径（apply 内的 akasha:stateful 状态条）调用的就是这两个导出，不存在「测试一份、生产另一份」。 */
+export const TAIL_WINDOW_BYTES = 256 * 1024;
+export function tailReadText(file, maxBytes = TAIL_WINDOW_BYTES) {
+  const st = statSync(file);
+  const start = Math.max(0, st.size - maxBytes);
+  const len = st.size - start;
+  if (len <= 0) return { text: '', bytes: 0, truncated: false };
+  const fd = openSync(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(len);
+    const n = readSync(fd, buf, 0, len, start);
+    let text = buf.subarray(0, n).toString('utf8');
+    if (start > 0) { const nl = text.indexOf('\n'); if (nl === -1) return { text: '', bytes: n, truncated: true }; text = text.slice(nl + 1); }
+    return { text, bytes: n, truncated: start > 0 };
+  } finally { closeSync(fd); }
+}
+export function latestIntentGist(text) {
+  const lines = String(text ?? '').split('\n');
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (!lines[i].includes('"kind":"intent"')) continue;
+    let r; try { r = JSON.parse(lines[i]); } catch { continue; }
+    const g = String(r.gist || '');
+    if (!g) continue;
+    // 规则化跳过注入段（2026-10-10 生产核对：除 runtime context 外还有 openviking / hindsight 等注入块被记成 intent）
+    if (g.startsWith('<') || g.length > 800
+      || /Current runtime context|Relevant memory from|Hindsight|openviking-context|阿卡夏·/.test(g)) continue;
+    return g;
+  }
+  return null;
 }
 
 export function apply(ctx, config = {}) {
@@ -123,7 +182,7 @@ export function apply(ctx, config = {}) {
       const k = require_(join(cfg.akashaDir, 'lib.mjs')).kit();
       if (!isWakeNoteworthy(k)) return;
       const message = createUserMessage({
-        content: [{ type: 'text', text: buildWakeNote(k) }],
+        content: [{ type: 'text', text: safeInject(buildWakeNote(k)) }],   // #14 保守包裹：唤醒条内含 kit（库内容：待办/审计/脉搏）；agent.inject 是否也走插值**未验证** ⇒ 包上无害 ✓（2026-10-11 手检）
         source: { kind: 'akasha-wake' }
       });
       agent.inject(message);
@@ -146,6 +205,72 @@ export function apply(ctx, config = {}) {
     }
   });
 
+  // —— I-12b 行为层（2026-10-13 深夜 · **按 Master 裁定「重挂（默认关）」重挂**）——
+  // 前史：同位置旧钩子（判据＝「流无正文」）因 **形态 A 误报 + 扰动循环** 被裁定删除（canon-idle-hook-removed-20261013）。
+  // **物证（2026-10-13 复查）**：旧实现包 `local-akasha-sleep-1.8.1-h1.tgz` 仍在——其链路＝「**流 end 帧**判定 →
+  //   `agent.inject(createUserMessage{source.kind:'akasha-resume'})`」，三级降级全部实测拉回成功（canon-idle-resume-verified-20261013）。
+  //   ⇒ 本版**沿用该有效链路**（判定点＝attempt `end` 帧、注入 API ＝ agent.inject），**只换判据与护栏**：
+  // ① 判据收窄至**形态 B**（该 attempt：无正文 + 无工具调用；A 形态＝正常中间步骤，绝不报，只落观测线）
+  //    + 强信号＝思维链尾部「好。」；
+  // ② 干预**默认关**（`idleResume:true` 才开；观测线 `idle-shape` 无论开关都落——先观测）；
+  // ③ 防扰动循环：冷却 idleResumeCooldownMs + 单会话限次 idleResumeMax + 文案禁清单/打勾/句号收尾（机制报告 §⑥）。
+  // 证据链：canon-idle-mechanism-20261013-r1 · research/lora-cot-degradation-investigation-20261013.md
+  const idleAttempts = new Map();   // attemptId -> { sid, text, tools, tail }（按 attempt 收，end 帧判完即删）
+  const idleGate = new Map();       // sid -> { count, lastAt }
+  const idleTailChars = Number.isInteger(cfg.idleTailChars) && cfg.idleTailChars > 0 ? cfg.idleTailChars : 32;
+  const isSubagentAgent = (agent) => {
+    const h = agent?.session?.header;
+    return h?.origin === 'subagent' || (h?.delegationDepth ?? 0) > 0;
+  };
+  const idleEvaluate = (agent, a, meta = {}) => {
+    const sid = String(agent?.session?.id ?? agent?.id ?? '');
+    if (!sid || isSubagentAgent(agent)) return;
+    const j = judgeIdleTurn({ hasText: a.text, toolCalls: a.tools, tail: a.tail });
+    if (j.shape !== 'normal') log({ kind: 'idle-shape', session: sid, shape: j.shape, signal: j.signal, tools: a.tools, turn: meta.turn ?? null, step: meta.step ?? null });
+    const strong = j.signal === 'hao' || (cfg.idleResumeOnWeak === true && j.signal === 'o');
+    const gate = idleGate.get(sid) ?? { count: 0, lastAt: 0 };
+    const now = Date.now();
+    const eligible = j.stall && strong
+      && gate.count < (Number.isInteger(cfg.idleResumeMax) ? cfg.idleResumeMax : 3)
+      && (now - gate.lastAt) >= (Number.isFinite(cfg.idleResumeCooldownMs) ? cfg.idleResumeCooldownMs : 0);
+    if (cfg.idleResume === true && eligible && typeof agent?.inject === 'function') {
+      agent.inject(createUserMessage({ content: [{ type: 'text', text: IDLE_RESUME_TEXT }], source: { kind: 'akasha-idle-resume' } }));
+      idleGate.set(sid, { count: gate.count + 1, lastAt: now });
+      log({ kind: 'idle-resume', session: sid, turn: meta.turn ?? null, step: meta.step ?? null, count: gate.count + 1, signal: j.signal });
+    }
+  };
+  ctx.on('agent/assistant-stream', (payload) => {
+    try {
+      const agent = payload?.agent;
+      const frame = payload?.frame;
+      const frameType = String(frame?.type ?? '');
+      const attemptId = String(frame?.attemptId ?? '');
+      if (!frameType) return;
+      if (frameType === 'start') {
+        idleAttempts.set(attemptId || String(idleAttempts.size), { sid: String(agent?.session?.id ?? agent?.id ?? ''), text: false, tools: 0, tail: '' });
+        if (idleAttempts.size > 30) idleAttempts.delete(idleAttempts.keys().next().value);   // 保新：只留最近 30 条流
+        return;
+      }
+      if (frameType === 'end') {
+        const key = attemptId || '';
+        const a = idleAttempts.get(key);
+        idleAttempts.delete(key);
+        if (!a) return;
+        idleEvaluate(agent, a, { turn: frame?.turn ?? null, step: frame?.step ?? null });
+        return;
+      }
+      if (frameType !== 'chunk') return;
+      const c = frame?.chunk;
+      if (!c || typeof c.type !== 'string') return;
+      const key = attemptId || 'anon';
+      let a = idleAttempts.get(key);
+      if (!a) { a = { sid: String(agent?.session?.id ?? agent?.id ?? ''), text: false, tools: 0, tail: '' }; idleAttempts.set(key, a); }
+      if (c.type === 'text-delta') a.text = true;
+      else if (c.type === 'tool-call-delta') a.tools += 1;
+      else if (c.type === 'reasoning-delta') a.tail = (a.tail + String(c.text ?? '')).slice(-idleTailChars);
+    } catch { /* 观测不拖垮宿主 */ }
+  });
+
   // 条子：每个新回合的 runtime context 自动带上最近一次睡眠摘要（渲染自核心库，失败安全）。
   ctx.systemPrompt.context({
     name: 'akasha:sleep',
@@ -160,6 +285,29 @@ export function apply(ctx, config = {}) {
   const recentFailures = [];
   const usedTools = new Set();                                    // 本会话用过哪些工具（首用预告的判据）
   const announcedTraps = new Set();                               // 已预告过的陷阱工具（每工具一次）
+
+  // 触发词路由（2026-10-11 解冻后新增）：**最近的用户消息文本** + 已触发过的条目（去重）。
+  // ⚠ 只存内存、只在进程内、不落盘；超 TTL 视为过期（避免拿很久以前的任务文本乱触发）。
+  const lastUserText = { text: '', at: 0 };
+  const firedTriggers = new Map();                                // 条目 id → 上次触发时间（同条 30 分钟去重）
+  const broughtUp = { at: 0, id: null };                          // #13「端上来」：同一条消息只端一次（用 at 做键）
+  const USER_TEXT_TTL = 10 * 60 * 1000;
+  /** 从 session/event 的 user/message 事件里**防御式**取正文（载荷形状随宿主版本可能不同）。 */
+  const textOfUserEvent = (p) => {
+    try {
+      const d = p?.data ?? p ?? {};
+      const cand = [d?.text, d?.content, d?.message?.text, d?.message?.content,
+        d?.parts, d?.message?.parts, d?.message];
+      for (const c of cand) {
+        if (typeof c === 'string' && c.trim()) return c.trim();
+        if (Array.isArray(c)) {
+          const s = c.map((x) => (typeof x === 'string' ? x : (x && typeof x.text === 'string' ? x.text : ''))).join(' ').trim();
+          if (s) return s;
+        }
+      }
+    } catch { /* 取不到就当作没消息 */ }
+    return '';
+  };
   const noteFailure = (tool) => {
     try {
       recentFailures.push({ ts: Date.now(), tool: String(tool ?? '?') });
@@ -195,6 +343,14 @@ export function apply(ctx, config = {}) {
         obs.compactions++;
         obs.lastCompactionTurn = obs.turn;      // 脆弱窗判据（压缩补偿行用）
       }
+      // 触发词路由（2026-10-11 解冻后新增，外部对照启发：灵枢的「触发词路由」）：
+      //   捕获**最近的用户消息文本**，供注入面（system-prompt/assemble 时求值的函数）做触发词匹配——
+      //   宿主注入面拿不到当前用户消息，故按灵枢的两步式：**事件里记录、组装时注入**。
+      //   ⚠ 只存一行文本 + 时间戳（内存、不出进程、不落盘）；超时即视为过期。
+      if (t === 'user/message') {
+        const s = textOfUserEvent(p);
+        if (s) { lastUserText.text = s.slice(0, 4000); lastUserText.at = Date.now(); }
+      }
     });
   } catch { /* 事件不存在 */ }
 
@@ -225,9 +381,9 @@ export function apply(ctx, config = {}) {
         const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
         const recs = lib.currentRecords(lib.loadStore('canon').records);
         const hit = recs.filter((r) => String(r.id).startsWith('canon-address-layers')).pop();
-        if (hit && typeof hit.claim === 'string') return core().renderAddressLine(hit.claim);
+        if (hit && typeof hit.claim === 'string') return safeInject(core().renderAddressLine(hit.claim));   // #14：canon claim 是库原文 ⇒ 必须包裹
       } catch { /* 读库失败 → 兜底短句 */ }
-      return core().renderAddressLine('');
+      return safeInject(core().renderAddressLine(''));
     }
   });
 
@@ -235,6 +391,13 @@ export function apply(ctx, config = {}) {
   // 为什么改触发：context 行在回合开始渲染、回复尚未产生；且本插件看不到用户消息事件 ⇒
   //   取**会话层最近一条 intent 段**（跳过注入样式的段）做 6 类关键词判定。
   // 只提醒不阻断；statefulGate:false ⇒ 提示与事件双停。
+  // 2026-10-13（举一反三 S4）：取 intent 的读法从「整读 session.jsonl 再 slice(-200)」改为**尾部窗口读**
+  //   ——该文件已 21 MB 且每回合都在长，原先每次渲染都整文件进内存（实测 57 ms / 19 MB 读入）。
+  //   窗口 = 尾部 256 KB；起点切在行中时丢掉半行；从尾向前逐条找非注入 intent。
+  //   与旧口径的关系（如实）：旧口径按 **200 行** 切——记录变长时会漏掉仍在窗口内的 intent；
+  //   新口径按**字节**切，不受单行大小影响（更大记录下更稳，属**语义改进**而非纯等价）。
+  //   两个纯函数（tailReadText / latestIntentGist）移到模块顶层导出，供自测做等价对照。
+  // 去抖状态（同类 30 分钟内只提醒一次；见下方 c3Cat 判定）
   const gateState = { c3Cat: null, c3At: 0, c3Fired: false };
   if (cfg.statefulGate !== false) {
     const STATEFUL = [
@@ -250,19 +413,8 @@ export function apply(ctx, config = {}) {
       text: () => {
         try {
           const path = join(cfg.akashaDir, "data", "session.jsonl");
-          const lines = readFileSync(path, "utf8").split("\n").slice(-200);
           let gist = null;
-          for (let i = lines.length - 1; i >= 0; i--) {
-            if (!lines[i].includes("\"kind\":\"intent\"")) continue;
-            let r; try { r = JSON.parse(lines[i]); } catch { continue; }
-            const g = String(r.gist || "");
-            if (!g) continue;
-            // 规则化跳过注入段（2026-10-10 生产核对发现：除 runtime context 外还有 openviking / hindsight 等注入块被记成 intent）
-            const injected = g.startsWith("<") || g.length > 800
-              || /Current runtime context|Relevant memory from|Hindsight|openviking-context|阿卡夏·/.test(g);
-            if (injected) continue;
-            gist = g; break;
-          }
+          try { gist = latestIntentGist(tailReadText(path).text); } catch { /* 文件缺失/半行等 → 走 null */ }
           if (!gist) return null;
           const hit = STATEFUL.find((k) => k.re.test(gist));
           if (!hit) return null;
@@ -352,8 +504,99 @@ export function apply(ctx, config = {}) {
               if (h) {
                 preflightState.tool = tool; preflightState.at = now;
                 emitPreflight({ tool, entry: h.id, hintSource: h.hintSource, mode: 'failure' });
-                return trim80('[坑前提示] ' + tool + ' 前：' + h.act + ' —— 条目 ' + h.id);
+                return trim80('[坑前提示] ' + tool + ' 前：' + safeInjectInline(h.act) + ' —— 条目 ' + h.id);
               }
+            }
+          }
+
+          // 条件事实（供条目 `when` 判定；#9 条件谓词化的落地）：只含**可判定**的现场事实。
+          const condCtx = {
+            turn: obs.turn,
+            date: today,
+            usedTools: [...usedTools],
+            failedRecently: recent.length > 0,
+          };
+          // 条目 `when` 闸（可选）：不满足就不打（把"不适用条件"变成可判定的谓词，而不是靠人记）。
+          const whenOk = (rec) => {
+            if (!rec || rec.when === undefined || rec.when === null) return true;
+            try { return lib.evalCondition(rec.when, condCtx); }
+            catch (e) { emitPreflight({ entry: String(rec.id), mode: 'when-invalid', error: String(e?.message ?? e).slice(0, 120) }); return false; }  // 非法条件⇒不打（fail closed）
+          };
+
+          // ①b 触发词路由（2026-10-11 解冻后新增；外部对照启发＝灵枢的「触发词路由」）：
+          //     与①/②都不同——它**不依赖历史失败、也不依赖工具名**，而是按**当前任务文本**命中条目自带的
+          //     `triggers` ⇒ 在**动手前**把库拉进来。这正是台账诊断的那句「规则躺在库里、执行点没有接线」的解药。
+          //     字段与 hint 同构：`hint`（≤80 字反射）+ `triggers`（触发词数组）；退役 / `hint_until` 过期 / 无 hint 一律不打。
+          //     去重：同条目 30 分钟一次（与①同窗）；条数上限：每回合最多一条（本函数只 return 一条）。
+          if (cfg.triggerRouting !== false) {
+            const txt = (lastUserText.text && now - lastUserText.at <= USER_TEXT_TTL) ? lastUserText.text : '';
+            if (txt) {
+              const matched = (rec) => {
+                const trs = Array.isArray(rec.triggers) ? rec.triggers : [];
+                return trs.find((t) => { const s = String(t).trim(); return s && txt.includes(s); }) ?? null;
+              };
+              const hit = canonRecs.find((r) => {
+                if (isRetired(r)) return false;
+                if (r.hint_until && String(r.hint_until) < today) return false;
+                if (typeof r.hint !== 'string' || !r.hint.trim()) return false;
+                if (!whenOk(r)) return false;          // #9：条目 `when` 不满足 ⇒ 不打
+                return matched(r) !== null;
+              });
+              if (hit) {
+                const key = String(hit.id);
+                if (now - (firedTriggers.get(key) ?? 0) >= WINDOW) {
+                  const tr = matched(hit);
+                  firedTriggers.set(key, now);
+                  emitPreflight({ entry: key, trigger: tr, hintSource: 'entry', mode: 'trigger' });
+                  return trim80('[触发] ' + tr + ' ⇒ ' + safeInjectInline(String(hit.hint).trim()) + ' —— 条目 ' + key);
+                }
+              }
+            }
+          }
+
+          // ①c「自动端上来」（2026-10-11；补截图里点名的第二个缺口"只做到提示我去查"）：
+          //     与①b 的差别：①b 靠**条目自带触发词**（人写好才命中）；①c 是在**触发词没命中时**退化为
+          //     **一次轻量词法召回** —— 按当前任务把最相关的一条**直接端上来**，而不是提示"你去查"。
+          //     纪律：上限 1 条 · 阈值 ≥2 分（防误端）· 同一条消息只算一次 · 与①b 互斥 · 可关（autoBringUp）· 失败静默。
+          if (cfg.autoBringUp !== false) {
+            const txt = (lastUserText.text && now - lastUserText.at <= USER_TEXT_TTL) ? lastUserText.text : '';
+            if (txt && broughtUp.at !== lastUserText.at) {
+              try {
+                // 分词修正（2026-10-11 实测）：`tokenize` 把中文长句当成**一个 token** ⇒ 每条最多拿 0.9 的中文回退分
+                // ⇒ 阈值 2 永远够不到（146 条并列 0.90，等于"要么全端、要么都不端"）。故此处**额外做 bigram 展开**
+                // （只对 CJK 连续串）；**不改全局 tokenize**，避免污染既有检索口径。实测后 top 得分 26.9/21.9/20.9，区分度良好。
+                const base = lib.tokenize(txt);
+                const bi = [];
+                for (const t of base) {
+                  if (!/\u4e00-\u9fff/.test(t)) continue;
+                  const s = t.replace(/[^\u4e00-\u9fff]/g, '');
+                  for (let i = 0; i + 1 < s.length; i += 1) bi.push(s.slice(i, i + 2));
+                }
+                const toks = [...base, ...bi].slice(0, 24);
+                let best = null;
+                if (toks.length) {
+                  for (const r of canonRecs) {
+                    if (isRetired(r)) continue;
+                    const claim = String(r.claim ?? '').slice(0, 2000);
+                    if (!claim) continue;
+                    const hay = (String(r.id) + ' ' + claim + ' ' + (Array.isArray(r.tags) ? r.tags.join(' ') : '')).toLowerCase();
+                    let score = 0;
+                    for (const tk of toks) score += lib.matchScore(hay, tk);
+                    if (!best || score > best.score) best = { score, rec: r };
+                  }
+                }
+                // 接受判据（2026-10-11 实测标定）：**归一 ≥1.0 且 绝对分 ≥8** 双条件。
+                //   切题样本：归一 1.59/1.68/3.45（分 15.9/26.9/51.8）⇒ 全端；
+                //   不切题样本：归一 0.82/0.45/0.29（分 4.9/4.9/2.0）⇒ 全不端 ⇒ 完美分离。
+                const norm = best ? best.score / toks.length : 0;
+                const accept = !!best && best.score >= 8 && norm >= 1.0;
+                broughtUp.at = lastUserText.at;
+                broughtUp.id = accept ? String(best.rec.id) : null;
+                if (accept && whenOk(best.rec)) {
+                  emitPreflight({ entry: String(best.rec.id), score: best.score, norm: Number(norm.toFixed(2)), mode: 'bring-up' });
+                  return trim80('[端上来] ' + safeInjectInline(String(best.rec.claim).slice(0, 44)) + ' —— ' + String(best.rec.id).slice(0, 26));
+                }
+              } catch { /* 静默：端不上来不影响回合 */ }
             }
           }
 
@@ -367,7 +610,7 @@ export function apply(ctx, config = {}) {
               if (h) {
                 announcedTraps.add(nextTool);
                 emitPreflight({ tool: nextTool, entry: h.id, hintSource: h.hintSource, mode: 'first-use' });
-                return trim80('[坑前提示·首用] ' + nextTool + ' 还没用过：' + h.act + ' —— 条目 ' + h.id);
+                return trim80('[坑前提示·首用] ' + nextTool + ' 还没用过：' + safeInjectInline(h.act) + ' —— 条目 ' + h.id);
               }
             }
           }
@@ -477,14 +720,14 @@ export function apply(ctx, config = {}) {
           if (gist && PRONOUN.test(gist)) {
             // 去掉**所有**指代词（2026-10-11 修：replace 无 g 标志时只替一次，残留「那个」会污染查询）
             const q = gist.replace(new RegExp(PRONOUN.source, 'g'), ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || gist.slice(0, 60);
-            const r = lib.lookupDetailed(q, { limit: 2, contextBudget: false });
+            const r = lib.lookupDetailed(q, { limit: 2, contextBudget: false, via: 'probe' }); // via:'probe'（2026-10-14 复检）——机制探针，不进检索面指标
             const ids = (r.hits || []).map((h) => String(h.id)).slice(0, 2).join(' · ');
             if (ids) return clip120('[指代检索] 像是问旧事 → 先看：' + ids);
           }
           // 语义钩子（近失败）
           const f = recentFailures[recentFailures.length - 1];
           if (f && obs.turn && Date.now() - f.ts < 30 * 60 * 1000) {
-            const r = lib.lookupDetailed(String(f.tool || ''), { limit: 2, contextBudget: false });
+            const r = lib.lookupDetailed(String(f.tool || ''), { limit: 2, contextBudget: false, via: 'probe' }); // 同上：机制探针（近失败回查），不进检索面指标
             const top = (r.hits || [])[0];
             if (top) return clip120('[处境检索] ' + f.tool + ' 近 30 分钟内失败过 → 相关条目 ' + top.id + '：' + String(top.snippet || '').slice(0, 42));
           }

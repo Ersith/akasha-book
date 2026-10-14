@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z87-three-systems.mjs
 // 2026-10-10：README 补「三套记忆系统」+ DSH-Store 上架结果（3 过 2 撤）。幂等。
-import { loadStore, currentRecords, appendRecord, revise } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord, revise } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 

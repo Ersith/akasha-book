@@ -1,6 +1,6 @@
 // 2026-10-07：把「写→可见」通道的教训与实现落成 canon（幂等）。
 // 用法：node akasha\tools\harvest-20261007-pulse.mjs
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-akasha-pulse-visibility',

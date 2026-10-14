@@ -1,7 +1,7 @@
 // akasha/tools/harvest-20261010z86-alpha-retest.mjs
 // 2026-10-10：alpha 复测完成（三版矩阵全 compatible）。幂等。
 // 注意：本文件正文刻意不使用 ASCII 单引号——见文末踩坑 ③（同类坑当日第四次）。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-dsh-store-remediation'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

@@ -1,8 +1,8 @@
 // prevability-record4.mjs —— 步4 校准结果（首批 15 条精判）+ 结论：初筛几乎全假阳性、当前可预防集合≈0
 import { readFileSync, writeFileSync } from 'node:fs';
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = '<LOCAL_PATH>';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
 const P = OSS + '\\docs\\recall-preventability-test-plan.md';
 let t = readFileSync(P, 'utf8');
 if (!t.includes('## 13.')) {
@@ -28,7 +28,7 @@ if (!t.includes('## 13.')) {
     '',
   ].join('\n');
   writeFileSync(P, t + block, 'utf8');
-  writeFileSync('<LOCAL_PATH>', t + block, 'utf8');
+  writeFileSync('<LOCAL_PATH>\\docs\\recall-preventability-test-plan.md', t + block, 'utf8');
   console.log('  [plan] §13 已追加（双份同步）');
 } else console.log('  [plan] already');
 

@@ -2,7 +2,7 @@
 // 输出：akasha\logs\frontier-url-audit-<date>.json（含每条明细）。
 // 用法：node akasha\tools\verify-frontier-urls.mjs
 // 纪律：只报告事实（HTTP 码 / 标题相似度 / 错误原文），不做美化；失败与低相似条目交人工复核。
-import { loadStore, currentRecords } from '../lib.mjs';
+import { loadStore, currentRecords } from './lib.mjs';
 import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

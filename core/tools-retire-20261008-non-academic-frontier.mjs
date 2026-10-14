@@ -1,6 +1,6 @@
 // 2026-10-08：把 4 条非学术来源从 frontier 当前集里退役（软退役；内容已转 canon）。
 // 为什么用脚本而不是 CLI --reason：见 canon-powershell-native-args-20261008——中文经命令行参数会被 ANSI 截断。
-import { retireRecord } from '../lib.mjs';
+import { retireRecord } from './lib.mjs';
 
 // 一次性脚本（2026-10-08 复查教训）：这类「按某次裁定改变库状态」的脚本正常重跑必须 no-op——
 // 否则一次重放又追加一条墓碑（当晚真的发生了）。需要重放请显式设 AKASHA_ALLOW_REPLAY=1。

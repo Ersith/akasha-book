@@ -1,8 +1,8 @@
 // prevability-record2.mjs —— 计划修订 + 台账口径修正 + canon（修正数组语法后重跑）
 import { readFileSync, writeFileSync } from 'node:fs';
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = '<LOCAL_PATH>';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
 const NL = '\n';
 
 // ① 计划文档追加

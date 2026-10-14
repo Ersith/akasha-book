@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z90-review-round.mjs
 // 2026-10-10：用户裁定「不要依赖脚本，逐项排查」→ 人读复查的结果与教训。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-review-manual-20261010'))) { console.log('已存在，跳过'); process.exit(0); }

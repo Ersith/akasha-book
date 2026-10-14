@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z85-store-hold.mjs
 // 2026-10-10：STORE 上架挂起（用户裁定）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-dsh-store-remediation'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

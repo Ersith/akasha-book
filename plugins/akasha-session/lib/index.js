@@ -155,6 +155,10 @@ export function apply(ctx, config = {}) {
   const watchBuf = new Map();      // `${sid}:${attempt}:${index}:${stream}` -> { text, seen, lastChecked, done, hit:Set }
   const watchProbe = new Map();    // sid -> Set(帧/chunk 类型；前 8 个各记一行，防真值漂移）
   const watchTurnDone = new Set(); // `${sid}:${turn}` 去重
+  // 上下文长度代理（2026-10-14 追加；用户令「这个要加」）：自**上次压缩完成**以来本会话累计的流字符数。
+  //   只记录、不干预；真实 KV 相位不可由宿主观测，代理仅作离线分析变量（P1 阈值标定用）。无压缩记录时＝自会话开始累计。
+  const watchCtxChars = new Map(); // sid -> 累计流字符
+  const ctxCharsOf = (sid) => watchCtxChars.get(sid) ?? 0;
   const attemptTurns = new Map();  // attemptId -> {turn, step}（chunk 帧不带 turn/step，start 帧带——2026-10-07 复查）
   const lastAssistant = new Map(); // sid -> {turn, message}（事件流缓存；官方 Session 无同步读者可用）
   const watchLoopCore = () => require_(join(cfg.akashaDir, 'loop-detect.mjs'));
@@ -164,10 +168,12 @@ export function apply(ctx, config = {}) {
     if (seen.has(tag) || seen.size >= 8) return;
     seen.add(tag);
     watchProbe.set(sid, seen);
-    log({ kind: 'loop-watch-probe', session: sid, type: tag });
+    log({ kind: 'loop-watch-probe', session: sid, type: tag, ctxChars: ctxCharsOf(sid) });
   };
 
   const feedStreamChunk = (sid, turn, step, keyPrefix, cls) => {
+    watchCtxChars.set(sid, (watchCtxChars.get(sid) ?? 0) + cls.text.length); // 上下文长度代理：所有非工具流字符一律累计（只记不裁）
+    if (watchCtxChars.size > 256) watchCtxChars.delete(watchCtxChars.keys().next().value);
     const key = `${keyPrefix}:${cls.stream}`;
     let buf = watchBuf.get(key);
     if (!buf) {
@@ -189,7 +195,7 @@ export function apply(ctx, config = {}) {
     const sum = summarizeWatch(res, cls.stream, buf.seen, buf.hit);
     if (sum) {
       buf.done = true;
-      log({ kind: 'loop-watch', session: sid, turn, step, ...sum });
+      log({ kind: 'loop-watch', session: sid, turn, step, ctxChars: ctxCharsOf(sid), ...sum });
     }
   };
 
@@ -249,7 +255,7 @@ export function apply(ctx, config = {}) {
       if (text.length < 120) continue;
       const res = watchLoopCore().detectLoops(text, {});
       const sum = summarizeWatch(res, stream, text.length, new Set(), 'turn');
-      if (sum) log({ kind: 'loop-watch', session: sid, turn: turn ?? null, phase: 'turn', stream, chars: text.length, hit: sum.hit });
+      if (sum) log({ kind: 'loop-watch', session: sid, turn: turn ?? null, phase: 'turn', stream, chars: text.length, ctxChars: ctxCharsOf(sid), hit: sum.hit });
     }
   };
 
@@ -295,6 +301,14 @@ export function apply(ctx, config = {}) {
     workerFails = 0; // 「连续失败」语义：任何一次成功都回零（2026-10-10 复查修正）
     log({ kind: 'session-index', session: msg.session, trigger: msg.trigger, turn: extra.turn ?? null, added: msg.added, skipped: msg.skipped, parseFails: msg.parseFails, frameFails: msg.frameFails ?? 0, ms: msg.ms, hostMs: p?.hostMs ?? null, lagMs: loopLagMs, via: 'worker' });
     if (msg.ms > 1500) log({ kind: 'session-index-slow', session: msg.session, trigger: msg.trigger, ms: msg.ms, lagMs: loopLagMs, added: msg.added, via: 'worker' });
+    // 弧线树 v0.3 自动建树（2026-10-12）：索引成功后按「签名未变即复用 + 10 分钟节流」自建，结果落 tree-auto 线。
+    //   机械、无 LLM；全保真仍走 ptr 回原档（节点带 children/treeFingerprint，旧代留档）。
+    try {
+      const ab = core().autoBuildTree({ session: msg.session, storeFile: cfg.storeFile, minIntervalMs: 600000 });
+      log({ kind: 'tree-auto', session: msg.session, trigger: msg.trigger, built: ab.built, reason: ab.reason, treegen: ab.treegen ?? null, nodes: ab.nodes ?? null, segCount: ab.segCount ?? null, via: 'worker-host' });
+    } catch (e) {
+      log({ kind: 'tree-auto-error', session: msg.session, trigger: msg.trigger, message: e.message });
+    }
     settleCompacts(msg.session, msg.trigger);
   };
 
@@ -406,6 +420,7 @@ export function apply(ctx, config = {}) {
       if (event?.type === 'turn/end') indexNow(String(session?.id ?? ''), 'turn-end', { turn: event?.data?.turn ?? null });
       else if (event?.type === 'compaction/end' && event?.data?.error === void 0) {
         const sid = String(session?.id ?? '').replace(/^session-/, '');
+        watchCtxChars.set(sid, 0); // 上下文长度代理归零（相位基准＝最近一次压缩；只记录）
         // 先索引再宣称「已收入」（2026-10 复查）；B1（wave1）：宣称与否取决于索引结论——
         // 压缩是稀有且关键的时刻，force 绕过去抖/背压强制补一次；失败如实记 indexed:false，节奏条不说「已收入」。
         const res = indexNow(sid, 'compaction', {}, { force: true }) ?? { ok: false, reason: 'error' };

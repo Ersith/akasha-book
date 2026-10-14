@@ -1,5 +1,5 @@
 // 2026-10-08：① 更正备忘分流条目（补上"todo-board 是今天 13:49 刚装的"）；② 立一条「时间邻近度检索」纪律。
-import { appendRecord, loadStore, currentRecords, revise, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise, allIds } from './lib.mjs';
 
 const FIX_ID = 'canon-memo-routing-20261008';
 const NEW_ID = 'canon-temporal-proximity-retrieval-20261008';

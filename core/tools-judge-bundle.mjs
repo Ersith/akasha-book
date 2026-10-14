@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 const pi = args.indexOf('--pack');
-const PACK = pi >= 0 ? args[pi + 1] : '<LOCAL_PATH>';
+const PACK = pi >= 0 ? args[pi + 1] : '<LOCAL_PATH>\\_ab\\review-pack';
 const si = args.indexOf('--seed');
 const SEED = si >= 0 ? Number(args[si + 1]) : 20261011;
 const A = join(PACK, 'answers', 'arm-A.md');

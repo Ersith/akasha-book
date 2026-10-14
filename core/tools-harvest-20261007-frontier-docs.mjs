@@ -4,7 +4,7 @@
 // 来源态纪律：条目来自网页检索（搜到），标题按源页/索引用词固定；
 //   入库后以 tools/verify-frontier-urls.mjs --only=... 逐条核对 URL 与标题相似度。
 // 用法：node akasha\tools\harvest-20261007-frontier-docs.mjs
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const D = '2026-10-07';
 const NEXT_TBD = '2027-01-05'; // 待验证 +90d

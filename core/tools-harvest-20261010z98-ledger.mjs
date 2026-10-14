@@ -1,5 +1,5 @@
 // akasha/tools/harvest-20261010z98-ledger.mjs —— 五项观察期产出入库（台账 + 结论）
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-observation-ledger-20261010'))) { console.log('= 已记录'); process.exit(0); }

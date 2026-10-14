@@ -1,5 +1,5 @@
 // akasha/tools/harvest-20261010z96-address-line.mjs —— 称呼漂移：诊断 + 每回合称呼行（1.5.4）
-import { loadStore, currentRecords, revise, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, revise, appendRecord } from './lib.mjs';
 
 const recs = currentRecords(loadStore('canon').records);
 const addr = recs.find((r) => String(r.id).startsWith('canon-address-layers'));

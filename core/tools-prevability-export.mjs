@@ -3,10 +3,10 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { isRecallRecord, sessionKeyOf } from '../lib.mjs';
+import { isRecallRecord, sessionKeyOf } from './lib.mjs';
 
 const ROOT = '<AKASHA_DIR>';
-const OUT = '<LOCAL_PATH>';
+const OUT = '<LOCAL_PATH>\\_scratch\\prevability';
 const LOG = join(ROOT, 'logs', 'hooks.jsonl');
 mkdirSync(OUT, { recursive: true });
 

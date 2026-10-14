@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z83-phase-sweep-final.mjs
 // 2026-10-10：相位实测**收官**——二选一 8 步 + 数字形态，全部饱和；结论与成本入账。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-phase-sweep-negative'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

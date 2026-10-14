@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z30-wave1.mjs
 // 2026-10-08 留痕：外援 wave1 合并上线（OSS 91f3e8a + 活树移植）→ oss-package 链。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const oss = tips.find((r) => r.id.startsWith('canon-oss-package-20261007'));

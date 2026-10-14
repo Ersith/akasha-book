@@ -4,9 +4,9 @@
 import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadStore } from '../lib.mjs';
-import { resolveSessionFile, readSessionArchive, SESSION_DEFAULTS } from '../session.mjs';
-import { detectLoops } from '../loop-detect.mjs';
+import { loadStore } from './lib.mjs';
+import { resolveSessionFile, readSessionArchive, SESSION_DEFAULTS } from './session.mjs';
+import { detectLoops } from './loop-detect.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);

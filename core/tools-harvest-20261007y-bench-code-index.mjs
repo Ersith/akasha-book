@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007y-bench-code-index.mjs
 // 2026-10-07 留痕：外部同构案例的「开源代码与度量索引」——frontier 新增 3 + 补码 2 + canon 升 r1。幂等。
-import { appendRecord, loadStore, revise, currentRecords } from '../lib.mjs';
+import { appendRecord, loadStore, revise, currentRecords } from './lib.mjs';
 
 const NEW_FRONTIER = [
   {

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z40-social-learning-v1.mjs
 // 2026-10-09 留痕：社会学习 v1 立项（预测先行 + Δ 记录；仪器先行、六库不动）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 if (tips.some((r) => r.id.startsWith('canon-social-learning-v1'))) { console.log('已存在，跳过'); process.exit(0); }

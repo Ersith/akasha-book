@@ -1,5 +1,5 @@
 // monid-eval-record2.mjs —— Monid 评估结论 + 接入前置（canon；引号已清）
-import { loadStore, currentRecords, appendRecord } from "../lib.mjs";
+import { loadStore, currentRecords, appendRecord } from "./lib.mjs";
 
 const recs = currentRecords(loadStore("canon").records);
 if (recs.some((r) => String(r.id).startsWith("canon-monid-eval-20261010"))) { console.log("= 已存在"); process.exit(0); }

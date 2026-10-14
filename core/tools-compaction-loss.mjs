@@ -6,7 +6,7 @@
 //   ③ 取窗口内**词频前 25** 的词元为「话题词」；保留率 = 这 25 个里有多少也出现在摘要中；
 //   ④ 同时给出字符量（窗口 / 摘要）与压缩比，便于看「单次损失规模」是否随会话变大。
 // 用法：node tools/compaction-loss.mjs [会话前缀，默认 7fe8ec84]
-import { readSessionArchive, resolveSessionFile, SESSION_DEFAULTS } from '../session.mjs';
+import { readSessionArchive, resolveSessionFile, SESSION_DEFAULTS } from './session.mjs';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 

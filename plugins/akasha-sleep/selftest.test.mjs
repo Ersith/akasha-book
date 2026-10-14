@@ -90,8 +90,8 @@ const statePath = join(dir, 'sleep-state.json');
 const inboxPath = join(dir, 'inbox.jsonl');
 appendFileSync(logPath, [
   JSON.stringify({ kind: 'tool', tool: 'read', ok: true }),
-  JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, message: 'denied by gate' }),
-  JSON.stringify({ kind: 'gate-denied', tool: 'edit', target: 'x' })
+  JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, message: 'old_string was not found in "<LOCAL_PATH>/x.mjs"' }),
+  JSON.stringify({ kind: 'gate-denied', tool: 'edit', target: '<AKASHA_DIR>/data/canon.jsonl', message: '拒绝直写 akasha/data/canon.jsonl' })
 ].join('\n') + '\n');
 
 const contexts = [];
@@ -187,6 +187,12 @@ const stubPulse = renderPulseLine({
 });
 assert.ok(stubPulse.includes('库脉搏') && stubPulse.includes('canon 24') && stubPulse.includes('frontier 89')
   && stubPulse.includes('canon-akasha-usage-r2') && stubPulse.includes('5 分钟前'), stubPulse);
+// C3（2026-10-14 用户裁定 A）：近场纪律半句——缺省在、可关
+assert.ok(stubPulse.includes('· 相关主题先 brief'), '缺省须带近场半句：' + stubPulse);
+assert.ok(!renderPulseLine({ ...({ stores: { canon: { count: 1, current: 1 } }, newest: null }) }, { hint: false }).includes('相关主题先 brief'), 'opts.hint=false 须关断');
+process.env.AKASHA_PULSE_HINT = 'off';
+assert.ok(!renderPulseLine({ stores: { canon: { count: 1, current: 1 } }, newest: null }).includes('相关主题先 brief'), 'AKASHA_PULSE_HINT=off 须关断');
+delete process.env.AKASHA_PULSE_HINT;
 
 // —— 6b. 回查条（v1.5 纯函数）：窗口内失败 → 提示；窗口外 / 空 → null ——
 assert.equal(renderRecallLine([], Date.now()), null);
@@ -286,7 +292,103 @@ rmSync(dirC, { recursive: true, force: true });
   }
 }
 
+
+// ---- S4（2026-10-13）：状态条尾读 —— 用插件导出的两个纯函数做回归（真库 + 合成边界）----
+await (async () => {
+  const { tailReadText, latestIntentGist } = await import('./lib/index.js');
+  const oldWay = (text) => latestIntentGist(text.split('\n').slice(-200).join('\n'));
+  // ① 真库（若存在）：旧口径（整读+slice(-200)）与新口径（尾窗）必须给出同一 gist
+  const real = join(dir, '..', '..', 'akasha', 'data', 'session.jsonl');
+  if (existsSync(real)) {
+    const text = readFileSync(real, 'utf8');
+    assert.equal(latestIntentGist(tailReadText(real).text), oldWay(text), '真库：尾读与整读的 gist 必须一致');
+  }
+  assert.equal(latestIntentGist(''), null, '空文本 → null（不抛）');
+  // ② 合成边界：单行无换行 / 注入段在尾 / 窗口起点切在行中 / 很小文件
+  const s4dir = mkdtempSync(join(tmpdir(), 'sleep-s4-'));
+  const J = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+  try {
+    const f1 = join(s4dir, 'a.jsonl');
+    writeFileSync(f1, J([{ kind: 'intent', gist: '<sys>注入' }, { kind: 'intent', gist: 'a'.repeat(900) }, { kind: 'intent', gist: '真 gist' }, { kind: 'process', id: 't' }]));
+    assert.equal(latestIntentGist(tailReadText(f1).text), '真 gist', '注入段必须跳过');
+    const f2 = join(s4dir, 'b.jsonl');
+    writeFileSync(f2, JSON.stringify({ kind: 'intent', gist: '单行' }));
+    assert.equal(latestIntentGist(tailReadText(f2).text), '单行', '无尾换行的单行文件');
+    const big = [];
+    for (let i = 0; i < 400; i += 1) big.push({ kind: 'process', id: 'x' + i, pad: '字'.repeat(400) });
+    big.push({ kind: 'intent', gist: '半行边界后的 gist' });
+    const f3 = join(s4dir, 'c.jsonl');
+    writeFileSync(f3, J(big));
+    assert.equal(latestIntentGist(tailReadText(f3).text), '半行边界后的 gist', '窗口起点切在行中也要正确');
+  } finally { rmSync(s4dir, { recursive: true, force: true }); }
+})();
 // —— 终末清理 ——
 rmSync(dir, { recursive: true, force: true });
+
+// —— 行为层重挂（2026-10-13 深夜）：形态 B 判定 + 续行开关（**默认关**；旧测试组按裁定删除的继任者）——
+{
+  const { judgeIdleTurn, IDLE_RESUME_TEXT } = await import('./lib/index.js');
+  // ① 纯函数：三形态 + 两信号
+  assert.deepEqual(judgeIdleTurn({ hasText: false, toolCalls: 0, tail: '想完了。好。' }), { shape: 'B', signal: 'hao', stall: true });
+  assert.equal(judgeIdleTurn({ hasText: false, toolCalls: 3, tail: '好。' }).shape, 'A', '无正文+有工具＝形态 A（正常中间步骤，绝不报）');
+  assert.equal(judgeIdleTurn({ hasText: true, toolCalls: 0, tail: '好。' }).shape, 'normal');
+  assert.equal(judgeIdleTurn({ hasText: false, toolCalls: 0, tail: '没想完' }).signal, null);
+  assert.equal(judgeIdleTurn({ hasText: false, toolCalls: 0, tail: '先这样。' }).signal, 'o', '弱信号＝尾部句号');
+  assert.ok(String(IDLE_RESUME_TEXT).includes('禁止列清单') && String(IDLE_RESUME_TEXT).includes('禁止打勾') && String(IDLE_RESUME_TEXT).includes('禁止以「。」收尾'), '注入文案须含 §⑥ 三禁：' + IDLE_RESUME_TEXT);
+
+  const idleRoot = mkdtempSync(join(tmpdir(), 'sleep-idle-'));
+  cleanupDirs.push(idleRoot);
+  seedCore(idleRoot);
+  const mkCtx = () => {
+    const handlers = {};
+    return {
+      handlers,
+      ctx: { on(n, f) { (handlers[n] = handlers[n] || []).push(f); return () => {}; }, effect() { return () => {}; }, interval() { return () => {}; }, systemPrompt: { context: () => () => {} } }
+    };
+  };
+  const applyFor = (sid, extra) => {
+    const { handlers, ctx } = mkCtx();
+    const injected = [];
+    const logPath2 = join(idleRoot, `hooks-${sid}.jsonl`);
+    apply(ctx, { log: logPath2, stateFile: join(idleRoot, `s-${sid}.json`), inboxFile: join(idleRoot, `i-${sid}.jsonl`), akashaDir: idleRoot, minIntervalHours: 6, ...extra });
+    return { handlers, logPath: logPath2, injected };
+  };
+  const mkAgent2 = (sid, header = {}, sink) => ({ id: sid, session: { id: sid, header }, inject: (m) => sink.push(m) });
+  // 帧序列按旧包实证链路驱动：start（建状态）→ chunk（累积）→ end（判定 + 注入）
+  const send = (handlers, agent, frames) => { for (const fr of frames) for (const h of handlers['agent/assistant-stream']) h({ agent, frame: fr }); };
+  const attempt = (id, chunks, turn = 1) => [{ type: 'start', attemptId: id, turn }, ...chunks.map((c) => ({ type: 'chunk', attemptId: id, chunk: c })), { type: 'end', attemptId: id, turn }];
+  const readLines2 = (f) => readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+
+  // ② 默认关：B + 好。 ⇒ 只落观测线、不注入
+  const OFF = applyFor('sess-off', { idleResume: false });
+  const agentOff = mkAgent2('sess-off', {}, OFF.injected);
+  send(OFF.handlers, agentOff, attempt('a1', [{ type: 'reasoning-delta', text: '想完了。好。' }], 7));
+  assert.equal(OFF.injected.length, 0, '默认关不得注入');
+  assert.ok(readLines2(OFF.logPath).some((x) => x.kind === 'idle-shape' && x.shape === 'B' && x.signal === 'hao' && x.turn === 7), '默认关也须落观测线：' + JSON.stringify(readLines2(OFF.logPath).map((x) => x.kind)));
+
+  // ③ 开闸：B + 好。 ⇒ 注入（带 source 标记；限次 3）
+  const ON = applyFor('sess-on', { idleResume: true, idleResumeCooldownMs: 0, idleResumeMax: 3 });
+  const agentOn = mkAgent2('sess-on', {}, ON.injected);
+  for (let i = 0; i < 5; i += 1) send(ON.handlers, agentOn, attempt('b' + i, [{ type: 'reasoning-delta', text: '好。' }], 10 + i));
+  assert.equal(ON.injected.length, 3, '单会话限次＝3（防扰动循环）：' + ON.injected.length);
+  assert.equal(ON.injected[0].source.kind, 'akasha-idle-resume', '注入消息须带 source 标记');
+  assert.equal(ON.injected[0].role, 'user', '注入消息为 user 角色');
+  assert.equal(readLines2(ON.logPath).filter((x) => x.kind === 'idle-resume').length, 3, '每次续行留痕');
+
+  // ④ 形态 A / 有正文 / 子代理 / 空流：绝不注入
+  const SKIP = applyFor('sess-skip', { idleResume: true, idleResumeCooldownMs: 0 });
+  const agentA = mkAgent2('sess-skip', {}, SKIP.injected);
+  send(SKIP.handlers, agentA, attempt('c1', [{ type: 'tool-call-delta', name: 'read' }, { type: 'reasoning-delta', text: '好。' }]));   // A 形态
+  send(SKIP.handlers, agentA, attempt('c2', [{ type: 'text-delta', text: '正文' }]));                                                   // 有正文
+  send(SKIP.handlers, agentA, attempt('c3', []));                                                                                       // 空流（无信号）
+  const agentSub = mkAgent2('sess-sub', { origin: 'subagent' }, SKIP.injected);
+  send(SKIP.handlers, agentSub, attempt('c4', [{ type: 'reasoning-delta', text: '好。' }]));                                             // 子代理
+  send(SKIP.handlers, agentA, [{ type: 'end', attemptId: 'ghost' }]);                                                                   // 无状态 end：不得抛
+  assert.equal(SKIP.injected.length, 0, 'A 形态 / 有正文 / 空流 / 子代理均不得注入');
+  const shapeLines = readLines2(SKIP.logPath).filter((x) => x.kind === 'idle-shape');
+  assert.equal(shapeLines.length, 2, '只有 A 与 空B 两条观测线（有正文＝normal 不落线）：' + JSON.stringify(shapeLines.map((x) => x.shape + '/' + x.signal)));
+  assert.ok(shapeLines.some((x) => x.shape === 'A'), 'A 形态须留痕但不动作');
+  rmSync(idleRoot, { recursive: true, force: true });
+}
 
 console.log('selftest: all assertions passed');

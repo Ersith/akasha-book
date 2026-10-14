@@ -32,11 +32,11 @@
 
 ```powershell
 # 试匹配：只报判决，不拦任何东西（exit 0=放行 / 3=会拦）
-node H:\Harness\akasha\tools\gate-dry.mjs --tool edit --json '{"file_path":"H:\\Harness\\akasha\\data\\canon.jsonl"}'
-node H:\Harness\akasha\tools\gate-dry.mjs --tool pwsh --command "echo x >> H:\Harness\akasha\data\canon.jsonl"
-Get-Content case.json -Raw | node H:\Harness\akasha\tools\gate-dry.mjs --stdin
+node <AKASHA_DIR>\tools\gate-dry.mjs --tool edit --json '{"file_path":"<AKASHA_DIR>\\data\\canon.jsonl"}'
+node <AKASHA_DIR>\tools\gate-dry.mjs --tool pwsh --command "echo x >> <AKASHA_DIR>\data\canon.jsonl"
+Get-Content case.json -Raw | node <AKASHA_DIR>\tools\gate-dry.mjs --stdin
 # 回归：改规则后必跑
-node H:\Harness\dsh-akasha-gate\selftest.test.mjs
+node <LOCAL_PATH>\dsh-akasha-gate\selftest.test.mjs
 ```
 
 ## 四、变更记录

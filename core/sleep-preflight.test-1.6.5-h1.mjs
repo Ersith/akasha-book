@@ -5,8 +5,8 @@ import { mkdirSync, writeFileSync, copyFileSync, readFileSync, existsSync, rmSyn
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
-const REAL = 'H:\\Harness\\akasha';
-const FIXBASE = 'H:\\Harness\\_ab\\preflight-fixture';
+const REAL = '<AKASHA_DIR>';
+const FIXBASE = '<LOCAL_PATH>\\_ab\\preflight-fixture';
 // ⚠ 每轮夹具必须**换独立目录**：插件用 createRequire 加载 `lib.mjs`，而目标是 .mjs ⇒ Node 走 **ESM 加载器缓存**，
 //   `require.cache` 里没有它（清理无效）⇒ 只能换 specifier 才能拿到新桩。
 //   2026-10-11 实测：不换目录时 ⑥–⑨ 全挂（拿到上一轮没有 loadStore 的桩）。

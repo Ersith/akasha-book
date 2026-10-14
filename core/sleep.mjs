@@ -1,17 +1,19 @@
 // akasha/sleep.mjs —— 睡眠器蒸馏核心（2026-10-07 v2：逻辑归库、调度归插件）。
-// 迁移自 @akasha-book/sleep v1.3.1 的 lib/index.js（distillHooks / buildTodos / renderContextLine / renderPulseLine 逐字一致）；
+// 迁移自 @akasha-book/sleep 插件（**当时**版本 v1.3.1，2026-10-07 观测）的 lib/index.js（distillHooks / buildTodos / renderContextLine / renderPulseLine 逐字一致）；
+//   ⚠ 「v1.3.1」与「逐字一致」都只是**当时的迁移快照**，不是当前事实——插件此后已走到 1.7.x-h 线（版本真值看插件包 package.json）。
+//   要复核两边共享函数是否仍等价：`diff` 本文件与 `dsh-akasha-sleep/lib/index.js` 的对应段（2026-10-13 审计 P4：把版本号从「断言」降级为「带日期的观测」）。
 // 新增：sleepRun（含 --dry / 同日报告不覆盖 / report/state/inbox 写失败观测线）+ shouldSleep（去抖判断）。
 // 手动触发：node akasha.mjs sleep [--dry] —— 与插件自动触发共用同一水位线 sleep-state.json（不重复蒸馏、不丢增量）。
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { ROOT, STORES, audit, credibilityMap, credibilityTodos, currentRecords, isProtocolId, isRecallRecord, loadStore, parseJsonl, recallSignals, recordCitedIds, redact, storePath, tokenize, writeFileAtomic } from './lib.mjs';
+import { ROOT, LOGS_DIR, STORES, appendReviewLog, audit, credibilityMap, credibilityTodos, currentRecords, isProtocolId, isRecallRecord, isSelfLayerRecord, loadStore, parseJsonl, recallSignals, recordCitedIds, redact, retireRecord, revokeRetire, storePath, tokenize, writeFileAtomic } from './lib.mjs';
 
 export const SLEEP_DEFAULTS = {
-  log: join(ROOT, 'logs', 'hooks.jsonl'),
-  stateFile: join(ROOT, 'logs', 'sleep-state.json'),
-  inboxFile: join(ROOT, 'logs', 'inbox.jsonl'),
-  reportDir: join(ROOT, 'logs'),
+  log: join(LOGS_DIR, 'hooks.jsonl'),
+  stateFile: join(LOGS_DIR, 'sleep-state.json'),
+  inboxFile: join(LOGS_DIR, 'inbox.jsonl'),
+  reportDir: LOGS_DIR,
   minIntervalHours: 6
 };
 
@@ -21,6 +23,8 @@ export function distillHooks(lines) {
   const notes = [];
   // 2026-10-11：三类候选**统一带样本**（此前只有 tool-error 带；gate-denied / agent-error 只有固定文案
   // ⇒ 转正成孤案后内容薄、无钩子可言）。样本按 code 分组，各留 3 条；`notes` 保持原样（兼容既有报告口径）。
+  // 2026-10-11 深夜：新增 `probeNotes`——**探测类失败另列**（见下方 noisy 判定），不占 notes 的 5 条额度。
+  const probeNotes = [];
   const samples = { 'tool-error': [], 'gate-denied': [], 'agent-error': [] };
   const parsed = [];
   for (const raw of lines) {
@@ -38,8 +42,20 @@ export function distillHooks(lines) {
       if (rec.ok === false) {
         counters.toolErrors++;
         const s = redact(`工具失败 ${tool}: ${String(rec.message ?? '').slice(0, 120)}`);
-        if (notes.length < 5) notes.push(s);
-        if (samples['tool-error'].length < 3) samples['tool-error'].push(s);
+        // 失败分层（2026-10-11 深夜修）：**探测类**（`list_mcp_resources` 等探测工具，或服务未开 / 内容类型不支持
+        // 这类"环境噪声"）与**实质失败**分开计。理由：8・11 实测里 8 次失败有 3 次是探测噪声（unity/rea 未连、
+        // unsupported content type），混在一起会让"工具错误数"看着比实际严重，也稀释了真正该人看的失败。
+        // 兼容：`toolErrors` 保持原义（总数），新增 `toolErrorsProbe` / `toolErrorsSubstantive` 两个细分字段。
+        const noisy = tool === 'list_mcp_resources'
+          || /server is disconnected|unsupported content type|ECONNREFUSED|fetch failed|timed out/i.test(String(rec.message ?? ''));
+        if (noisy) {
+          counters.toolErrorsProbe = (counters.toolErrorsProbe ?? 0) + 1;
+          if (probeNotes.length < 3) probeNotes.push(s);
+        } else {
+          counters.toolErrorsSubstantive = (counters.toolErrorsSubstantive ?? 0) + 1;
+          if (notes.length < 5) notes.push(s);          // ← notes 只收实质失败（探测类另列，不占额度）
+          if (samples['tool-error'].length < 3) samples['tool-error'].push(s);
+        }
       }
     } else if (rec.kind === 'gate-denied') {
       counters.denials++;
@@ -55,18 +71,43 @@ export function distillHooks(lines) {
   counters.recalledBefore = rs.recalledBefore;
   counters.recallMisses = rs.misses;
   counters.lateRecall = rs.lateRecall;
-  return { counters, notes, samples, recall: rs };
+  return { counters, notes, probeNotes, samples, recall: rs };
+}
+
+/**
+ * 候选样本是否**可用**（2026-10-13，A2 分道）：判据＝样本里带具体证据（路径 / 工具名 / 错误码 / 具体错误文本）。
+ * 为什么必需：`sampleOf` 原先在缺样本时**填入通用兜底文案**，于是「sample 非空」不等于「有证据」——
+ *   聚合型候选（如「gate-denied ×5」）就这样一路转正成孤儿条目，再被人手动退役（2026-10-13 实测返工 5 条：
+ *   inbox 18 批 / 30 条候选里 **15 条 count-only**，占 50%）。
+ * 判据收窄到可命名的证据形态；通用文案（如「被门控拦截的写入尝试」）显式排除。
+ */
+export const GENERIC_SAMPLE_RE = /^(被门控拦截|agent 级错误|工具失败$|失败回查候选)/;
+export function hasConcreteSample(samples) {
+  const arr = Array.isArray(samples) ? samples : [samples];
+  return arr.some((s) => {
+    const t = String(s ?? '').trim();
+    if (!t) return false;
+    if (GENERIC_SAMPLE_RE.test(t)) return false;
+    return /[A-Za-z]:[\\/]|[\\/][\w.-]+\.(mjs|js|md|json|jsonl|log|txt|ps1|cmd)\b|\bunknown tool\b|\bexit\s*\d|\btimeout\b|\bold_string\b|\boffset\s*\d|\bbinary file\b|\bENOENT\b|\bEPERM\b/i.test(t);
+  });
 }
 
 /**
  * 生成待办（纯函数）：audit 警告 → review；工具失败 / 门控拦截 / agent 错误 → orphan-candidate；
  * 召回漏（失败前未查库的回合，wave1.1）→ review `recall-miss`（复盘项，不自动转孤案——「本该查到什么」是语义判断）。
+ * 2026-10-13（A2）：候选**分道**——有具体样本 ⇒ `orphan-candidate`（可转正）；无 ⇒ `aggregate`（**展示用，不转正**）。
  */
 export function buildTodos(counters, notes, audit, recall, samples) {
   const todo = [];
-  const sampleOf = (code, fallbackNote) => {
+  /** 取可用样本：只回**真实样本**，不再用通用文案兜底（否则「有样本」判定失真）。 */
+  const usableOf = (code) => {
     const s = (samples && Array.isArray(samples[code])) ? samples[code].slice(0, 3) : [];
-    return s.length ? s : (fallbackNote ? [fallbackNote] : []);
+    return s.filter((x) => String(x ?? '').trim() !== '');
+  };
+  const push = (item) => {
+    todo.push(hasConcreteSample(item.samples)
+      ? { ...item, kind: 'orphan-candidate' }
+      : { ...item, kind: 'aggregate', note: item.note + '（聚合型：无具体样本，**不转正**；需要个案请看 hooks 明细）' });
   };
   const findings = Array.isArray(audit?.findings) ? audit.findings : [];
   for (const finding of findings) {
@@ -77,14 +118,23 @@ export function buildTodos(counters, notes, audit, recall, samples) {
       note: `${finding.code} ×${finding.count}（akasha_audit 可查明细）`
     });
   }
-  if ((counters?.toolErrors ?? 0) > 0) {
-    todo.push({ kind: 'orphan-candidate', code: 'tool-error', count: counters.toolErrors, note: String(notes?.[0] ?? ''), samples: sampleOf('tool-error', String(notes?.[0] ?? '')) });
+  if ((counters?.toolErrorsSubstantive ?? counters?.toolErrors ?? 0) > 0) {
+    // 2026-10-11 深夜：待办用**实质失败**计数与样本（探测类噪声另列，不驱动待办——否则"每次睡眠都推一条"）。
+    // `??` 的零值语义（2026-10-13 举一反三核对，非缺陷）：`toolErrorsSubstantive = 0` ⇒ 本轮确无实质失败 ⇒ 不产候选；
+    //   而 `toolErrorsSubstantive` 缺席时退回 `toolErrors` ⇒ 老调用方（只给 toolErrors）不受影响。
+    const sub = Number(counters.toolErrorsSubstantive ?? counters.toolErrors ?? 0);
+    const probe = Number(counters.toolErrorsProbe ?? 0);
+    push({
+      code: 'tool-error', count: sub,
+      note: String(notes?.[0] ?? '') + (probe ? `（另有 ${probe} 次探测类噪声，已单列不计入）` : ''),
+      samples: usableOf('tool-error')
+    });
   }
   if ((counters?.denials ?? 0) > 0) {
-    todo.push({ kind: 'orphan-candidate', code: 'gate-denied', count: counters.denials, note: '被门控拦截的写入尝试（失败回查候选）', samples: sampleOf('gate-denied', '被门控拦截的写入尝试') });
+    push({ code: 'gate-denied', count: counters.denials, note: '被门控拦截的写入尝试', samples: usableOf('gate-denied') });
   }
   if ((counters?.agentErrors ?? 0) > 0) {
-    todo.push({ kind: 'orphan-candidate', code: 'agent-error', count: counters.agentErrors, note: 'agent 级错误（失败回查候选）', samples: sampleOf('agent-error', 'agent 级错误') });
+    push({ code: 'agent-error', count: counters.agentErrors, note: 'agent 级错误', samples: usableOf('agent-error') });
   }
   const misses = Number(counters?.recallMisses ?? 0);
   if (misses > 0) {
@@ -117,12 +167,27 @@ export function renderContextLine(state) {
   }
 }
 
-/** 组装「库脉搏」行（纯函数）：六库当前计数 + 全库最近一条写入与相对时间。 */
-export function renderPulseLine(p) {
+/** 组装「库脉搏」行（纯函数）：六库当前计数 + 全库最近一条写入与相对时间。
+ *  C3（2026-10-14 用户裁定「A」；近场纪律半句）：行尾固定附「 · 相关主题先 brief」——挂每回合必经的执行点
+ *  （远场 usage 条同句不落手；这条是近场版，第 2/3 轮测它）。
+ *  关断：`AKASHA_PULSE_HINT=off`（环境变量，与 AKASHA_QUERY_LOG=off 同款）或 opts.hint=false；缺省开。
+ *  ⚠ 生效时点（2026-10-14 探针实证，见 canon-c3-pulse-hint-20261014）：插件进程内 require 的模块**有缓存** ⇒
+ *  改核心要**重启宿主**才反映到插件渲染面（正文更正 AGENTS §6「改核心即时生效」的表述——那只对 CLI/新进程成立）。 */
+export function renderPulseLine(p, opts = {}) {
   if (!p || !p.stores) return null;
   const counts = Object.entries(p.stores).map(([k, v]) => `${k} ${v.current ?? v.count}`).join(' / ');
   const newest = p.newest && p.newest.id ? `${p.newest.store}#${p.newest.id}（${p.newest.ageText ?? '?'}）` : '（无）';
-  return `阿卡夏·库脉搏：${counts}；最近写入 ${newest}`;
+  const hintOff = opts.hint === false || String(process.env.AKASHA_PULSE_HINT || '').toLowerCase() === 'off';
+  // 内置时钟前缀（2026-10-14 用户令：每回合可见的时间基准；关断 AKASHA_CLOCK=off；注入 opts.now 供测试）
+  const clockOff = opts.clock === false || String(process.env.AKASHA_CLOCK || '').toLowerCase() === 'off';
+  let clock = '';
+  if (!clockOff) {
+    const d = opts.now instanceof Date ? opts.now : new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()];
+    clock = `[${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${wd} ${pad(d.getHours())}:${pad(d.getMinutes())}] `;
+  }
+  return `${clock}阿卡夏·库脉搏：${counts}；最近写入 ${newest}${hintOff ? '' : ' · 相关主题先 brief'}`;
 }
 
 /** 去抖判断（纯函数）：跑过且未满间隔 → 不睡（返回 sinceHours 供留痕）；其余（含从未跑过）→ 睡。 */
@@ -146,6 +211,9 @@ export function sleepRun(opts = {}) {
   const trigger = opts.trigger || 'manual';
   const now = opts.now ? new Date(opts.now) : new Date();
   const emit = (record) => {
+    // dry 语义＝「全不写」（函数头承诺）——观测线也算写：`logPath` 常与 hooks.jsonl 同文件，
+    // dry 时往里 append 会**改掉被测对象的行数**（2026-10-13 实测：会话内 dry 一次 → 后续 processedTo 2→4）。
+    if (opts.dry) return;
     try {
       mkdirSync(dirname(logPath), { recursive: true });
       appendFileSync(logPath, JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n', 'utf8');
@@ -172,10 +240,17 @@ export function sleepRun(opts = {}) {
       end = nl >= fromByte ? nl + 1 : fromByte;
     }
     const slice = buf.subarray(fromByte, end).toString('utf8').split(/\r?\n/).filter(Boolean);
-    const { counters, notes, samples, recall } = distillHooks(slice);
+    // 2026-10-13（A2 联查发现的旧坑）：`emit` 就是往**同一个 logPath** 追加观测线 ⇒ 循环里一旦 emit，
+    //   本轮的「读了 N 行」与「文件现在有 M 行」就分叉：next.processedBytes 会记到 emit 之后的位置，
+    //   而 slice 只覆盖 emit 之前 ⇒ 下一轮从错误水位续读（实测 processedTo 2→4）。修法：读多少、记多少，
+    //   先把两个数**快照**下来，之后任何 emit 都不再影响水位。
+    const readBytes = end;
+    const readLineFrom = truncated ? 0 : (Number.isInteger(state.processedLines) ? state.processedLines : 0);
+    const readLineCount = slice.length;
+    const { counters, notes, probeNotes, samples, recall } = distillHooks(slice);
     // 对外仍以「条」计（CLI / 旧测试）；字节水位只进 state.processedBytes。
-    const lineFrom = truncated ? 0 : (Number.isInteger(state.processedLines) ? state.processedLines : 0);
-    const lineTo = lineFrom + slice.length;
+    const lineFrom = readLineFrom;
+    const lineTo = readLineFrom + readLineCount;
 
     let auditResult;
     try {
@@ -188,12 +263,32 @@ export function sleepRun(opts = {}) {
     const stamp = now.toISOString();
     const date = stamp.slice(0, 10);
     const todo = buildTodos(counters, notes, auditResult, recall, samples);
+    // 2026-10-13（A2）：聚合型待办**分道**——保留展示（报告/inbox 里能看见），但跨批去重：
+    //   同一 code 连续两批都没变 ⇒ 第二批静默（防刷屏），第三批再报一次（防遗忘）。
+    //   口径说明：`item.count` 是**本批窗口内**的计数（不是累计），所以判据不能写成「计数是否增长」——
+    //   写成「连续出现的批次数」才对（2026-10-13 第一版写错过，此处留痕）。
+    //   为什么不在 buildTodos 里做：那是纯函数（可测），跨批状态属于运行侧；分道后 promote 只认 orphan-candidate。
+    const aggState = (state.aggregates && typeof state.aggregates === 'object') ? { ...state.aggregates } : {};
+    const keptTodo = [];
+    for (const item of todo) {
+      if (item.kind !== 'aggregate') { keptTodo.push(item); continue; }
+      const prev = aggState[item.code] || null;
+      const miss = prev ? (Number(prev.miss || 0) + 1) : 0;
+      aggState[item.code] = { lastCount: Number(item.count || 0), miss, lastSeenAt: stamp };
+      if (miss >= 2) {                                     // 连续第三次出现 ⇒ 重新提醒一次并复位
+        aggState[item.code].miss = 0;
+        keptTodo.push(item);
+      } else {
+        emit({ kind: 'sleep-aggregate-skip', code: item.code, count: item.count, consecutive: miss });
+      }
+    }
+    todo.length = 0; todo.push(...keptTodo);
     // §3：refuted 进复审、高频 T5 进 verify-candidate。只追加待办，不改六库。扫描失败不拖垮睡眠。
     try {
       const extra = credibilityTodos({ files: opts.files, log: logPath, today: date, verifyUsageMin: opts.verifyUsageMin });
       for (const item of extra) todo.push(item);
     } catch { /* 只读扫描失败就当没有 */ }
-    const report = { date, ranAt: stamp, trigger, processedFrom: lineFrom, processedTo: lineTo, processedBytes: end, truncated, counters, notes, audit: auditResult, todo };
+    const report = { date, ranAt: stamp, trigger, processedFrom: lineFrom, processedTo: lineTo, processedBytes: readBytes, truncated, counters, notes, probeNotes, audit: auditResult, todo };
 
     if (opts.dry) {
       return { ok: true, dry: true, report, reportFile: null, todo: todo.length, processedFrom: lineFrom, processedTo: lineTo, truncated };
@@ -216,14 +311,15 @@ export function sleepRun(opts = {}) {
     }
 
     const next = {
-      processedBytes: end,
+      processedBytes: readBytes,
       processedLines: lineTo,
       lastRunAt: stamp,
       lastTrigger: trigger,
       lastReport: reportFile,
       lastCounters: counters,
       lastTodo: todo.length,
-      lastAudit: auditResult.ok === true ? 'ok' : auditResult.ok === false ? (auditResult.findings?.length ?? 0) : 'unavailable'
+      lastAudit: auditResult.ok === true ? 'ok' : auditResult.ok === false ? (auditResult.findings?.length ?? 0) : 'unavailable',
+      aggregates: aggState   // A2（2026-10-13）：聚合型待办的跨批去重账本（防刷屏；不参与转正）
     };
     try {
       mkdirSync(dirname(stateFile), { recursive: true });
@@ -272,6 +368,33 @@ export const PLAN_DEFAULTS = Object.freeze({ theta: 0.8, maxOps: 20, orphanDays:
 const PLAN_OP_ORDER = { merge: 0, discard: 1 };
 const PLAN_CJK_RE = /[\u3400-\u9fff\uf900-\ufaff]/;
 const SNAPSHOT_RE = /^(.+)-(\d{8})$/;
+
+// R4（2026-10-14 用户裁定「r4 可以继续」；草案 research/sleep-merge-rules-draft-20261014.md §3）：
+//   keep **按代际**——同源快照两代（版本标记可解析）⇒ 保留**最新**；真重复（无版本标记）⇒ 保留最早（原规则）；
+//   判不了（版本标记混用 / 全同）⇒ `keep: null` + `needsHuman: true`，apply 拒绝该 op（交人工）。
+export function versionMarkerOf(id) {
+  const m = /v(\d+)[-.](\d+)(?:[-.](\d+))?/i.exec(String(id));
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)] : null;
+}
+export function genStemOf(id) {
+  return String(id).replace(/v\d+[-.]\d+(?:[-.]\d+)?/gi, '').replace(/-r\d+[a-z]*$/i, '').replace(/-retired$/i, '');
+}
+function cmpVersion(a, b) {
+  for (let i = 0; i < 3; i += 1) { if (a[i] !== b[i]) return a[i] - b[i]; }
+  return 0;
+}
+/** 组内 keep 重选：返回 { keep, needsHuman, why }。`recById` 取 logged_at 破平。 */
+export function reselectKeep(ids, recById = new Map()) {
+  const vers = ids.map((id) => ({ id, ver: versionMarkerOf(id) })).filter((x) => x.ver);
+  const logged = (id) => String(recById?.get?.(id)?.logged_at ?? '');
+  if (!vers.length) return { keep: null, needsHuman: false, why: 'no-version: 沿用原 keep（真重复，取最早）' };
+  const distinct = new Set(vers.map((x) => x.ver.join('.')));
+  if (distinct.size !== vers.length) return { keep: null, needsHuman: true, why: '版本标记重复：代际判不了' };
+  if (vers.length !== ids.length) return { keep: null, needsHuman: true, why: '版本标记混用（部分无标记）：代际判不了' };
+  const sorted = vers.slice().sort((a, b) => cmpVersion(b.ver, a.ver) || (logged(b.id) > logged(a.id) ? 1 : logged(a.id) > logged(b.id) ? -1 : 0));
+  if (cmpVersion(sorted[0].ver, sorted[1].ver) === 0 && logged(sorted[0].id) === logged(sorted[1].id)) return { keep: null, needsHuman: true, why: '版本与时间双平：代际判不了' };
+  return { keep: sorted[0].id, needsHuman: false, why: 'generational: 取最新代' };
+}
 
 /** 计划用的主文本（每库一种；frontier 不比文本，只比 url；orphan 零权重，不进合并）。 */
 export function planPrimaryText(store, r) {
@@ -454,8 +577,32 @@ export function sleepPlan(opts = {}) {
         }
         if (!absorb.length) continue;
         taken.add(i);
-        merges.push({ op: 'merge', store, keep: cands[i].v.rec.id, absorb, reason: 'near-duplicate', mergedText: null, evidence: { theta: params.theta, field: store === 'canon' ? 'claim' : store === 'mirror' ? 'situation+behavior' : store === 'lexicon' ? 'term+trigger' : 'behavior', pairs } });
-        for (const id of [cands[i].v.rec.id, ...absorb]) used.add(key(store, id));
+        // R4（2026-10-14 用户裁定继续；草案 §3）：组内 keep 按代际重选＋对新 keep 重核相似度。
+        const origKeep = cands[i].v.rec.id;
+        const group = [origKeep, ...absorb];
+        const recById = new Map(views[store].map((v) => [v.rec.id, v.rec]));
+        const rk = reselectKeep(group, recById);
+        let keepId = origKeep; let needsHuman = false;
+        if (rk.keep) keepId = rk.keep;
+        else if (rk.needsHuman) { keepId = null; needsHuman = true; }
+        let finalAbsorb = absorb; let finalPairs = pairs;
+        if (keepId && keepId !== origKeep) {
+          const keeper = cands.find((c) => c.v.rec.id === keepId);
+          finalAbsorb = []; finalPairs = [];
+          for (const id of group) {
+            if (id === keepId) continue;                       // ⚠ 排除 keep 自身（2026-10-14 修：此前曾产出 keep ← keep 自吸收）
+            const other = cands.find((c) => c.v.rec.id === id);
+            const sim = keeper && other ? jaccard(keeper.toks, other.toks) : 0;
+            if (sim >= params.theta) { finalAbsorb.push(id); finalPairs.push({ id, jaccard: +sim.toFixed(4) }); }
+          }
+          if (!finalAbsorb.length) { for (const id of group) used.add(key(store, id)); continue; }
+        }
+        merges.push({
+          op: 'merge', store, keep: keepId, ...(needsHuman ? { needsHuman: true, keepCandidates: group } : {}),
+          absorb: finalAbsorb, reason: 'near-duplicate', mergedText: null,
+          evidence: { theta: params.theta, field: store === 'canon' ? 'claim' : store === 'mirror' ? 'situation+behavior' : store === 'lexicon' ? 'term+trigger' : 'behavior', keepRule: rk.why, pairs: finalPairs }
+        });
+        for (const id of group) used.add(key(store, id));
       }
     }
     //   frontier：同 url（与 audit duplicate-url 同口径：精确相等）
@@ -467,8 +614,15 @@ export function sleepPlan(opts = {}) {
     }
     for (const [url, list] of [...byUrl.entries()].sort((a, b) => byStr(a[0], b[0]))) {
       if (list.length < 2) continue;
-      const [keep, ...rest] = list; // eligible 已按 keep 优先级排好
-      merges.push({ op: 'merge', store: 'frontier', keep: keep.rec.id, absorb: rest.map((v) => v.rec.id), reason: 'duplicate-url', mergedText: null, evidence: { url, statuses: Object.fromEntries(list.map((v) => [v.rec.id, v.rec.status ?? null])) } });
+      // R4 同款：url 重复组也按代际重选 keep（同 url 且带版本标记 ⇒ 保留最新；无版本标记 ⇒ 原优先级第一条）
+      const group = list.map((v) => v.rec.id);
+      const recById = new Map(list.map((v) => [v.rec.id, v.rec]));
+      const rk = reselectKeep(group, recById);
+      let keepId = list[0].rec.id; let needsHuman = false;
+      if (rk.keep) keepId = rk.keep;
+      else if (rk.needsHuman) { keepId = null; needsHuman = true; }
+      const absorbIds = group.filter((id) => id !== keepId);
+      merges.push({ op: 'merge', store: 'frontier', keep: keepId, ...(needsHuman ? { needsHuman: true, keepCandidates: group } : {}), absorb: absorbIds, reason: 'duplicate-url', mergedText: null, evidence: { url, keepRule: rk.why, statuses: Object.fromEntries(list.map((v) => [v.rec.id, v.rec.status ?? null])) } });
     }
 
     // 5) 排序 + 截断到 K
@@ -514,17 +668,167 @@ export function sleepPlan(opts = {}) {
       createdAt: (opts.now instanceof Date ? opts.now : new Date()).toISOString(),
       params, basis, inputs, ops, truncated, excluded, skipped, nearMiss,
       ...(Object.keys(badLines).length ? { badLines } : {}),
-      note: '只读计划：未改六库。mergedText 留给模型 / 人填写；--apply / 回滚 / revokes 尚未实现（待本计划评审）。'
+      note: '只读计划：未改六库。mergedText 留给模型 / 人填写；--apply（A 档：keep 一字不动＋absorb 软退役）/ --revoke 已实现（2026-10-14；规则 research/sleep-merge-rules-draft-20261014.md R1–R8）。'
     };
     let planFile = null;
     if (opts.out !== false) {
-      planFile = opts.out || join(SLEEP_DEFAULTS.reportDir, `sleep-plan-${today}.json`);
+      planFile = opts.out || join(SLEEP_DEFAULTS.reportDir, `sleep-plan-${today}-${planId.slice(5, 13)}.json`);   // 2026-10-14 整体复检修：文件名带 planId 短码，**防同日互相覆盖**（覆盖会让旧 planId 失联、证据链断——当晚真实踩到）
       const resolved = new Set(STORES.map((s) => resolve(files[s] || storePath(s))));
       if (resolved.has(resolve(planFile))) return { ok: false, error: '拒绝把计划写到存储文件上：' + planFile };
       mkdirSync(dirname(planFile), { recursive: true });
       writeFileAtomic(planFile, JSON.stringify(plan, null, 2) + '\n');
     }
     return { ok: true, plan, planFile };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error).slice(0, 300) };
+  }
+}
+
+// ── apply / revoke（2026-10-14 实现；草案 research/sleep-merge-rules-draft-20261014.md R1–R8；用户裁定「A 档先」）──
+//   A 档语义（零改写）：merge ⇒ **keep 一字不动**，absorb 逐条**软退役**（retired_reason: 'merged-into <keep>'）；
+//   discard ⇒ 该条目软退役（reason 原样）。不改任何既有行；回滚＝revokePlan（revokes 元数据记录，SCHEMA §P4）。
+//   闸门：默认 dry（演练）；basis 指纹复核（改动过 ⇒ 拒绝，除非 --force）；豁免面（协议条/自我层）双闸拒绝；
+//   keep=null（needsHuman）op 一律拒绝；幂等＝已退役者跳过。审计：review-log 行 + `logs/sleep-apply-<planId>.json` 回执。
+const planRefLoad = (ref) => {
+  if (ref && typeof ref === 'object') return ref;
+  const s = String(ref ?? '').trim();
+  if (!s) return null;
+  try { if (existsSync(s)) return JSON.parse(readFileSync(s, 'utf8')); } catch { return null; }
+  try {
+    const files = readdirSync(SLEEP_DEFAULTS.reportDir).filter((x) => x.startsWith('sleep-plan-') && x.endsWith('.json')).sort().reverse();
+    for (const f of files) {
+      try { const j = JSON.parse(readFileSync(join(SLEEP_DEFAULTS.reportDir, f), 'utf8')); if (j.planId === s) return j; } catch { /* 跳过坏文件 */ }
+    }
+  } catch { /* 目录不可读即找不回 */ }
+  return null;
+};
+const isExemptRecord = (rec, id) => isProtocolId(String(id)) || isSelfLayerRecord(rec ?? {});
+
+export function applyPlan(planRef, opts = {}) {
+  try {
+    const plan = planRefLoad(planRef);
+    if (!plan || !Array.isArray(plan.ops)) return { ok: false, error: '找不到可用计划：' + String(planRef) };
+    const fileOf = (store) => (opts.files && opts.files[store]) || storePath(store);
+    const dry = opts.dry !== false;
+    const freshBasis = {};
+    for (const store of STORES) { const { fp } = fingerprint(fileOf(store)); freshBasis[store] = fp; }
+    const basisOk = JSON.stringify(freshBasis) === JSON.stringify(plan.basis);
+    if (!dry && !basisOk && opts.force !== true) {
+      return { ok: false, error: '计划指纹过期：计划生成后库被改动过——请重新生成计划（确要用 --force，并明白后果）' };
+    }
+    const only = opts.only ? String(opts.only) : null;
+    const results = []; let retiredN = 0; let skippedN = 0; let refusedN = 0;
+    for (const op of plan.ops) {
+      if (!op || !op.op) continue;
+      const touched = op.op === 'merge' ? [op.keep, ...(op.absorb || [])].filter(Boolean) : [op.id];
+      if (only && !touched.includes(only)) { results.push({ op: op.op, store: op.store, status: 'filtered' }); continue; }
+      if (op.op === 'merge') {
+        if (op.needsHuman || op.keep == null) { results.push({ op: 'merge', store: op.store, keep: null, absorb: op.absorb || [], status: 'refused-needs-human', why: 'keep 判不了代际（R4）：人工指定后再执行' }); refusedN += 1; continue; }
+        const recs = loadStore(op.store, fileOf(op.store)).records;
+        const byId = new Map(recs.map((r) => [r.id, r]));
+        if (isExemptRecord(byId.get(op.keep), op.keep)) { results.push({ op: 'merge', store: op.store, keep: op.keep, status: 'refused-exempt', why: 'keep 在豁免面（协议条/自我层）' }); refusedN += 1; continue; }   // 豁免优先（协议条即便不在库也先拒；复检修）
+        const keepRec = byId.get(op.keep);
+        if (!keepRec || !currentRecords(recs).some((r) => r.id === op.keep)) { results.push({ op: 'merge', store: op.store, keep: op.keep, absorb: op.absorb || [], status: 'refused-keep-missing', why: 'keep 不在当前集（已退役/已错删）——重生成计划' }); refusedN += 1; continue; }
+        const detail = [];
+        for (const id of op.absorb || []) {
+          if (isExemptRecord(byId.get(id), id)) { detail.push({ id, status: 'refused-exempt', why: '豁免面' }); refusedN += 1; continue; }
+          const cur = currentRecords(recs).some((r) => r.id === id);
+          if (!cur) { detail.push({ id, status: 'skipped', why: '不在当前集（已处理/已退役）' }); skippedN += 1; continue; }
+          if (dry) { detail.push({ id, status: 'would-retire', reason: 'merged-into ' + op.keep }); continue; }
+          const r = retireRecord(op.store, id, { reason: 'merged-into ' + op.keep, file: fileOf(op.store) });
+          detail.push({ id, status: r.already ? 'skipped' : 'retired', tombstone: r.tombstone ?? null });
+          if (r.already) skippedN += 1; else retiredN += 1;
+        }
+        const applied = detail.some((d) => d.status === 'retired' || d.status === 'would-retire');
+        results.push({ op: 'merge', store: op.store, keep: op.keep, absorb: op.absorb || [], status: dry ? 'dry' : (applied ? 'applied' : 'skipped'), detail });
+      } else if (op.op === 'discard') {
+        const recs = loadStore(op.store, fileOf(op.store)).records;
+        const rec = recs.find((r) => r.id === op.id);
+        if (isExemptRecord(rec, op.id)) { results.push({ op: 'discard', store: op.store, id: op.id, status: 'refused-exempt', why: '豁免面' }); refusedN += 1; continue; }
+        if (!rec || !currentRecords(recs).some((r) => r.id === op.id)) { results.push({ op: 'discard', store: op.store, id: op.id, status: 'skipped', why: '不在当前集' }); skippedN += 1; continue; }
+        if (dry) { results.push({ op: 'discard', store: op.store, id: op.id, status: 'dry', reason: op.reason }); continue; }
+        const r = retireRecord(op.store, op.id, { reason: String(op.reason || 'discard'), file: fileOf(op.store) });
+        if (r.already) skippedN += 1; else retiredN += 1;
+        results.push({ op: 'discard', store: op.store, id: op.id, status: r.already ? 'skipped' : 'applied', tombstone: r.tombstone ?? null });
+      } else {
+        results.push({ op: String(op.op), store: op.store, status: 'unknown-op' });
+      }
+    }
+    const receipt = { planId: plan.planId, appliedAt: new Date().toISOString(), dry, basisOk, force: opts.force === true, summary: { retired: retiredN, skipped: skippedN, refused: refusedN }, ops: results };
+    let receiptFile = null;
+    if (!dry) {
+      receiptFile = opts.out || join(SLEEP_DEFAULTS.reportDir, 'sleep-apply-' + plan.planId + '.json');
+      // 2026-10-14 复检修：回执**合并而非覆盖**——`--force` 重跑（全 skip）不得丢掉墓碑记录，否则 `--revoke` 失去依据。
+      try {
+        if (existsSync(receiptFile)) {
+          const prev = JSON.parse(readFileSync(receiptFile, 'utf8'));
+          if (Array.isArray(prev.ops)) {
+            const keyOf = (o) => o.op + '|' + o.store + '|' + (o.keep ?? o.id);
+            const prevByKey = new Map(prev.ops.map((o) => [keyOf(o), o]));
+            for (const r of results) {
+              const p = prevByKey.get(keyOf(r));
+              if (!p) continue;
+              if (p.tombstone && !r.tombstone) r.tombstone = p.tombstone;
+              for (const d of r.detail || []) {
+                const pd = (p.detail || []).find((x) => x.id === d.id);
+                if (pd && pd.tombstone && !d.tombstone) d.tombstone = pd.tombstone;
+              }
+            }
+            receipt.firstAppliedAt = prev.firstAppliedAt || prev.appliedAt;
+          }
+        }
+      } catch { /* 旧回执坏了就照新回执写 */ }
+      writeFileAtomic(receiptFile, JSON.stringify(receipt, null, 2) + '\n');
+      for (const r of results) {
+        const hit = r.status === 'applied' || (r.detail || []).some((d) => d.status === 'retired');
+        if (!hit) continue;
+        const ids = r.op === 'merge' ? r.keep : r.id;
+        const note = r.op === 'merge'
+          ? 'sleep --apply ' + plan.planId + '：' + (r.detail || []).filter((d) => d.status === 'retired').map((d) => d.id).join(', ') + ' → merged-into ' + r.keep
+          : 'sleep --apply ' + plan.planId + '：' + r.id + '（' + (r.reason || 'discard') + '）';
+        try { appendReviewLog({ store: r.store, id: ids, verdict: r.op === 'merge' ? '合并' : '退役', by: 'self', note }, { file: opts.reviewLog }); } catch { /* 审计失败不阻断（回执已在） */ }
+      }
+    }
+    return { ok: true, dry, receipt, receiptFile };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error).slice(0, 300) };
+  }
+}
+
+export function revokePlan(planRef, opts = {}) {
+  try {
+    const plan = planRefLoad(planRef);
+    const planId = plan?.planId ?? String(planRef ?? '');
+    if (!planId) return { ok: false, error: '需要计划（planId 或计划文件）' };
+    const fileOf = (store) => (opts.files && opts.files[store]) || storePath(store);
+    const rf = opts.receipt || join(SLEEP_DEFAULTS.reportDir, 'sleep-apply-' + planId + '.json');
+    if (!existsSync(rf)) return { ok: false, error: '找不到执行回执：' + rf + '（仅撤销已执行过的合并）' };
+    let receipt = null;
+    try { receipt = JSON.parse(readFileSync(rf, 'utf8')); } catch { return { ok: false, error: '回执不可解析：' + rf }; }
+    const tombs = [];
+    for (const r of receipt.ops || []) {
+      if (r.op === 'merge') for (const d of r.detail || []) if (d.tombstone) tombs.push({ store: r.store, tombstone: d.tombstone, id: d.id });
+      if (r.op === 'discard' && r.tombstone) tombs.push({ store: r.store, tombstone: r.tombstone, id: r.id });
+    }
+    const dry = opts.dry !== false;
+    const results = [];
+    for (const t of tombs) {
+      if (dry) { results.push({ ...t, status: 'would-revoke' }); continue; }
+      const r = revokeRetire(t.store, t.tombstone, { file: fileOf(t.store), reason: 'sleep --revoke ' + planId });
+      // 2026-10-14 整体复检修：墓碑已不在（被硬删等）时 revokeRetire 返回 revoked:null —— **不得谎报 'revoked'**（诚实报告）。
+      results.push({ ...t, status: r.revoked ? (r.already ? 'already' : 'revoked') : 'missing', record: r.record ?? null });
+    }
+    const out = { planId, revokedAt: new Date().toISOString(), dry, count: tombs.length, results };
+    let outFile = null;
+    if (!dry) {
+      outFile = opts.out || join(SLEEP_DEFAULTS.reportDir, 'sleep-revoke-' + planId + '.json');
+      writeFileAtomic(outFile, JSON.stringify(out, null, 2) + '\n');
+      for (const r of results) {
+        if (r.status !== 'revoked') continue;
+        try { appendReviewLog({ store: r.store, id: r.id, verdict: '回滚', by: 'self', note: 'sleep --revoke ' + planId + '：' + r.tombstone + ' 复位' }, { file: opts.reviewLog }); } catch { /* 同上 */ }
+      }
+    }
+    return { ok: true, dry, revoke: out, outFile };
   } catch (error) {
     return { ok: false, error: String(error?.message ?? error).slice(0, 300) };
   }

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z88-sleep-compliant.mjs
 // 2026-10-10：sleep 合规修复（去动态加载 → 本地构造）并复检通过。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-dsh-store-remediation'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

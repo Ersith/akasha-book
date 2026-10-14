@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z60-qq-dll-deepdive.mjs
 // 2026-10-10：QQ 截图 DLL 深挖（三条链证据）+ REA 的 DLL 限制与绕过。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-qq-dll-deepdive'))) { console.log('已存在，跳过'); process.exit(0); }

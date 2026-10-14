@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z82-phase-sweep-results.mjs
 // 2026-10-10：宿主侧相位实测第一轮结果（负结果，如实）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-phase-sweep-negative'))) { console.log('已存在，跳过'); process.exit(0); }

@@ -4,7 +4,7 @@
 # ASCII-only on purpose (Windows PowerShell 5.1 parses non-BOM .ps1 as ANSI).
 param([switch]$Quiet)
 
-$root      = 'H:\Harness'
+$root      = '<LOCAL_PATH>'
 $patrolDir = Join-Path $root 'docs\patrol'
 $stateFile = Join-Path $patrolDir 'last-state.json'
 $stamp     = Get-Date -Format 'yyyyMMdd-HHmmss'

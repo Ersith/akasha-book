@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z42-dedup-r3.mjs
 // 2026-10-09 去重：r1/r2 重复追加同一段「补充」→ r3 单份并留痕。守卫用追加文本原句。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const MARK = '**补充（用户裁定 2026-10-09）**';
 const tips = currentRecords(loadStore('canon').records);

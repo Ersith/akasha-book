@@ -1,5 +1,5 @@
 // 2026-10-08：把「场景 LoRA 备忘录」登记进 canon —— 下一个会话要能检索到"从哪儿接着干"。
-import { appendRecord, loadStore, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, allIds } from './lib.mjs';
 
 const REC = {
   id: 'canon-scene-lora-resume-20261008',

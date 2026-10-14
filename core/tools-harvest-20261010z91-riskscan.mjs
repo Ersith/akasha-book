@@ -1,12 +1,12 @@
 // akasha/tools/harvest-20261010z91-riskscan.mjs —— 风险扫描器 + 同族第二波（幂等）
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-review-manual-20261010'));
 if (!rec) { console.log('未找到主条目，跳过'); process.exit(0); }
 const marker = '**第二波（同日，用户追加裁定「完善检查脚本」）**';
 if (rec.claim.includes(marker)) { console.log('已记录，跳过'); process.exit(0); }
 const add = ' ' + marker + '：用户原话「**你得完善检查脚本了。如果检查不出问题，但自己手检发现了问题，那么就说明现在的检查不完善**」。' +
-  '**产物**：`<LOCAL_PATH>`（+ `risk-scan.selftest.mjs`）——把当日手检发现的族类固化为 5 条可机检规则：' +
+  '**产物**：`<LOCAL_PATH>\\tools\\risk-scan.mjs`（+ `risk-scan.selftest.mjs`）——把当日手检发现的族类固化为 5 条可机检规则：' +
   '`RISK-ASYNC-ERR`（spawn/Worker/子进程 stdio/标准流缺 error 处理＝异步 EPIPE 族）、`RISK-PROTO-SHAPE`（JSON.parse→解构缺 try 或形状校验）、' +
   '`RISK-SWALLOW`（无代码也无注释的空 catch）、`RISK-LEAK`（spawn 无 kill / Worker 无 terminate / setInterval 无 clear/unref）、`RISK-DYNAMIC`（非字面量 import、eval、new Function）。' +
   '**关键设计（防"自欺工具"）**：自测不是"跑通就行"，而是**用修复前的真实代码做变异回归**——① fixtures 正/负样本；② 逐字嵌入的修复前片段（core/mcp.mjs、rea/server.mjs、capture-daemon.js）；③ `git show 9d166d4^:core/mcp.mjs` 真·历史文件回放；④ **现版本必须 0 命中**（防"改了代码而规则没跟上"）。最终 **13/13**。' +

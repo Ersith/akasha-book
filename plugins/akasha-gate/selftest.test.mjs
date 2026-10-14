@@ -32,10 +32,13 @@ rmSync(TMP, { recursive: true, force: true });
 mkdirSync(DATA, { recursive: true });
 
 function harness(config) {
-  const captured = { guard: null, sections: [] };
+  const captured = { guard: null, sections: [], contexts: [] };
   const ctx = {
     tools: { guard(fn) { captured.guard = fn; return () => {}; } },
-    systemPrompt: { section(s) { captured.sections.push(s); return () => {}; } },
+    systemPrompt: {
+      section(s) { captured.sections.push(s); return () => {}; },
+      context(s) { captured.contexts.push(s); return () => {}; }
+    },
     on() { return () => {}; }
   };
   apply(ctx, config);
@@ -48,6 +51,17 @@ const sectionOf = (cap, name) => cap.sections.find((s) => s.name === name);
 const c = harness({ log: LOG, dataDir: DATA, akashaDir: PROJ, sectionOrder: 700 });
 assert.ok(c.guard, 'guard 已注册');
 assert.ok(c.section, 'section 已注册');
+
+// —— 自我行（近场版，2026-10-13 用户裁定「自我层应该是始终保持的，因为自我层本来就是你的自我，人格的部分」）——
+//    akasha:self 是**每会话**的系统提示段（远场，随上下文增长越飘越远）；这一条是**每回合**的 runtime context 行（近场）。
+const selfLineSec = c.contexts.find((s) => s.name === 'akasha:self-line');
+assert.ok(selfLineSec, 'akasha:self-line 已注册（近场自我行）');
+assert.equal(selfLineSec.order, 131, '自我行 order = 131（落在称呼行 133 之前）');
+const lineText = selfLineSec.text();
+assert.ok(typeof lineText === 'string' && lineText.length > 0, '自我行有文本（库不可读时走兜底，仍非空）');
+assert.ok(/大肥鱼/.test(lineText), '自我行含「大肥鱼」——自我始终在场');
+assert.ok(/Master/.test(lineText), '自我行含「Master」');
+assert.ok(!lineText.includes('{{'), '自我行不含裸花括号（宿主 {{variable}} 插值安全）');
 
 const g = (name, args) => c.guard({ name, arguments: args });
 const F = (p) => join(DATA, p); // 数据区文件路径
@@ -85,6 +99,8 @@ assert.equal(typeof g('pwsh', { command: `Copy-Item a.jsonl ${F('b.jsonl')}` }),
     ['codex_exec', { prompt: `直接编辑 ${P} 添加一条 canon 条目` }, '委派 prompt（编辑）'],
     ['codex_thread_start', { prompt: `改写 ${P2} 的第一行` }, 'codex 线程起（改写）'],
     ['codex_thread_resume', { prompt: `继续：往 ${P} 写入一条记录` }, 'codex 线程续（写入）'],
+    ['ops_replace', { path: P, pattern: 'a', replacement: 'b' }, 'dsh-ops Rust 工具（2026-10-12 窗口 4 补）'],
+    ['ops_bash', { command: `echo x >> ${P2}` }, 'dsh-ops bash（2026-10-12 窗口 4 补）'],
   ];
   for (const [tool, args, why] of WRITER_TOOL_CASES) {
     assert.equal(typeof g(tool, args), 'string', `覆盖清单：${tool}（${why}）写数据必须被拒`);
@@ -121,6 +137,44 @@ const arrowRead = `node -e "const fs=require('fs');const a=fs.readFileSync('${F(
 assert.equal(g('pwsh', { command: arrowRead }), undefined, '箭头函数 ≠ 写重定向：只读 node -e 必须放行');
 assert.equal(typeof g('pwsh', { command: `echo x > ${F('y.txt')}` }), 'string', '带空格重定向写数据仍拦');
 assert.equal(typeof g('pwsh', { command: `echo x>${F('y.txt')}` }), 'string', '无空格重定向写数据仍拦');
+
+// —— 2026-10-13 复查（工具链审计 P1）：`2>/dev/null` 这类 **stderr 丢弃**不是写数据 ——
+// 实证：`ls -la <data> 2>/dev/null`、`cat <data>/x.jsonl 2>/dev/null | tail -3` 曾被拒（裸 `>` 命中）。
+assert.equal(g('ops_bash', { command: `ls -la ${DATA.replace(/\\/g, '/')} 2>/dev/null` }), undefined, '2>/dev/null 的只读 ls 必须放行');
+assert.equal(g('ops_bash', { command: `cat ${F('canon.jsonl').replace(/\\/g, '/')} 2>/dev/null | tail -3` }), undefined, 'cat + 2>/dev/null 必须放行');
+assert.equal(g('pwsh', { command: `Get-Content '${F('canon.jsonl')}' 2>$null` }), undefined, 'PowerShell 2>$null 只读必须放行');
+assert.equal(typeof g('ops_bash', { command: `echo x >> ${F('canon.jsonl').replace(/\\/g, '/')} 2>/dev/null` }), 'string', '写重定向 + 2>/dev/null 混合仍必须拒（不放松真写侧）');
+assert.equal(g('codex_exec', { prompt: `分析 ${DATA} 目录的文件大小分布，给出报告` }), undefined, '委派分析（无写动作）必须放行');
+// 参数名误判修复（同日）：`--command` 这类**选项名**里含 `rm`，不得算写动作（本机实测：gate 自己的 dry-run CLI 被掐）。
+assert.equal(g('ops_bash', { command: `node akasha/tools/gate-dry.mjs --tool ops_bash --command "ls -la ${DATA.replace(/\\/g, '/')}"` }), undefined, '选项名 --command 里的 rm 不算写动作');
+assert.equal(typeof g('ops_bash', { command: `rm -f ${F('x.jsonl').replace(/\\/g, '/')}` }), 'string', '真 rm 命令仍拦（收紧不放松）');
+// —— 2026-10-13 家族扫描器豁免：`node <akasha 脚本>` 的只读运行不再被路径字样误拦；写构造照拦 ——
+assert.equal(g('ops_bash', { command: `node akasha/tools/family-sweep.mjs --quiet` }), undefined, '家族扫描器（当前被拦！）必须放行');
+assert.equal(g('ops_bash', { command: `node <AKASHA_DIR>/akasha.mjs audit` }), undefined, 'CLI 自查（绝对路径）放行');
+assert.equal(g('pwsh', { command: `node "${F('canon.jsonl').replace(/\\/g, '/')}" ` }), undefined, '参数里出现 data 路径但脚本不在 akasha 下：不算工具（且无写构造）⇒ 放行');
+assert.equal(typeof g('ops_bash', { command: `node akasha/tools/family-sweep.mjs > ${F('out.txt').replace(/\\/g, '/')}` }), 'string', 'node 脚本 + 写重定向到 data ⇒ 仍拦');
+// node -e 内联：判据是「命令段确有 -e」∧「引号里那段代码含写构造」——只读内联放行、写内联照拦。
+//   2026-10-13 修：先前把「-e + 提到 data 目录」一刀切 ⇒ 连 `node -e "…readFileSync('…/canon.jsonl')"` 这种
+//   纯只读校验也拦（假阳性，与 README「例：node -e "…toFixed…" 只读探针」自相矛盾）。
+const targetB = F('canon.jsonl');
+const targetF = F('canon.jsonl').replace(/\\/g, '/');
+assert.equal(typeof g('ops_bash', { command: `node -e "require('fs').writeFileSync('${targetB}','x')"` }), 'string', 'node -e 内联写（反斜杠路径）⇒ 拦');
+assert.equal(typeof g('ops_bash', { command: `node -e "require('fs').writeFileSync('${targetF}','x')"` }), 'string', 'node -e 内联写（正斜杠路径）⇒ 拦');
+assert.equal(g('ops_bash', { command: `node -e "console.log(JSON.parse(require('fs').readFileSync('${targetB}')).length)"` }), undefined, 'node -e 纯只读（读 data 目录文件）⇒ 放行');
+// 2026-10-13 三审（假阳性回归 ×2）：
+//   ① `create` 曾把 `createHash(` / `createHmac(` 这类纯构造 API 当写 ⇒ 真跑 `node -e "…createHash…readFileSync(data)"` 被拒 ✗（已删 `create`）
+//   ② 「判不出来从严」兜底曾把**只含注释**的代码当写 ⇒ `node -e "/* …data… */ console.log('x')"` 被拒 ✗（已撤兜底：无写构造即放行）
+assert.equal(g('ops_bash', { command: `node -e "const {createHash}=require('crypto');const b=require('fs').readFileSync('${targetB}');console.log(createHash('sha256').update(b).digest('hex'))"` }), undefined, 'createHash+readFileSync 是只读 ⇒ 必须放行');
+assert.equal(g('ops_bash', { command: `node -e "/* ${targetB} */ console.log('probe2')"` }), undefined, '只含注释的内联 ⇒ 放行');
+assert.ok(String(g('ops_bash', { command: `node -e "require('fs').appendFileSync('${targetB}','x')"` })).includes('拒绝'), 'appendFileSync（真写）仍拦');
+assert.ok(String(g('ops_bash', { command: `node -e "require('fs').mkdirSync('${join(DATA, 'sub')}')"` })).includes('拒绝'), 'mkdirSync（真写）仍拦');
+assert.ok(String(g('ops_bash', { command: `node -e "require('child_process').execSync('cp x ${join(DATA, 'canon.jsonl')}')"` })).includes('拒绝'), 'execSync（带 data 路径）仍拦');
+assert.ok(String(g('ops_bash', { command: `node -e "require('fs').writeFileSync('${targetB}','x')"` })).includes('拒绝'), 'writeFileSync（真写）仍拦');
+assert.ok(String(g('ops_bash', { command: `node -e "require('fs').createWriteStream('${targetB}')"` })).includes('拒绝'), 'createWriteStream（真写）仍拦');
+assert.ok(String(g('ops_bash', { command: `node -e "require('fs').copyFileSync('${join(DATA, 'a.jsonl')}','${targetB}')"` })).includes('拒绝'), 'copyFileSync（真写）仍拦');
+// 边界（如实）：门控只管「提到 data 目录的命令」——不带 data 路径的 execSync 不属于它该管的范围（别把断言写成越界承诺）
+assert.equal(g('ops_bash', { command: `node -e "require('child_process').execSync('echo hi')"` }), undefined, '不带 data 路径的 execSync：不属于门控面（如实放行）');
+assert.equal(typeof g('ops_bash', { command: `echo x >> ${F('canon.jsonl').replace(/\\/g, '/')}` }), 'string', '普通写重定向仍拦（豁免不影响）');
 
 // —— 系统提示 section（渲染时读库当前版本；读不到回退兜底，永不抛）——
 assert.equal(c.section.name, 'akasha:protocol');

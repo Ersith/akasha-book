@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z66-a1-loadbalance.mjs
 // 2026-10-10：A1 负载均衡并入活树的交付记录。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-rank-a1-loadbalance'))) { console.log('已存在，跳过'); process.exit(0); }

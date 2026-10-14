@@ -1,5 +1,5 @@
 // tools/add-edit-trap.mjs —— 补「edit 上下文失配」可执行条目 + 挂进 RECALL_TRAP_MAP + 验证命中
-import { loadStore, currentRecords, appendRecord, lookupDetailed } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord, lookupDetailed } from './lib.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const recs = currentRecords(loadStore('canon').records);
@@ -26,7 +26,7 @@ else {
 }
 
 // 挂进 C2 映射表（edit → 新条目）
-for (const F of ['<AKASHA_DIR>\\lib.mjs', '<LOCAL_PATH>']) {
+for (const F of ['<AKASHA_DIR>\\lib.mjs', '<LOCAL_PATH>\\dist\\akasha-oss\\core\\lib.mjs']) {
   let t = readFileSync(F, 'utf8');
   const oldLine = "  edit: ['canon-review-manual-20261010'],";
   const newLine = "  edit: ['canon-trap-edit-context-mismatch', 'canon-review-manual-20261010'],";

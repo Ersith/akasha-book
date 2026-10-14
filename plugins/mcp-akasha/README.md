@@ -64,4 +64,4 @@ node selftest.test.mjs
 
 - 源仓库：https://github.com/Ersith/akasha-book
 - 本版本固定提交（pinned commit）：`5a55099586cfae4e7511ba433eaf202455d81c30`
-- 许可证：MIT
+- 许可证：MIT（见仓库根 LICENSE）

@@ -3,7 +3,7 @@ import { apply } from "./lib/index.js";
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-const FIX = "H:\\Harness\\_ab\\stateful-fixture";
+const FIX = "<LOCAL_PATH>\\_ab\\stateful-fixture";
 
 function makeFixture(intentGists) {
   rmSync(FIX, { recursive: true, force: true });

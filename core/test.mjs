@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
 import * as gateMod from '../plugins/akasha-gate/index.js';
+import { runCheckerSelftest } from './tools-checker-selftest.mjs';
 
 // zstd 自 Node v23.8.0 / v22.15.0 起可用；旧 Node 上依赖 zstd 的用例记 SKIP（不计失败、不计通过），其余照跑。
 const zstdCompressSync = zlib.zstdCompressSync;
@@ -15,6 +16,8 @@ const HAS_ZSTD = typeof zstdCompressSync === 'function';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SCRATCH = join(ROOT, '..', '_scratch');
 mkdirSync(SCRATCH, { recursive: true });
+// I-02（2026-10-13 批次 1）：自测默认关查询侧线——**防测试污染真日志**（要测侧线时用显式 queryLog 路径）。
+process.env.AKASHA_QUERY_LOG = 'off';
 let passed = 0; const failures = []; const skipped = [];
 function t(name, fn) {
   try { fn(); passed++; console.log('PASS', name); }
@@ -452,7 +455,8 @@ if (lib) {
       const todos = sleepMod.buildTodos({ toolErrors: 1, denials: 0, agentErrors: 0 }, ['x'], { ok: false, findings: [{ level: 'warn', code: 'frontier-due', count: 2 }] });
       assert.equal(todos.length, 2);
       assert.equal(todos[0].kind, 'review');
-      assert.equal(todos[1].kind, 'orphan-candidate');
+      // 2026-10-13（A2）：无具体样本 ⇒ 走 aggregate（只展示、不转正）；旧断言曾写 'orphan-candidate'（那时样本被通用文案兜底）
+      assert.equal(todos[1].kind, 'aggregate');
       assert.equal(sleepMod.shouldSleep({}, Date.now(), 6).due, true, '无记录 → 该睡');
       assert.equal(sleepMod.shouldSleep({ lastRunAt: new Date().toISOString() }, Date.now(), 6).due, false, '<6h → 不睡');
       assert.equal(sleepMod.shouldSleep({ lastRunAt: new Date(Date.now() - 7 * 3600000).toISOString() }, Date.now(), 6).due, true, '>6h → 该睡');
@@ -465,7 +469,9 @@ if (lib) {
       const statePath = join(dir, 'sleep-state.json');
       const inboxPath = join(dir, 'inbox.jsonl');
       const reportDir = join(dir, 'logs');
-      appendFileSync(logPath, JSON.stringify({ kind: 'tool', tool: 't', ok: false, message: 'x' }) + '\n' + JSON.stringify({ kind: 'gate-denied' }) + '\n', 'utf8');
+      // 夹具用**真实形态**的失败文案（2026-10-13 A2）：「x」这类无信息样本会被判成聚合型 ⇒ 不再进 orphan 候选，
+      //   测 `todo >= 3` 就失真了。用带证据的文案（工具名 + 具体错误），语义与线上一致。
+      appendFileSync(logPath, JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, message: 'old_string was not found in "<LOCAL_PATH>/x.mjs"' }) + '\n' + JSON.stringify({ kind: 'gate-denied', tool: 'write', message: '拒绝直写 akasha/data/canon.jsonl' }) + '\n', 'utf8');
       const dry = sleepMod.sleepRun({ trigger: 'manual', log: logPath, stateFile: statePath, inboxFile: inboxPath, reportDir, dry: true });
       assert.equal(dry.ok, true);
       assert.equal(dry.report.counters.lines, 2);
@@ -474,6 +480,7 @@ if (lib) {
       assert.equal(run.ok, true);
       assert.equal(run.processedTo, 2);
       // wave1.1：失败前未查库 → 另加一条 recall-miss 复盘待办（audit 项随示例库日期浮动，故用下界 + 逐项核对）
+      // 2026-10-13（A2）后：工具失败有具体样本 ⇒ orphan-candidate；门控拦截无样本 ⇒ aggregate（照写，但只展示）⇒ 仍 ≥3
       assert.ok(run.todo >= 3, '工具失败 + 门控拦截 + 召回漏 → 至少三条待办：' + run.todo);
       const codes = JSON.parse(readFileSync(inboxPath, 'utf8').trim().split(/\r?\n/).pop()).items.map((x) => x.code);
       for (const c of ['tool-error', 'gate-denied', 'recall-miss']) assert.ok(codes.includes(c), c + ' 应进 inbox：' + JSON.stringify(codes));
@@ -716,6 +723,60 @@ if (lib) {
       assert.equal(completed[0].ptr.callSeq, 1, '完成版应指回原调用 callSeq');
       const b3 = sessionMod.extractSegments(recs, { session: 'sX', emitFrom: 3 });
       assert.equal(b3.length, 0, JSON.stringify(b3.map((s) => s.gist)));
+    });
+    t('session：配对 emit 门修复（水位已推进 / 完成版未落库 ⇒ completedCallSeqs 强制补发）', () => {
+      // 装置：c1 调用被冲刷为「（无结果）」并推进了水位（emitFrom=3），结果 seq=2 落在门限之下 ⇒ 修复前完成版被吞。
+      const recs = [
+        { type: 'tool/call', seq: 1, time: 1, data: { turn: 1, step: 1, callId: 'c1', name: 'pwsh', arguments: '{"command":"x"}' } },
+        { type: 'tool/result', seq: 2, time: 2, data: { turn: 1, step: 1, toolCallId: 'c1', content: [{ type: 'text', text: 'done' }] } },
+        { type: 'tool/call', seq: 3, time: 3, data: { turn: 1, step: 2, callId: 'c2', name: 'pwsh', arguments: '{"command":"y"}' } }
+      ];
+      // 旧行为（不传 completedCallSeqs）＝吞（此断言锁住"不传时行为不变"的向后兼容）
+      const oldWay = sessionMod.extractSegments(recs, { session: 'sY', emitFrom: 3 });
+      assert.equal(oldWay.length, 0, JSON.stringify(oldWay.map((s) => s.gist)));
+      // 新行为：callSeq=1 在库中尚无完成版 ⇒ 强制补发完成版（不受 emitFrom 门限）
+      const fixed = sessionMod.extractSegments(recs, { session: 'sY', emitFrom: 3, completedCallSeqs: new Set() });
+      const comp = fixed.filter((s) => s.kind === 'action' && s.gist.includes('↳'));
+      assert.equal(comp.length, 1, '完成版必须补发：' + JSON.stringify(fixed.map((s) => s.gist)));
+      assert.equal(comp[0].ptr.callSeq, 1, '完成版应指回原调用 callSeq');
+      assert.ok(comp[0].gist.includes('done'), comp[0].gist);
+      // 已有完成版（callSeq 已在集里）⇒ 不再补发（幂等侧）
+      const idem = sessionMod.extractSegments(recs, { session: 'sY', emitFrom: 3, completedCallSeqs: new Set([1]) });
+      assert.equal(idem.length, 0, '已有完成版不得重复发：' + JSON.stringify(idem.map((s) => s.gist)));
+      // recordedUnpaired（2026-10-12 二次复查加固）：已落库的「（无结果）」不再重复冲刷（全量重建友好；id 去重降为最后兜底）
+      const flushDup = sessionMod.extractSegments([recs[0]], { session: 'sY', emitFrom: 0 });
+      assert.equal(flushDup.length, 1, '不传 recordedUnpaired 时行为不变（向后兼容）');
+      const flushSkip = sessionMod.extractSegments([recs[0]], { session: 'sY', emitFrom: 0, recordedUnpaired: new Set([1]) });
+      assert.equal(flushSkip.length, 0, '已记录的未配对调用不得重复冲刷：' + JSON.stringify(flushSkip.map((s) => s.gist)));
+    });
+    t('session：indexSession 端到端（水位推进后结果到 ⇒ 完成版落库；二跑幂等）', () => {
+      const dir = mkdtempSync(join(SCRATCH, 'akasha-ses-emit-'));
+      const fx = join(dir, 'fx.jsonl.zstd'), store = join(dir, 'session.jsonl'), meta = join(dir, 'meta.json');
+      const rec = (o) => JSON.stringify(o);
+      const z = (arr) => Buffer.from(arr.map(rec).join('\n') + '\n');
+      // 第一轮：c1 调用 + c2 调用（c2 晚到）⇒ 冲刷「（无结果）」两条，水位=3
+      writeFileSync(fx, zstdCompressSync(z([
+        { seq: 1, time: 1791312001000, type: 'tool/call', data: { turn: 1, step: 1, callId: 'c1', name: 'pwsh', arguments: '{"command":"x"}' } },
+        { seq: 3, time: 1791312003000, type: 'tool/call', data: { turn: 1, step: 2, callId: 'c2', name: 'pwsh', arguments: '{"command":"y"}' } }
+      ])));
+      sessionMod.indexSession({ file: fx, session: 'sE', storeFile: store, metaFile: meta });
+      let segs = readFileSync(store, 'utf8').split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+      assert.equal(segs.filter((s) => s.gist.includes('（无结果）')).length, 2, '先落两条无结果版');
+      // 第二轮：结果（seq=2）+ 后一条调用（seq=3）一起到 ⇒ 水位会推到 3，结果 seq=2 落在门限下
+      writeFileSync(fx, zstdCompressSync(z([
+        { seq: 1, time: 1791312001000, type: 'tool/call', data: { turn: 1, step: 1, callId: 'c1', name: 'pwsh', arguments: '{"command":"x"}' } },
+        { seq: 2, time: 1791312002000, type: 'tool/result', data: { turn: 1, step: 1, toolCallId: 'c1', content: [{ type: 'text', text: 'done' }] } },
+        { seq: 3, time: 1791312003000, type: 'tool/call', data: { turn: 1, step: 2, callId: 'c2', name: 'pwsh', arguments: '{"command":"y"}' } }
+      ])));
+      sessionMod.indexSession({ file: fx, session: 'sE', storeFile: store, metaFile: meta });
+      segs = readFileSync(store, 'utf8').split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+      const comp = segs.filter((s) => s.gist.includes('↳'));
+      assert.equal(comp.length, 1, '修复后完成版必须已落库：' + JSON.stringify(segs.map((s) => s.gist)));
+      assert.equal(comp[0].ptr.callSeq, 1);
+      // 幂等：第三跑 0 新增（同档案重扫）
+      const r3 = sessionMod.indexSession({ file: fx, session: 'sE', storeFile: store, metaFile: meta });
+      assert.equal(r3.added, 0, '二跑不得重复落库：' + r3.added);
+      rmSync(dir, { recursive: true, force: true });
     });
     t('session：动作版本归并（默认完成版唯一；all=true 见历史）', () => {
       const dir = mkdtempSync(join(SCRATCH, 'akasha-ses-'));
@@ -1088,11 +1149,17 @@ t('MCP：initialize / tools/list / stats / frontier_due / audit / brief / kit / 
     JSON.stringify({ jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'akasha_mirror_match', arguments: { text: '虚构 危险' } } }),
     JSON.stringify({ jsonrpc: '2.0', id: 14, method: 'tools/call', params: { name: 'akasha_metrics', arguments: {} } }),
     JSON.stringify({ jsonrpc: '2.0', id: 15, method: 'tools/call', params: { name: 'akasha_session_lookup', arguments: { query: '银杏' } } }),
-    JSON.stringify({ jsonrpc: '2.0', id: 16, method: 'no/such' })
+    JSON.stringify({ jsonrpc: '2.0', id: 16, method: 'no/such' }),
+    // I-11 体裁隔离 P0（2026-10-13）：MCP 面＝模型侧真正读到的返回——默认剥皮 / reflect 走反思通道
+    JSON.stringify({ jsonrpc: '2.0', id: 17, method: 'tools/call', params: { name: 'akasha_show', arguments: { id: 'canon-akasha-usage-r28' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 18, method: 'tools/call', params: { name: 'akasha_show', arguments: { id: 'canon-akasha-usage-r28', reflect: true } } }),
+    // I-11 复查补齐（2026-10-13 深夜）：cross 纳入剥皮面——MCP 双档对照（真库「裁定」查询实测 0 vs 570 符号）
+    JSON.stringify({ jsonrpc: '2.0', id: 19, method: 'tools/call', params: { name: 'akasha_cross', arguments: { query: '裁定' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 20, method: 'tools/call', params: { name: 'akasha_cross', arguments: { query: '裁定', reflect: true } } })
   ].join('\n') + '\n';
   const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe });
   const lines = (r.stdout || '').trim().split(/\r?\n/).map(l => JSON.parse(l));
-  assert.equal(lines.length, 16, (r.stdout || '') + (r.stderr || ''));
+  assert.equal(lines.length, 20, (r.stdout || '') + (r.stderr || ''));
   assert.equal(lines[0].result.serverInfo.name, 'akasha');
   assert.ok(lines[1].result.tools.length >= 17);
   assert.ok(lines[2].result.content[0].text.includes('canon'));
@@ -1107,7 +1174,13 @@ t('MCP：initialize / tools/list / stats / frontier_due / audit / brief / kit / 
   assert.ok(JSON.stringify(lines[11]).includes('canon-akasha-usage-r10'), 'show 应返回该条目');
   assert.ok(Array.isArray(JSON.parse(lines[12].result.content[0].text)), 'mirror_match 应返回数组');
   assert.ok(JSON.parse(lines[13].result.content[0].text).counters, 'metrics 应返回 counters');
-  assert.ok(Array.isArray(JSON.parse(lines[14].result.content[0].text)), 'session_lookup 应返回数组');
+  const sl = JSON.parse(lines[14].result.content[0].text);
+  assert.ok(Array.isArray(sl.hits), 'session_lookup 应返回 { hits, … }（2026-10-13 体裁隔离 P0 起：含 withheld / reflect）');
+  assert.ok('withheld' in sl && 'reflect' in sl, 'session_lookup 须带 withheld / reflect 字段：' + Object.keys(sl).join(','));
+  assert.ok(!String(lines[16].result.content[0].text).includes('⇒'), 'MCP 读工具默认应剥皮（show）：' + String(lines[16].result.content[0].text).slice(0, 120));
+  assert.ok(String(lines[17].result.content[0].text).includes('⇒'), 'reflect:true 应给原文（不剥）：' + String(lines[17].result.content[0].text).slice(0, 120));
+  assert.ok(!String(lines[18].result.content[0].text).includes('⇒'), 'MCP cross 默认应剥皮：' + String(lines[18].result.content[0].text).slice(0, 120));
+  assert.ok(String(lines[19].result.content[0].text).includes('⇒'), 'MCP cross reflect:true 应给原文：' + String(lines[19].result.content[0].text).slice(0, 120));
   assert.equal(lines[15].error.code, -32601);
 });
 t('loop-detect：块重复/变体重复/标点串/零误报（文献方法论机械代理）', () => {
@@ -1172,7 +1245,11 @@ t('brief：无强命中时标明确定不知道；孤案为零权重', () => {
 });
 t('cross：主行不截断', () => {
   const src = readFileSync(join(ROOT, 'lib.mjs'), 'utf8');
-  assert.ok(!src.includes('slice(0, 240)'), 'cross 不得再把主行截到 240');
+  // 判据收窄（2026-10-14）：只查 **cross 函数体**——reviewPack 的「相关条目 ≤240 字」是另一处合法用法，全文件搜索会误伤（本判据当日就被新邻居绊了一次）。
+  const __cs = src.indexOf('export function cross(');
+  const __ce = src.indexOf('\nexport function ', __cs + 10);
+  const __body = src.slice(__cs, __ce === -1 ? undefined : __ce);
+  assert.ok(__cs !== -1 && !__body.includes('slice(0, 240)'), 'cross 不得再把主行截到 240');
   const c = lib.cross('阿卡夏');
   const canon = c.groups.find((g) => g.store === 'canon');
   assert.ok(canon.items.some((it) => it.line.includes('append-only')), JSON.stringify(canon.items.map((i) => i.line.length)));
@@ -1610,8 +1687,13 @@ t('CLI：sleep --plan 只写 --out、不动六库与水位线、两次 planId �
     assert.ok(!JSON.stringify(pa.ops).includes('canon-akasha-usage'), '协议条永不进计划');
     assert.equal(digest(), d0, '六库字节不变');
     assert.equal(existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : null, stateBefore, '水位线不动');
+    // 2026-10-14：--apply 已实现（A 档）——不带 --yes ⇒ 演练（不写库；退出码 0）；--replay 与 --apply 互斥仍拒。
     const ap = cli(['sleep', '--apply', join(dir, 'p1.json')]);
-    assert.equal(ap.status, 1); assert.match(ap.stderr, /尚未实现/);
+    assert.equal(ap.status, 0, (ap.stdout || '') + (ap.stderr || ''));
+    assert.match(ap.stdout, /演练/);
+    const mix = cli(['sleep', '--replay', '--apply', join(dir, 'p1.json')]);
+    assert.equal(mix.status, 1);
+    assert.match(mix.stderr, /互斥/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -1875,10 +1957,21 @@ t('CLI：六库 --all 拒绝；--include-refuted 可用。MCP akasha_sleep_plan 
   assert.equal(ok.status, 0, (ok.stdout || '') + (ok.stderr || ''));
   const dir = mkdtempSync(join(SCRATCH, 'akasha-mcp-plan-'));
   try {
-    const digest = () => lib.STORES.map((n) => createHash('sha256').update(readFileSync(lib.storePath(n))).digest('hex')).join(',');
-    const d0 = digest();
+    // planId = f(库字节 + 参数) ⇒ 断言「跨进程同值」必须让两侧读同一份**不可变快照**。
+    // 原先直接读真库：子进程（约 100–300ms）与父进程两次计算之间若有任何写库（睡眠/会话插件在跑），
+    // basis 指纹就变 ⇒ 假红（2026-10-13 工具链审计 P2 实证：7 跑 1 红）。
+    // 修法：临时快照六库 + `AKASHA_ROOT=<tmp>/data`、`AKASHA_LOGS=<tmp>`（2026-10-13 顺手补的日志根覆盖——
+    // 原先把 logs 写死成 <repo>/logs，`AKASHA_ROOT` 只能改数据改不了日志 ⇒ 两侧「库同源、日志不同源」照样假红）。
+    const snap = join(dir, 'data');
+    mkdirSync(snap, { recursive: true });
+    const files = {};
+    for (const n of lib.STORES) {
+      const src = lib.storePath(n);
+      files[n] = join(snap, n + '.jsonl');
+      writeFileSync(files[n], existsSync(src) ? readFileSync(src) : '');
+    }
     const probe = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'akasha_sleep_plan', arguments: { today: '2026-10-08' } } }) + '\n';
-    const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe });
+    const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe, env: { ...process.env, AKASHA_ROOT: snap, AKASHA_LOGS: dir } });
     assert.equal(r.status, 0, r.stderr || '');
     const msg = JSON.parse((r.stdout || '').trim());
     const body = JSON.parse(msg.result.content[0].text);
@@ -1886,9 +1979,8 @@ t('CLI：六库 --all 拒绝；--include-refuted 可用。MCP akasha_sleep_plan 
     assert.equal(body.planFile, null, 'MCP 不落计划文件');
     assert.equal(body.plan.mode, 'plan-only');
     assert.match(body.plan.planId, /^plan-[0-9a-f]{16}$/);
-    const again = sleepMod.sleepPlan({ today: '2026-10-08', out: false });
-    assert.equal(again.plan.planId, body.plan.planId);
-    assert.equal(digest(), d0, '六库字节不变');
+    const again = sleepMod.sleepPlan({ files, log: join(dir, 'hooks.jsonl'), today: '2026-10-08', out: false });
+    assert.equal(again.plan.planId, body.plan.planId, '跨进程同参数同快照 ⇒ 同 planId（快照隔离，不受真库写入影响）');
     const listed = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n' });
     const tools = JSON.parse(listed.stdout.trim()).result.tools;
     const tool = tools.find((t) => t.name === 'akasha_sleep_plan');
@@ -2013,7 +2105,7 @@ t('CLI：sleep --replay 只读（可 --out）、两次 replayId 相同；与 --a
     assert.equal(existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : null, stateBefore, '水位线不动');
     const denied = cli(['sleep', '--replay', '--apply', '--log', log]);
     assert.equal(denied.status, 1);
-    assert.match(denied.stderr, /尚未实现/);
+    assert.match(denied.stderr, /互斥/);
     const badOut = cli(['sleep', '--replay', '--log', log, '--out']);
     assert.equal(badOut.status, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -2563,7 +2655,7 @@ t('⑥ L2 层可按标签精确过滤（--tag 抽象规则 只出带标条目）
   assert.ok(loose.hits.length >= r.hits.length, '不带过滤时命中数应 ≥ 过滤后');
 });
 t('⑤ 弃权评测：判分规则写死（一等错 / 一等对 / 半分）', async () => {
-  const judge = await import('./tools/abstention-judge.mjs');
+  const judge = await import('./tools-abstention-judge.mjs');
   const docs = judge.loadSuite();
   assert.ok(docs.length >= 8, '题库 ≥8 题：' + docs.length);
   assert.ok(docs.some((d) => d.expect === 'abstain') && docs.some((d) => d.expect === 'answer'), '两类题都要有');
@@ -2621,6 +2713,1668 @@ t('inbox 候选三类统一带样本（sleep.distillHooks + buildTodos）', asyn
     assert.ok(item, '应有 ' + code + ' 候选');
     assert.ok(Array.isArray(item.samples) && item.samples.length >= 1, code + ' 候选须带样本（否则转正后无钩子可言）');
   }
+});
+
+// ── #32 合成禁互引（2026-10-11 立）：守卫先红后绿 —— 违规必抓、合法不误报 ──
+// 判据口径（实测标定过，勿改宽）：只查**引用类字段**；`children` 是树的父子结构，**不算引用**
+//   （第一版判定器就漏了这条，把 12 处 L2→L1 的 children 误报成"互引" ✗ ⇒ 故在此立永久守卫）。
+// 类别（2026-10-11 手检修正）：#32 属**新增判据类**（不是修复类）—— 现状本就 0 违规 ⇒ 无"修复前"可看，
+//   故其"能红"＝违规样例必红（例 1/2）+ 合法样例不红（例 3），**不要求**去撤判据造红（撤判据法脆弱、易自欺）。
+// 实况提示：真实 `topic` 段**无 id 字段**（只有 kind/treegen/fingerprint/clusters/logged_at）⇒ 造数据时
+//   若给 topic 编 id，与实况不符（本文件的例 1/2/3 均未用到 topic id ✓）。
+t('#32 摘要引摘要 ⇒ summary-cites-summary（守卫能红）', () => {
+  const d = mkdtempSync(join(SCRATCH, 'akasha32-'));
+  const p = join(d, 'session.jsonl');
+  writeFileSync(p, [
+    { kind: 'conclusion', id: 'seg-a', gist: '叶段' },
+    { kind: 'node', id: 'node-x', gist: '摘要A', children: ['seg-a'] },
+    { kind: 'node', id: 'node-y', gist: '摘要B', based_on: ['node-x'] },   // ← 违规
+  ].map((x) => JSON.stringify(x)).join('\n') + '\n', 'utf8');
+  const codes = lib.checkPromotions({}, p).map((e) => e.code);
+  assert.ok(codes.includes('summary-cites-summary'), '摘要引摘要必须被抓，实得：' + JSON.stringify(codes));
+});
+t('#32 promoted_from → 摘要 ⇒ promotion-source-not-leaf（旧口径的洞）', () => {
+  const d = mkdtempSync(join(SCRATCH, 'akasha32-'));
+  const p = join(d, 'session.jsonl');
+  writeFileSync(p, JSON.stringify({ kind: 'node', id: 'node-x', gist: '摘要A' }) + '\n', 'utf8');
+  // node 的 id 也在 segIds 里 ⇒ "存在"不足以证明"是叶" ⇒ 必须有专门判据
+  const loaded = { canon: [{ id: 'canon-t', claim: 'x', promoted_from: { id: 'node-x' } }] };
+  const codes = lib.checkPromotions(loaded, p).map((e) => e.code);
+  assert.ok(codes.includes('promotion-source-not-leaf'), '指向摘要必须报 not-leaf，实得：' + JSON.stringify(codes));
+});
+t('#32 children 结构不算引用（守卫不许乱红）', () => {
+  const d = mkdtempSync(join(SCRATCH, 'akasha32-'));
+  const p = join(d, 'session.jsonl');
+  writeFileSync(p, [
+    { kind: 'node', id: 'node-p', level: 2, children: ['node-c1'] },
+    { kind: 'node', id: 'node-c1', level: 1, children: ['seg-a'] },
+  ].map((x) => JSON.stringify(x)).join('\n') + '\n', 'utf8');
+  const codes = lib.checkPromotions({}, p).map((e) => e.code);
+  assert.ok(!codes.includes('summary-cites-summary'), 'children 是结构不是引用，不许误报');
+});
+
+// ── #22 凭据补齐（2026-10-11 立）：URL 内嵌凭据 + Authorization 非 Bearer ──
+// 口径①「宁可漏报也不误伤」· 口径②「识别面宽为拦得住、受理面窄为说得准」⇒ 两侧都要验：
+//   该藏的必须藏（违规样例必红）；**不该动的一律不许动**（尤其我们自己的 id 形态）。
+t('#22 URL 内嵌凭据 user:pass@ ⇒ 遮蔽凭据、保留 host', () => {
+  const out = lib.redact('git clone https://alice:s3cr3t@example.com/repo.git');
+  assert.ok(!out.includes('s3cr3t'), '密码段必须被遮蔽：' + out);
+  assert.ok(out.includes('example.com'), 'host 必须保留（口径②：说得准）：' + out);
+  // 顺序敏感回归：`user:pass@` 必须先匹配，否则会留下 `:pass@`
+  assert.ok(!/:[^/\s@]+@/.test(out.replace('https://[redacted]:[redacted]@', 'https://')), '不许残留 :pass@：' + out);
+});
+t('#22 URL 内嵌纯令牌 user@ ⇒ 遮蔽', () => {
+  const out = lib.redact('https://ghp_abcdefghij0123456789@github.com/x');
+  assert.ok(!out.includes('ghp_abcdefghij0123456789'), '内嵌令牌必须被遮蔽：' + out);
+  assert.ok(out.includes('github.com'), 'host 保留：' + out);
+});
+t('#22 Authorization 非 Bearer 形态 ⇒ 遮蔽', () => {
+  const out = lib.redact('Authorization: Basic dXNlcjpwYXNz');
+  assert.ok(!out.includes('dXNlcjpwYXNz'), 'Basic 凭据必须被遮蔽：' + out);
+});
+t('#22 合法输入不许误伤（含我们自己的 id）', () => {
+  const keep = [
+    'https://github.com/foo/bar',
+    'https://x.com/a@b',                        // 路径里的 @（前面已有 /）⇒ 不是凭据
+    'mailto:a@b.com',
+    'node-7fe8ec84-L2-2781-4441-eb9ff212',      // 我们家 id —— 通用长串规则被明确否决，就是为它
+    'canon-checklist-run-round1-20261011',
+  ];
+  for (const s of keep) assert.equal(lib.redact(s), s, '不该动却被改了：' + s);
+});
+t('#22 全角 / 两宽绕过 ⇒ 同样遮蔽（#22 的另一半）', () => {
+  // 半角分隔符 + 全角键名；全角分隔符 + 半角键名 —— 两种绕过都要被拦
+  const a = lib.redact('ｔｏｋｅｎ=abcdef123456');
+  assert.ok(!a.includes('abcdef123456'), '全角键名绕过必须被拦：' + a);
+  const b = lib.redact('api_key＝abcdef123456');
+  assert.ok(!b.includes('abcdef123456'), '全角分隔符绕过必须被拦：' + b);
+  const c = lib.redact('ｐａｓｓｗｏｒｄ：abcdef123456');
+  assert.ok(!c.includes('abcdef123456'), '全角键名+全角冒号必须被拦：' + c);
+  // 反侧：普通全角句子不许被吞
+  const keepAll = '这是一句全角标点的中文：它不该被改＝真的不该。';
+  assert.equal(lib.redact(keepAll), keepAll, '正常全角正文不许误伤：' + lib.redact(keepAll));
+});
+
+// ── 弧线树 v0.3.1 段数上限（2026-10-12 调参：cap=40）──
+t('弧线树调参：单块段数上限生效（超长 turn 不再憋巨型块）（能红）', () => {
+  assert.ok(sessionMod);
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-cap-'));
+  const store = join(dir, 'session.jsonl');
+  const mkSeg = (seq) => ({ id: `seg-cap-${seq}-00000${seq}`, store: 'session', session: 'capA', seq, time: '2026-10-12T01:00:00Z', turn: 1, step: 1, kind: 'conclusion', gist: '同轮第 ' + seq + ' 段', keywords: [], tools: [], ptr: { seq }, logged_at: '2026-10-12T00:00:00Z' });
+  const segs = [];
+  for (let i = 1; i <= 120; i += 1) segs.push(mkSeg(i));   // 单 turn 120 段（模拟超长 turn）
+  sessionMod.appendSegments(store, segs);
+  // ① 显式关掉上限（segCap:0）⇒ 单 turn 120 段一块到底（这是旧行为，用于对照）
+  const noCap = sessionMod.buildTree({ session: 'capA', storeFile: store, chunkTurns: 8, segCap: 0 });
+  const l1NoCap = noCap.nodes.filter((n) => n.level === 1);
+  assert.equal(l1NoCap.length, 1, '关上限时单块（旧行为对照）：' + JSON.stringify(l1NoCap.map((n) => n.children?.length ?? 0)));
+  // ② 加 cap=40 ⇒ 应切成 3 块（40/40/40）
+  const capped = sessionMod.buildTree({ session: 'capA', storeFile: store, chunkTurns: 8, segCap: 40 });
+  const l1 = capped.nodes.filter((n) => n.level === 1);
+  assert.equal(l1.length, 3, 'cap=40 应切 3 块：' + JSON.stringify(l1.map((n) => n.children?.length ?? 0)));
+  // ③ 每块 ≤ cap（这是硬约束：不许有块超限）
+  assert.ok(l1.every((n) => (n.children?.length ?? 0) <= 40), '每块 ≤ 40：' + JSON.stringify(l1.map((n) => n.children?.length ?? 0)));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('弧线树 v0.3：自动建树（签名未变即复用 / 复活段不折叠 / 无损可展开）（能红）', () => {
+  assert.ok(sessionMod);
+  assert.equal(typeof sessionMod.autoBuildTree, 'function', 'autoBuildTree 必须导出');
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-autotree-'));
+  const store = join(dir, 'session.jsonl');
+  const mkSeg = (seq, turn, text) => ({ id: `seg-at-${seq}-0000${seq}`, store: 'session', session: 'atA', seq, time: '2026-10-12T0' + (seq % 10) + ':00:00Z', turn, step: 1, kind: 'conclusion', gist: text, keywords: [], tools: [], ptr: { seq }, logged_at: '2026-10-12T00:00:00Z' });
+  const segs = [];
+  for (let t = 1; t <= 20; t += 1) segs.push(mkSeg(t, t, '第' + t + '轮：结论 ' + t));
+  sessionMod.appendSegments(store, segs);
+  // ① 首跑：无树 ⇒ build
+  const r1 = sessionMod.autoBuildTree({ session: 'atA', storeFile: store });
+  assert.equal(r1.built, true, '首跑须建：' + JSON.stringify(r1));
+  assert.ok((r1.nodes ?? 0) >= 1, '须产出节点：' + JSON.stringify(r1));
+  // ② 二跑（同数据）：签名未变 ⇒ 复用，不重跑（幂等 + ARTEX 要点①）
+  const r2 = sessionMod.autoBuildTree({ session: 'atA', storeFile: store });
+  assert.equal(r2.built, false, '签名未变必须复用：' + JSON.stringify(r2));
+  assert.equal(r2.reason, 'fingerprint-unchanged', JSON.stringify(r2));
+  // ③ 新段到达 + 超过节流窗（注入 now 越过）⇒ 重建
+  sessionMod.appendSegments(store, [mkSeg(21, 21, '第21轮：结论 21'), mkSeg(22, 22, '第22轮：结论 22')]);
+  const r3 = sessionMod.autoBuildTree({ session: 'atA', storeFile: store, minIntervalMs: 0 });
+  assert.equal(r3.built, true, '新段 + 过窗须重建：' + JSON.stringify(r3));
+  const gen3 = r3.treegen;
+  // ④ 节流：再过窗内重跑 ⇒ 不建
+  const r4 = sessionMod.autoBuildTree({ session: 'atA', storeFile: store, minIntervalMs: 3600000 });
+  assert.equal(r4.built, false, '节流窗内不得重建：' + JSON.stringify(r4));
+  // ⑤ 无损可展开（ARTEX 要点③）：节点带 children/ptr，且新代在、旧代留档
+  const recs = readFileSync(store, 'utf8').split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l)).filter((x) => x.kind === 'node');
+  assert.ok(recs.length >= 2, '两代节点都须留档：' + recs.length);
+  const gens = new Set(recs.map((x) => Number(x.treegen)));
+  assert.ok(gens.size >= 2, '须至少两代（旧代留档）：' + JSON.stringify([...gens]));
+  assert.ok(recs.every((n) => Array.isArray(n.children)), '节点须带 children（下钻口）：' + JSON.stringify(recs[0]).slice(0, 120));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('英文盲区：纯英文循环必被检出 + 反侧不误报（能红）', () => {
+  assert.ok(loopDetect, 'loop-detect.mjs 须可导入');
+  // ① 正例：纯英文重复块（此前因 CJK≥20% 门槛整段失明）
+  const en = ('The pipeline failed again because the same context repeated without any new information. ').repeat(6);
+  const a = loopDetect.detectLoops(en);
+  assert.ok(a.exact.length >= 1, '英文重复块必须被抓：' + JSON.stringify(a.stats));
+  assert.equal(a.stats.gate, 'letters', '英文文本须走字母类门槛：' + JSON.stringify(a.stats));
+  // ② 反侧：星号分隔线/纯符号不得误报（旧防线不许破）
+  const stars = ('*'.repeat(60) + '\n').repeat(8);
+  assert.equal(loopDetect.detectLoops(stars).exact.length, 0, '分隔线不得误报');
+  // ③ 反侧：正常中文散句不得误报
+  const zh = '今天把英文盲区修了。判据改为双门槛：中文走原线，英文走字母线。另外还核了窗口多样性下限。';
+  assert.equal(loopDetect.detectLoops(zh).exact.length, 0, '正常中文不得误报：' + zh);
+  // ④ 中文路径不回归：中文重复块仍被抓（块长须 ≥ 归一窗口 100 字——夹具给足）
+  const zhRep = '窗口合格线要按脚本判。'.repeat(16);
+  assert.ok(loopDetect.detectLoops(zhRep).exact.length >= 1, '中文重复块不得因改动而失效');
+});
+
+t('#16 盲区地图：零命中/弱命中查询 ⇒ 邻域报告（法定输出）（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.blindspotMap, 'function', 'blindspotMap 必须导出');
+  // 夹具库：一条谈「葡萄」的；查询「番茄」应落空区、查询「葡萄」应有命中
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-bmap-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  writeFileSync(files.canon, JSON.stringify({ id: 'canon-bmap-a', claim: '葡萄成熟时可以采摘', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12' }) + '\n');
+  const m = lib.blindspotMap(['番茄种植', '葡萄'], { files, minStrong: 1 });
+  assert.ok(Array.isArray(m.blind), 'blind 须为数组：' + JSON.stringify(m));
+  assert.equal(m.blind.length, 2, '两条查询都须进清单：' + JSON.stringify(m));
+  const mis = m.blind.find((x) => x.query === '番茄种植');
+  assert.equal(mis.level, 'blind', '无强命中 ⇒ blind：' + JSON.stringify(mis));
+  assert.ok(mis.reason && mis.action, '每条须给 reason/action：' + JSON.stringify(mis));
+  const ok = m.blind.find((x) => x.query === '葡萄');
+  assert.equal(ok.level, 'covered', '有强命中 ⇒ covered：' + JSON.stringify(ok));
+  assert.equal(typeof m.summary.blindCount, 'number');
+  rmSync(dir, { recursive: true, force: true });
+});
+t('#27 纪律单源渲染：单源 JSON → Markdown + 一致性校验（漂移能被抓）（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.renderDiscipline, 'function', 'renderDiscipline 必须导出');
+  assert.equal(typeof lib.verifyDiscipline, 'function', 'verifyDiscipline 必须导出');
+  const md = lib.renderDiscipline();
+  assert.ok(typeof md === 'string' && md.includes('来源态') && md.includes('零编造'), '渲染须含关键纪律：' + md.slice(0, 120));
+  // 一致性：渲染产物与单源一致 ⇒ ok；人为篡改 ⇒ 校验必须报漂移（能红）
+  const v1 = lib.verifyDiscipline(md);
+  assert.equal(v1.ok, true, '同源产物须通过：' + JSON.stringify(v1));
+  const tampered = md.replace('零编造', '零编造（已改）');
+  const v2 = lib.verifyDiscipline(tampered);
+  assert.equal(v2.ok, false, '被改过的产物必须报漂移：' + JSON.stringify(v2));
+  assert.ok(v2.reason, '须给原因');
+});
+
+t('#23 committed：所有写入返回 {ok, committed, id, reason}；未落盘不得口头"已收入"（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.committedOf, 'function', 'committedOf 必须导出');
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-commit-'));
+  const file = join(dir, 'canon.jsonl');
+  // 成功写入 ⇒ ok/committed 均 true，且带 id
+  const a = lib.appendRecord('canon', { id: 'canon-commit-1', claim: 'c', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12' }, { file });
+  const ra = lib.committedOf(a);
+  assert.deepEqual(Object.keys(ra).sort(), ['committed', 'id', 'ok', 'reason'].sort(), '回执形状固定：' + JSON.stringify(ra));
+  assert.equal(ra.ok, true); assert.equal(ra.committed, true); assert.equal(ra.id, 'canon-commit-1');
+  assert.equal(ra.reason, null, '成功时 reason 须为 null');
+  // 失败（缺字段）⇒ ok:false、committed:false、reason 非空（**不得假装已收入**）
+  let err = null, rb = null;
+  try { const bad = lib.appendRecord('canon', { id: 'canon-commit-2' }, { file }); rb = lib.committedOf(bad); }
+  catch (e) { err = e; }
+  if (err) assert.ok(/claim|校验/.test(err.message), '失败须给原因：' + err.message);
+  else { assert.equal(rb.ok, false); assert.equal(rb.committed, false); assert.ok(rb.reason, '失败回执须带 reason'); }
+  rmSync(dir, { recursive: true, force: true });
+});
+t('#24 代际指纹：code_generation × disk_generation ⇒ 不一致给 restart_required（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.generationInfo, 'function', 'generationInfo 必须导出');
+  const g = lib.generationInfo();
+  for (const k of ['code_generation', 'disk_generation', 'stale_on_disk', 'restart_required']) assert.ok(k in g, 'gen 须含 ' + k + '：' + JSON.stringify(g));
+  assert.equal(typeof g.code_generation, 'string');
+  // 同源同文件 ⇒ 不应误报 restart_required（守卫不误伤）
+  assert.equal(g.restart_required, false, '未变更时不得报 restart_required：' + JSON.stringify(g));
+});
+
+t('#15 来源态校准：gap + ECE（样本不足 ⇒ null，不冒充）（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.calibrationOf, 'function', 'calibrationOf 必须导出');
+  // 夹具：4 桶（0.2/0.4/0.6/0.8），confidence=自报，actual=实测正确率
+  const rows = [
+    { confidence: 0.2, correct: false }, { confidence: 0.2, correct: false },
+    { confidence: 0.6, correct: true }, { confidence: 0.6, correct: false },   // 桶 0.6 实际 0.5 ⇒ 过度自信 +0.1
+    { confidence: 0.8, correct: true }, { confidence: 0.8, correct: true }     // 桶 0.8 实际 1.0 ⇒ 欠自信
+  ];
+  const c = lib.calibrationOf(rows, { minN: 4, buckets: 5 });
+  assert.equal(typeof c.gap, 'number', 'gap 可算：' + JSON.stringify(c));
+  assert.ok(Math.abs(c.gap - (0.6 - 0.5) / 1) < 1e-9 || c.bucketsUsed >= 2, 'gap/桶结构：' + JSON.stringify(c));
+  assert.ok(Array.isArray(c.buckets) && c.buckets.length >= 2, '须给分桶：' + JSON.stringify(c.buckets));
+  assert.ok(c.buckets.every((b) => typeof b.n === 'number' && 'expected' in b && 'actual' in b), JSON.stringify(c.buckets[0]));
+  assert.equal(typeof c.ece, 'number', 'ECE 可算：' + JSON.stringify(c));
+  // 样本不足 ⇒ null（纪律）
+  const few = lib.calibrationOf(rows.slice(0, 2), { minN: 4 });
+  assert.equal(few.gap, null, '样本不足 gap 必须 null：' + JSON.stringify(few));
+  assert.equal(few.ok, null, 'ok=null（不冒充 PASS）');
+});
+t('#25 否定/反事实降权：含强否定且同题的条目降权（默认关 · 只动排序）（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.negationPenalty, 'function', 'negationPenalty 必须导出');
+  // 命中强否定 + 同题 ⇒ 罚；普通条 ⇒ 不罚
+  assert.ok(lib.negationPenalty('本条结论作废：重试仍失败，不再成立') < 1, '强否定须降权：' + lib.negationPenalty('本条结论作废：重试仍失败，不再成立'));
+  assert.equal(lib.negationPenalty('端点可用：重试后复现成功'), 1, '普通条不得降权');
+  // 默认关：不传开关 ⇒ 排序/行为与并前一致；开启后同查询排序可被打破
+  const off = lib.lookupDetailed('会话层', { contextBudget: false }).hits.map((h) => h.id).join(',');
+  const off2 = lib.lookupDetailed('会话层', { contextBudget: false }).hits.map((h) => h.id).join(',');
+  assert.equal(off, off2, '默认关必须零抖动');
+  const on = lib.lookupDetailed('会话层', { contextBudget: false, negationPenalty: true });
+  assert.ok(Array.isArray(on.hits) && on.hits.length > 0, '开启后仍须有命中（只降权不隐藏）');
+});
+t('#26 渐进式检索：宽 → 收窄的分步计划（DEFER≠失败）（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.progressiveRecall, 'function', 'progressiveRecall 必须导出');
+  const r = lib.progressiveRecall('会话层 worker 化 的 设计要点');
+  assert.ok(Array.isArray(r.steps) && r.steps.length >= 2, '须给分步计划：' + JSON.stringify(r.steps));
+  assert.ok(r.steps.every((s) => s.query && 'hits' in s), '每步须带 query/hits：' + JSON.stringify(r.steps[0]));
+  // 宽步命中应 ≥ 窄步（单调收窄的性质）
+  if (r.steps.length >= 2) assert.ok(r.steps[0].hits >= r.steps[r.steps.length - 1].hits, '宽步命中数不得少于窄步：' + JSON.stringify(r.steps.map((s) => [s.query, s.hits])));
+  // DEFER 语义：空查询/纯停用词 ⇒ 明确给出 defer（不是"失败"，也不假装有结果）
+  const d = lib.progressiveRecall('   ');
+  assert.equal(d.deferred, true, '空查询须显式 defer：' + JSON.stringify(d));
+});
+
+t('#2 负记忆两层：被拒的写入 / 未决 ⇒ 独立留档（只记 kind/reason，不记内容）（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.recordRejected, 'function', 'recordRejected 必须导出');
+  assert.equal(typeof lib.listRejected, 'function', 'listRejected 必须导出');
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-neg-'));
+  const negFile = join(dir, 'negative.jsonl');
+  // ① 记录：被拒的写入（kind=rejected-write）+ 未决（kind=undecided）
+  lib.recordRejected({ kind: 'rejected-write', reason: 'gate-deny', what: 'ops_replace → akasha/data/x.jsonl', ref: 'gate' }, { file: negFile });
+  lib.recordRejected({ kind: 'undecided', reason: 'waiting-datum', what: 'A2 是否默认开' }, { file: negFile });
+  const list = lib.listRejected({ file: negFile });
+  assert.equal(list.length, 2, '两条都要在：' + JSON.stringify(list));
+  assert.ok(list.every((x) => x.id && x.ts && x.kind && x.reason), '每条须带 id/ts/kind/reason：' + JSON.stringify(list[0]));
+  // ② 内容纪律：只记 kind/reason/短描述，不落长正文（>200 字须被截断）
+  lib.recordRejected({ kind: 'rejected-write', reason: 'gate-deny', what: 'x'.repeat(500) }, { file: negFile });
+  const long = lib.listRejected({ file: negFile }).find((x) => String(x.what).length > 200);
+  assert.ok(!long, '长内容必须被截断（≤200 字）：' + (long && long.what.length));
+  // ③ 两层可分别筛
+  assert.equal(lib.listRejected({ file: negFile, kind: 'rejected-write' }).length, 2);
+  assert.equal(lib.listRejected({ file: negFile, kind: 'undecided' }).length, 1);
+  // ④ 未知 kind 拒绝（防混入普通日志）
+  assert.throws(() => lib.recordRejected({ kind: 'whatever', reason: 'r' }, { file: negFile }), /kind/);
+  rmSync(dir, { recursive: true, force: true });
+});
+t('#4 BLINDSPOT 显式化：回答必须自带盲区清单（不静默省略）（能红）', () => {
+  assert.ok(lib);
+  const r = lib.lookupDetailed('会话层', { contextBudget: false });
+  assert.ok(Array.isArray(r.blindspots) && r.blindspots.length >= 1, '须带 blindspots：' + JSON.stringify(r.blindspots));
+  for (const b of r.blindspots) assert.ok(b.what && b.why && b.action, '每条盲区须含 what/why/action：' + JSON.stringify(b));
+  const z = lib.lookupDetailed('zzzyyy');
+  assert.ok(z.blindspots.some((b) => b.what.includes('会话层') || b.what.includes('session')), '零命中/常规查询都要点明未检面：' + JSON.stringify(z.blindspots));
+});
+
+t('#37 perspective：仅 world/experience 合法；过滤只动命中面、不动排序（能红）', () => {
+  assert.ok(lib);
+  const mk = (id, p) => ({ id, claim: '视角字段夹具 同题', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12', ...(p ? { perspective: p } : {}) });
+  // 校验：三态合法；非法值必须被拦
+  assert.deepEqual(lib.validateRecord('canon', mk('canon-ps-1', 'experience')), [], 'experience 合法');
+  assert.deepEqual(lib.validateRecord('canon', mk('canon-ps-2', 'world')), [], 'world 合法');
+  assert.deepEqual(lib.validateRecord('canon', mk('canon-ps-3')), [], '缺省合法（旧数据零破坏）');
+  const bad = lib.validateRecord('canon', mk('canon-ps-4', 'fact'));
+  assert.ok(bad.some((e) => e.includes('perspective')), '非法值必须被拦：' + JSON.stringify(bad));
+  // 过滤：只看 experience ⇒ 世界知识与缺省都不出现；不传 ⇒ 全出（默认不变）
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-ps-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  writeFileSync(files.canon, [mk('canon-ps-e', 'experience'), mk('canon-ps-w', 'world'), mk('canon-ps-n')].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const all = lib.lookupDetailed('视角字段夹具', { files, contextBudget: false }).hits.map((h) => h.id);
+  assert.deepEqual(all.sort(), ['canon-ps-e', 'canon-ps-n', 'canon-ps-w'], '不传 perspective 不得过滤：' + JSON.stringify(all));
+  const onlyExp = lib.lookupDetailed('视角字段夹具', { files, contextBudget: false, perspective: 'experience' }).hits.map((h) => h.id);
+  assert.deepEqual(onlyExp.sort(), ['canon-ps-e'], '只出 experience（缺省不算亲身经历）：' + JSON.stringify(onlyExp));
+  const onlyWorld = lib.lookupDetailed('视角字段夹具', { files, contextBudget: false, perspective: 'world' }).hits.map((h) => h.id);
+  assert.deepEqual(onlyWorld.sort(), ['canon-ps-w'], '只出 world：' + JSON.stringify(onlyWorld));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('#36 fail-loud：数据根不可用 ⇒ 抛错；可用 ⇒ 静默通过（能红 + 不误伤）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.assertDataRoot, 'function', 'assertDataRoot 必须导出');
+  // ① 真实数据根可用 ⇒ 不抛
+  assert.doesNotThrow(() => lib.assertDataRoot());
+  // ② 指到不存在的目录 ⇒ 必须抛（带路径与修复提示），不得静默
+  let err = null;
+  try { lib.assertDataRoot(join(SCRATCH, 'no-such-data-root-' + Date.now())); } catch (e) { err = e; }
+  assert.ok(err, '缺失数据根必须抛错（不许静默建空库）');
+  assert.ok(/不存在|不可用/.test(err.message) && err.message.includes('no-such-data-root'), '错误须点明路径与原因：' + err.message);
+  // ③ 指到存在的目录但缺少库文件 ⇒ 也要抛（半残根：有目录没库 = 读出来是空库，同样危险）
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-root-'));
+  let err2 = null;
+  try { lib.assertDataRoot(dir); } catch (e) { err2 = e; }
+  assert.ok(err2 && /缺少库文件/.test(err2.message), '半残根（无库文件）必须抛：' + (err2 ? err2.message : '（未抛）'));
+  // ④ 只要任一库文件存在即视为可用（不算空库）——避免误伤"新库只建了一条"
+  writeFileSync(join(dir, 'canon.jsonl'), '');
+  assert.doesNotThrow(() => lib.assertDataRoot(dir), '有库文件即通过（哪怕为空文件）');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('#31 检索梯：标明「停在哪一层」与「为何没下钻」（能红）', () => {
+  assert.ok(lib);
+  const b = lib.brief('会话层');
+  assert.ok(Array.isArray(b.ladder) && b.ladder.length >= 3, 'brief 须带 ladder（层级清单）：' + JSON.stringify(b.ladder));
+  assert.ok(b.ladder.every((x) => typeof x.layer === 'string' && 'hit' in x), '每层须有 layer/hit：' + JSON.stringify(b.ladder[0]));
+  const top = b.ladder[0];
+  assert.ok('stopped' in top && typeof top.why === 'string', '首层须带 stopped/why（停点与理由）：' + JSON.stringify(top));
+  // 停点语义：有强命中 ⇒ 停在 canon 强命中层；否则不许假装停在第一层（诚实）
+  if (b.strongHits > 0) assert.equal(b.ladder.find((x) => x.layer === 'canon-strong').hit >= 1, true, '强命中须记在 canon-strong 层');
+  assert.equal(b.ladder.filter((x) => x.stopped).length, 1, '停点唯一（有且只有一层 stopped）：' + JSON.stringify(b.ladder.map((x) => [x.layer, x.stopped])));
+});
+t('#35 lookup --trace：输出 schema 固化（逐条可审）（能红）', () => {
+  assert.ok(lib);
+  const r = lib.lookupDetailed('会话层', { contextBudget: false });
+  assert.ok(Array.isArray(r.trace) && r.trace.length === r.hits.length, 'trace 须与命中一一对应：' + r.trace?.length + ' vs ' + r.hits.length);
+  const t = r.trace[0];
+  for (const k of ['id', 'store', 'score', 'rank', 'strong', 'tier', 'severity', 'complexity', 'factor', 'balance']) assert.ok(k in t, 'trace 缺字段 ' + k + '：' + JSON.stringify(t));
+  assert.equal(typeof t.score, 'number');
+  assert.equal(typeof t.balance.enabled, 'boolean');
+});
+t('#33 show --expand：沿 promoted_from 回溯源头 + 悬空如实（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.expandRecord, 'function', 'expandRecord 必须导出');
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-exp-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const promo = { store: 'session', id: 'seg-fixture9-1-abcdef01', session: 'fixture9', seq: 1, at: '2026-10-01T00:00:00.000Z' };
+  writeFileSync(files.orphan, JSON.stringify({ id: 'orphan-exp-1', summary: 's', observed: 'o', hypothesis: 'h', would_confirm: 'c', would_refute: 'r', severity: '低', created: '2026-10-01', promoted_from: promo }) + '\n');
+  const ok = lib.expandRecord('orphan', 'orphan-exp-1', { files });
+  assert.equal(ok.found, true, JSON.stringify(ok));
+  assert.equal(ok.origin.store, 'session');
+  assert.equal(ok.origin.id, promo.id);
+  assert.equal(ok.origin.seq, 1);
+  assert.ok(ok.note.includes('ptr'), '应提示「回原档用 ptr」：' + ok.note);
+  // 无 promoted_from 的条目：如实说「无源」
+  writeFileSync(files.canon, JSON.stringify({ id: 'canon-exp-plain', claim: 'c', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12' }) + '\n');
+  const plain = lib.expandRecord('canon', 'canon-exp-plain', { files });
+  assert.equal(plain.found, true);
+  assert.equal(plain.origin, null, '无源须为 null（不编）');
+  assert.ok(plain.note.length > 0);
+  // 找不到：明确 not found
+  assert.equal(lib.expandRecord('canon', 'canon-nope', { files }).found, false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('#30 citeAllowlist：lookup/brief 返回本回合取回 id 清单（能红）', () => {
+  assert.ok(lib);
+  const l = lib.lookupDetailed('会话层', { contextBudget: false });
+  assert.ok(Array.isArray(l.citeAllowlist) && l.citeAllowlist.length > 0, 'lookup 须带 citeAllowlist：' + JSON.stringify(l.citeAllowlist));
+  assert.ok(l.citeAllowlist.every((x) => typeof x.id === 'string' && 'tier' in x), '每条须含 id/tier：' + JSON.stringify(l.citeAllowlist[0]));
+  assert.ok(l.citeAllowlist.some((x) => x.strong === true), '强命中须标 strong（可分辨证据强度）');
+  const b = lib.brief('会话层');
+  assert.ok(Array.isArray(b.citeAllowlist) && b.citeAllowlist.length > 0, 'brief 须带 citeAllowlist');
+  // 与知识层结论一致：零命中 ⇒ 清单为空（不冒充有据）
+  const z = lib.lookupDetailed('zzzyyy');
+  assert.deepEqual(z.citeAllowlist, [], '零命中 ⇒ 空清单（不冒充）');
+});
+
+// ── #28 外置 policy + #34 硬规则补面（2026-10-12 窗口 4）──
+t('#28/#34 policy：默认规则含 ops_* 面 + 外置覆盖 + 空策略不假装合规（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.loadPolicy, 'function', 'loadPolicy 必须导出');
+  assert.equal(typeof lib.isWriteTool, 'function', 'isWriteTool 必须导出');
+  // ① 默认：写工具含 ops_replace（此前缺口），shell 含 ops_bash（此前缺口）
+  const def = lib.loadPolicy();
+  assert.ok(def.writeTools.includes('ops_replace'), 'writeTools 须含 ops_replace：' + JSON.stringify(def.writeTools));
+  assert.ok(def.shellTools.includes('ops_bash'), 'shellTools 须含 ops_bash：' + JSON.stringify(def.shellTools));
+  assert.ok(lib.isWriteTool('ops_replace') && lib.isWriteTool('edit'), 'isWriteTool 判定');
+  // ② 外置覆盖：policy.json 存在 ⇒ 并集（默认 ∪ 文件），且 forbidden 可扩
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-pol-'));
+  const pf = join(dir, 'policy.json');
+  writeFileSync(pf, JSON.stringify({ forbidden: [{ id: 'no-touch-prod', pattern: 'prod/db\\.db$|prod\\.db$', why: '生产线文件' }], writeTools: ['custom_write'], empty: false }));
+  const pol = lib.loadPolicy({ file: pf });
+  assert.ok(pol.writeTools.includes('custom_write') && pol.writeTools.includes('edit'), '外置应并集默认：' + JSON.stringify(pol.writeTools));
+  assert.ok(pol.forbidden.some((f) => f.id === 'no-touch-prod'), '外置 forbidden 须载入（与默认并集）：' + JSON.stringify(pol.forbidden.map((f) => f.id)));
+  assert.ok(lib.policyDeny('D:\\x\\prod.db', pol), 'pattern 命中须拦：' + JSON.stringify(lib.policyDeny('D:\\x\\prod.db', pol)));
+  assert.equal(lib.policyDeny('D:\\x\\dev.db', pol), null, '不命中不得误伤');
+  // ③ 空策略不假装合规：文件存在但没有规则 ⇒ 显式 warn（可见），不是静默通过
+  writeFileSync(pf, JSON.stringify({ forbidden: [], writeTools: [] }));
+  const empty = lib.loadPolicy({ file: pf });
+  assert.ok(Array.isArray(empty.warnings) && empty.warnings.some((w) => w.includes('空策略')), '空策略须显式告警：' + JSON.stringify(empty.warnings));
+  // ④ 协议条（#34）：directive 级 = 硬拦「直写 data」不变（默认规则自证）
+  assert.ok(def.directives && def.directives.some((d) => String(d.id).includes('data-direct-write')), 'directive 清单须含直写禁令：' + JSON.stringify(def.directives));
+  // ⑤ 真库模式自证：默认 forbidden 必须拦住「直写 akasha/data/*.jsonl」，且不误伤普通路径
+  const P = 'C:/akasha/data/canon.jsonl';   // 2026-10-14：中性真路径（原用本机路径——开源同步清洗后夹具失配；守卫判据是模式 `(^|/)akasha/data/*.jsonl$`，与盘符无关）
+  assert.ok(lib.policyDeny(P), '默认必须拦直写数据文件：' + P);
+  assert.ok(lib.policyDeny(P.replace(/\//g, '\\')), '反斜杠写法必须同样拦（归一）');
+  assert.equal(lib.policyDeny('C:/akasha/README.md'), null, '普通文件不得误伤');
+  assert.equal(lib.policyDeny('C:/akasha/data-notes/x.jsonl'), null, '相似前缀不得误伤（data-notes ≠ data）');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('#1 自治读数：五读数结构 + 样本不足 ⇒ null（绝不冒充 PASS）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.autonomyReadings, 'function', 'autonomyReadings 必须导出');
+  // 夹具 metrics：小样本 ⇒ 比率必须为 null（不冒充 0 也不冒充 PASS）
+  const tiny = { counters: { tools: 2, toolErrors: 1, turnEnds: 1 }, recall: { failureTurns: 2, misses: 1, missRate: 0.5 }, topToolErrors: [['edit', 1]] };
+  const t1 = lib.autonomyReadings({ metrics: tiny, minN: 5 });
+  assert.equal(t1.readings.toolFailureRate.value, null, '小样本比率必须 null：' + JSON.stringify(t1.readings.toolFailureRate));
+  assert.equal(t1.readings.recallMissRate.value, null, '小样本漏召率必须 null');
+  assert.equal(t1.ok, null, '缺样本 ⇒ ok=null（不报 PASS）');
+  assert.ok(t1.missing.length >= 1, '缺失项必须点名：' + JSON.stringify(t1.missing));
+  // 大样本：数值可算
+  const big = { counters: { tools: 100, toolErrors: 5, turnEnds: 40 }, recall: { failureTurns: 10, misses: 8, missRate: 0.8 }, topToolErrors: [['edit', 6], ['read', 3], ['once', 1]] };
+  const t2 = lib.autonomyReadings({ metrics: big, toolErrors: big.topToolErrors, minN: 5 });
+  assert.equal(t2.readings.toolFailureRate.value, 0.05, JSON.stringify(t2.readings.toolFailureRate));
+  assert.equal(t2.readings.recallMissRate.value, 0.8);
+  assert.equal(t2.readings.samePitRecurrence.value, 2, '同坑复发=错误数≥2 的工具数（once 不计）：' + JSON.stringify(t2.readings.samePitRecurrence));
+  // 真库一次性（只读）：结构完整
+  const real = lib.autonomyReadings();
+  for (const k of ['recallMissRate', 'toolFailureRate', 'refuteRate', 'samePitRecurrence', 'rollbackChains']) {
+    assert.ok(k in real.readings, '缺读数：' + k);
+    assert.ok('value' in real.readings[k] && 'note' in real.readings[k], k + ' 须带 value/note');
+  }
+});
+
+// ── #19 回滚命令化（2026-10-12 窗口 3）：追加反向修订，不删原文，幂等 ──
+t('#19 rollback --batch：按日回滚（追加反向修订）+ 幂等 + 不留半截（能红）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.rollbackBatch, 'function', 'rollbackBatch 必须导出');
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-rb-'));
+  const file = join(dir, 'canon.jsonl');
+  const base = { id: 'canon-rb-1', claim: '原始主张', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-01', logged_at: '2026-10-01T00:00:00Z' };
+  // 2026-10-13 修（时间炸弹）：rollbackBatch 默认按 **UTC 当日**筛「今天新增的修订」——
+  // 夹具写死 2026-10-12 后，次日跑必红（写用例的当天能过）。改为运行时取当前时刻。
+  const rev = { ...base, id: 'canon-rb-1-r1', claim: '今天改过的主张（应被回滚）', supersedes: 'canon-rb-1', logged_at: new Date().toISOString() };
+  const other = { id: 'canon-rb-2', claim: '别的条目（不该被动）', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12', logged_at: '2026-10-12T11:00:00Z' };
+  writeFileSync(file, [base, rev, other].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  // ① dry：只出计划，不写
+  const plan = lib.rollbackBatch('canon', { file, dry: true });
+  assert.deepEqual(plan.map((p) => p.id), ['canon-rb-1-r1'], '计划应只含当日新增版：' + JSON.stringify(plan));
+  assert.equal(readFileSync(file, 'utf8').split('\n').filter(Boolean).length, 3, 'dry 不得写');
+  // ② apply：追加反向修订（内容回到前一版），原文不动
+  const done = lib.rollbackBatch('canon', { file, apply: true });
+  assert.deepEqual(done.map((d) => d.id), ['canon-rb-1-r1r1'], '回滚版 id = 被打版 + r1（须为新 id）：' + JSON.stringify(done));
+  const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(lines.length, 4, '原文不得删（append-only）：' + lines.length);
+  const newTip = lines[3];
+  assert.equal(newTip.claim, '原始主张', '反向修订须把内容还原：' + newTip.claim);
+  assert.equal(newTip.supersedes, 'canon-rb-1-r1', '反向修订须接在被打版之后');
+  assert.equal(newTip.rollback_of, 'canon-rb-1-r1', '回滚版须带 rollback_of（可辨认、不可二次回滚）');
+  // ③ 幂等：原地再跑 —— 已回滚的不再重复（含 dry 计划也必须清空）
+  const again = lib.rollbackBatch('canon', { file, apply: true });
+  assert.deepEqual(again, [], '重复回滚应无事可做：' + JSON.stringify(again));
+  assert.deepEqual(lib.rollbackBatch('canon', { file, dry: true }), [], '回滚后的 dry 计划必须清空（不留残留项）');
+  assert.equal(readFileSync(file, 'utf8').split('\n').filter(Boolean).length, 4);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── #7 多路召回（词法＋引用）→ RRF 融合（2026-10-12 窗口 3）──
+t('#7 多路召回（词法＋引用）→ RRF 融合：结构相关面变宽且可审计（能红 + 不误伤）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.multiRecall, 'function', 'multiRecall 必须导出');
+  const mk = (id, claim, extra = {}) => ({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12', ...extra });
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-rrf-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  writeFileSync(files.canon, [
+    mk('canon-rrf-a', '词法锚点：口令轮换流程的观察'),
+    mk('canon-rrf-b', '结构邻居：被 A 引用的条目（本身不含锚点词）', { relates_to: ['canon-rrf-a'] })
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  // 词法路只有 A；引用路应把 B 带回来
+  const single = lib.lookupDetailed('口令轮换流程', { files, contextBudget: false }).hits.map((h) => h.id);
+  assert.deepEqual(single, ['canon-rrf-a'], '词法单路只得 A：' + JSON.stringify(single));
+  const r = lib.multiRecall('口令轮换流程', { files, contextBudget: false });
+  const ids = r.hits.map((h) => h.id);
+  assert.ok(ids.includes('canon-rrf-b'), '引用路须带回 B（RRF 融合）：' + JSON.stringify(ids));
+  assert.ok(ids.includes('canon-rrf-a'));
+  assert.ok(ids.indexOf('canon-rrf-a') < ids.indexOf('canon-rrf-b'), 'RRF：双路命中者应排在前：' + JSON.stringify(ids));
+  assert.ok(r.rrf && r.rrf.lexical >= 1 && r.rrf.citation >= 1, 'rrf 路计数可审计：' + JSON.stringify(r.rrf));
+  // 不误伤：纯词法查询（无引用边）结果不缩水
+  const plain = lib.multiRecall('口令轮换流程', { files, contextBudget: false });
+  assert.ok(plain.hits.some((h) => h.id === 'canon-rrf-a'));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── #8 同分次序显式化（2026-10-12 窗口 3）：可复现性 ──
+t('#8 同分次序显式化：连跑 10 次全等 + tiebreak=时间新者优先 + id 收尾（能红）', () => {
+  assert.ok(lib);
+  // ① 可复现性：同一查询连跑 10 次，命中 id 序列必须完全一致
+  const seq = () => lib.lookupDetailed('会话层', { contextBudget: false }).hits.map((h) => h.id).join(',');
+  const first = seq();
+  for (let i = 0; i < 9; i += 1) assert.equal(seq(), first, '第 ' + (i + 1) + ' 次复跑必须全等（抖动=不可复现=不可审计）');
+  // ② tiebreak 规则：同分条目按时间（新者优先）、再按 id 升序 —— 夹具三连（同 rank 同 score）
+  const mk = (id, logged) => ({ id, claim: 'tiebreak 夹具 同分测试', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12', logged_at: logged, event_time: '2026-10-12' });
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-tie-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  writeFileSync(files.canon, [
+    mk('canon-tie-b', '2026-10-10T00:00:00Z'),
+    mk('canon-tie-a', '2026-10-12T00:00:00Z'),
+    mk('canon-tie-c', '2026-10-10T00:00:00Z')
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const tied = lib.lookupDetailed('同分测试', { files, contextBudget: false }).hits.map((h) => h.id);
+  assert.deepEqual(tied, ['canon-tie-a', 'canon-tie-b', 'canon-tie-c'], '同分次序 = 时间新者优先 → id 升序：' + JSON.stringify(tied));
+  rmSync(dir, { recursive: true, force: true });
+});
+t('#11+#12 漏记盘面 + 参数结构化错误（能红 + 不误伤）', () => {
+  assert.ok(lib);
+  // ① 零命中：hits=0 且 stance=confirmed-unknown、cites 空（诚实返回，已有）——再加 filtered 盘面
+  const z = lib.lookupDetailed('zzzyyy');
+  assert.equal(z.hits.length, 0);
+  assert.equal(z.knowledge.stance, 'confirmed-unknown');
+  assert.deepEqual(z.knowledge.cites, []);
+  assert.ok(z.stats.filtered && typeof z.stats.filtered === 'object', 'stats.filtered 必须存在（写入侧漏记盘面）：' + JSON.stringify(z.stats));
+  // ② 过滤盘面：tag 不匹配 / 时间范围外 必须各自计数（只记数，不记内容）
+  const t1 = lib.lookupDetailed('会话层', { tag: '并不存在的标签' });
+  assert.equal(t1.hits.length, 0, 'tag 全不匹配应零命中');
+  assert.ok(t1.stats.filtered.tagMismatch > 0, 'tagMismatch 须计数：' + JSON.stringify(t1.stats.filtered));
+  const t2 = lib.lookupDetailed('会话层', { since: '2099-01-01' });
+  assert.ok(t2.stats.filtered.outOfRange > 0, 'outOfRange 须计数：' + JSON.stringify(t2.stats.filtered));
+  // ③ 参数类型错 ⇒ 结构化错误（不是静默）
+  assert.throws(() => lib.lookupDetailed(['数组不是查询']), /query|字符串|类型/u, '非法 query 类型须报错');
+  assert.throws(() => lib.brief(42), /主题|字符串|类型/u, '非法 brief 主题类型须报错');
+  // ④ 正常查询不许被新逻辑影响
+  const ok = lib.lookupDetailed('会话层');
+  assert.ok(ok.hits.length > 0, '正常查询仍须有命中');
+  assert.ok(ok.stats.filtered, '正常查询也带盘面（可观测）：' + JSON.stringify(ok.stats.filtered));
+});
+
+// ── #3 mirror not_applicable（2026-10-12 窗口 2）：不适用条件（依赖 #9 条件谓词化）──
+t('#3 mirror：not_applicable 形状校验 + mirrorMatch 过滤（能红 + 不误伤）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.evalCondition, 'function', '#9 求值器须在');
+  const mkMirror = (id, extra = {}) => ({ id, situation: '端点表现异常需要排查', behavior: '先查日志再重试', outcome: '定位到根因', social_reaction: '—', emotion: '焦虑', story: 's', ...extra });
+  const a = mkMirror('mirror-na-a', { not_applicable: { role: { eq: 'n/a' } } });
+  const b = mkMirror('mirror-na-b');
+  // 形状：非法条件必须被校验拦下（形状层）
+  assert.deepEqual(lib.validateRecord('mirror', a), [], '合法 not_applicable 不许误伤');
+  const bad = lib.validateRecord('mirror', mkMirror('mirror-na-bad', { not_applicable: { role: { unknownOp: 1 } } }));
+  assert.ok(bad.some((e) => e.includes('not_applicable')), '非法算子必须被拦：' + JSON.stringify(bad));
+  // 过滤：ctx 命中 ⇒ 该条被排除；不命中 ⇒ 保留；无该字段 ⇒ 不受影响
+  const rows = [a, b];
+  const hit = lib.filterNotApplicable(rows, { role: 'n/a' });
+  assert.deepEqual(rows.map((r) => r.id), ['mirror-na-a', 'mirror-na-b'], '不得改原数组（只读）');
+  assert.deepEqual(hit.matched.map((r) => r.id), ['mirror-na-b'], '命中不适用条件的必须排除：' + JSON.stringify(hit));
+  assert.deepEqual(hit.excluded, [{ id: 'mirror-na-a', reason: 'not-applicable' }], '被排除的须留痕（可审计）');
+  const miss = lib.filterNotApplicable(rows, { role: 'solution' });
+  assert.deepEqual(miss.matched.map((r) => r.id), ['mirror-na-a', 'mirror-na-b'], '不命中不得排除：' + JSON.stringify(miss));
+  assert.deepEqual(lib.filterNotApplicable(rows, {}).matched.map((r) => r.id), ['mirror-na-a', 'mirror-na-b'], 'ctx 为空对象不得排除');
+  assert.deepEqual(lib.filterNotApplicable(rows, null).matched.map((r) => r.id), ['mirror-na-a', 'mirror-na-b'], 'ctx 缺省不得排除');
+});
+t('#3 mirrorMatch：notApplicable 上下文过滤接线（能红）', () => {
+  assert.ok(lib);
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-pk-'));
+  const file = join(dir, 'mirror.jsonl');
+  const mk = (id, extra) => JSON.stringify({ id, situation: '口令轮换流程卡住时如何排查', behavior: 'b', outcome: 'o', social_reaction: 'r', emotion: 'e', story: 's', ...extra }) + '\n';
+  writeFileSync(file, mk('pk-a', { context: '本机', not_applicable: { role: { eq: 'n/a' } } }) + mk('pk-b', {}) + mk('pk-c', { role: 'boundary' }));
+  const base = { file, mode: 'task' };
+  const noCtx = lib.mirrorMatch('口令排查', base).map((h) => h.id);
+  assert.deepEqual(noCtx, ['pk-a', 'pk-b'], '不传上下文不得过滤：' + JSON.stringify(noCtx));
+  const withCtx = lib.mirrorMatch('口令排查', { ...base, notApplicable: { role: 'n/a' } }).map((h) => h.id);
+  assert.deepEqual(withCtx, ['pk-b'], '命中 not_applicable 的必须排除：' + JSON.stringify(withCtx));
+  const otherCtx = lib.mirrorMatch('口令排查', { ...base, notApplicable: { role: 'solution' } }).map((h) => h.id);
+  assert.deepEqual(otherCtx, ['pk-a', 'pk-b'], '上下文不命中不得排除：' + JSON.stringify(otherCtx));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── #18 冲突检测（2026-10-12 窗口 1）：同主题机械对照（只提示不裁决）──
+t('#18 冲突检测：显式撤回标记 + 同题另一条 ⇒ 报；无标记/不同题 ⇒ 不报（不误伤）', () => {
+  assert.ok(lib);
+  assert.equal(typeof lib.detectConflicts, 'function', 'detectConflicts 必须导出');
+  const recs = [
+    { id: 'orphan-cf-a', summary: '端点可用：重试后复现成功，结果稳定', observed: '重试后复现成功，端点可用' },
+    { id: 'orphan-cf-b', summary: '端点不可用：重试仍复现失败，本条结论作废', observed: '重试仍复现失败，端点不可用' },
+    { id: 'orphan-cf-c', summary: '端点可用：续跑与并发压力下的表现', observed: '续跑与并发压力下的表现' },
+    { id: 'orphan-cf-d', summary: '作废：本月美食周报的排版草稿（与工程无关）', observed: '排版草稿留档' }
+  ];
+  const pairs = lib.detectConflicts({ orphan: recs });
+  const hit = pairs.find((p) => (p.a === 'orphan-cf-b' && p.b === 'orphan-cf-a') || (p.a === 'orphan-cf-a' && p.b === 'orphan-cf-b'));
+  assert.ok(hit, '显式撤回侧 + 同题另一条必须报：' + JSON.stringify(pairs));
+  assert.ok(hit.overlap >= 2, '须带证据（共享稀有词数）：' + JSON.stringify(hit));
+  assert.ok(Array.isArray(hit.common) && hit.common.length >= 2, 'common 须列出共享词：' + JSON.stringify(hit));
+  assert.ok(hit.markers.a.length > 0 || hit.markers.b.length > 0, '须标出撤回侧：' + JSON.stringify(hit.markers));
+  // 不误伤：无标记的普通同题条不得报
+  assert.ok(!pairs.some((p) => [p.a, p.b].sort().join('|') === ['orphan-cf-a', 'orphan-cf-c'].sort().join('|')), '无标记不得报：' + JSON.stringify(pairs));
+  // 不误伤：有标记但不同题（共享稀有词不足）不得报
+  assert.ok(!pairs.some((p) => p.a === 'orphan-cf-d' || p.b === 'orphan-cf-d'), '不同题不得报：' + JSON.stringify(pairs));
+  // 空输入
+  assert.deepEqual(lib.detectConflicts({ orphan: [] }), []);
+});
+
+// ── #29 装载/注入面契约（2026-10-12 窗口 1）：地板保底 + 自跳 + 可观测 ──
+t('#29 装载契约：地板保底（全超仍给第一条）+ 单条超预算自跳 + truncated/floorApplied 可观测', () => {
+  assert.ok(lib);
+  const mk = (id, text) => ({ id, score: 1, snippet: text });
+  const one = mk('hit-one', '甲'.repeat(300));         // ~300 tok（单条超一切 cap）
+  const two = mk('hit-two', '乙'.repeat(50));          // ~50 tok
+  const thr = mk('hit-thr', '丙'.repeat(50));          // ~50 tok
+  // ① 地板：**全条目都装不下** ⇒ 仍必须给**排名第一**（不许「空结果 ≈ 库里没有」）
+  const r1 = lib.clipByBudget({ hits: [one, mk('hit-fat', '庚'.repeat(300))], stats: {} }, { maxTokens: 200 });
+  assert.equal(r1.hits.length, 1, '全超仍须给第一条：' + JSON.stringify(r1.hits));
+  assert.equal(r1.hits[0].id, 'hit-one', '地板保留的是**排名第一**（rank 序首条）');
+  assert.equal(r1.budget.floorApplied, true, 'floorApplied 须为 true：' + JSON.stringify(r1.budget));
+  // ② 自跳：单条超预算只跳自己，后面更短的条目照收（不许大条目卡死整页）
+  const r2 = lib.clipByBudget({ hits: [one, two, thr], stats: {} }, { maxTokens: 200 });
+  const kept = r2.hits.map((h) => h.id);
+  assert.deepEqual(kept, ['hit-two', 'hit-thr'], '单条超预算自跳、后续补齐：' + JSON.stringify(kept));
+  assert.equal(r2.budget.floorApplied, false, '有更短条目可收时不算地板：' + JSON.stringify(r2.budget));
+  // ③ 可观测：truncated 与 trimmed 一致；oversize 记录自跳条数；hint 带续取指引
+  assert.equal(r2.budget.truncated, 1, JSON.stringify(r2.budget));
+  assert.equal(r2.budget.oversize, 1, '自跳（单条自身超上限）须单独记账：' + JSON.stringify(r2.budget));
+  assert.ok(r2.budget.hint.includes('续取'), r2.budget.hint);
+  // ④ 不传 maxTokens（默认 4096）：小结果集不许误裁 / 不得置 floorApplied
+  const r4 = lib.clipByBudget({ hits: [two, mk('hit-lite2', '戊'.repeat(20))], stats: {} }, {});
+  assert.equal(r4.hits.length, 2);
+  assert.equal(r4.budget.floorApplied, false);
+  assert.equal(r4.budget.truncated, 0);
+});
+
+// ── #6 关系边（2026-10-12 窗口 1）：结构引用完整性（能红 + 不误伤）──
+t('#6 关系边：字段形状 + 悬空必报 + 修订 id 不算悬空（守卫能红）', () => {
+  assert.ok(lib && sessionMod);
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-relchk-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const sessionFile = join(dir, 'session.jsonl');
+  writeFileSync(sessionFile, '');
+  const base = { id: 'canon-rel-base', claim: 'c', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12' };
+  const rev = { ...base, id: 'canon-rel-base-r1', supersedes: 'canon-rel-base' };
+  const other = { id: 'canon-rel-other', claim: 'c2', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12' };
+  writeFileSync(files.canon, [base, rev, other].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const errsOf = () => lib.checkAll({ files, sessionFile }).errors.filter((e) => (e.errors || []).some((x) => /^(relates_to|relations)/.test(String(x))));
+  // 正向：指向存在 id、指向**修订版 id**（链内解析）、带 relations 类型 —— 都不许报
+  appendFileSync(files.canon, JSON.stringify({ ...other, id: 'canon-rel-src', relates_to: ['canon-rel-base', 'canon-rel-base-r1'], relations: [{ type: 'supports', id: 'canon-rel-base' }] }) + '\n');
+  assert.deepEqual(errsOf(), [], '合法关系不许误伤：' + JSON.stringify(errsOf()));
+  // 反向 A：relates_to 指向不存在 id ⇒ 必须报
+  appendFileSync(files.canon, JSON.stringify({ ...other, id: 'canon-rel-bad1', relates_to: ['canon-does-not-exist'] }) + '\n');
+  assert.ok(errsOf().some((e) => e.id === 'canon-rel-bad1'), '悬空 relates_to 必须被抓：' + JSON.stringify(errsOf()));
+  // 反向 B：relations[].id 指向不存在 id ⇒ 必须报
+  appendFileSync(files.canon, JSON.stringify({ ...other, id: 'canon-rel-bad2', relations: [{ type: 'contradicts', id: 'canon-nope-2' }] }) + '\n');
+  assert.ok(errsOf().some((e) => e.id === 'canon-rel-bad2'), '悬空 relations[].id 必须被抓：' + JSON.stringify(errsOf()));
+  // 反向 C：字段形状错（非数组 / 缺 type）⇒ 必须报
+  appendFileSync(files.canon, JSON.stringify({ ...other, id: 'canon-rel-bad3', relates_to: 'canon-rel-base' }) + '\n');
+  assert.ok(errsOf().some((e) => e.id === 'canon-rel-bad3'), 'relates_to 非数组必须被抓：' + JSON.stringify(errsOf()));
+  appendFileSync(files.canon, JSON.stringify({ ...other, id: 'canon-rel-bad4', relations: [{ id: 'canon-rel-base' }] }) + '\n');
+  assert.ok(errsOf().some((e) => e.id === 'canon-rel-bad4'), 'relations 缺 type 必须被抓：' + JSON.stringify(errsOf()));
+  // 反向 D：类型值非字符串 / id 非 seg- 结构 —— 形状层
+  appendFileSync(files.canon, JSON.stringify({ ...other, id: 'canon-rel-bad5', relations: [{ type: 1, id: 'canon-rel-base' }] }) + '\n');
+  assert.ok(errsOf().some((e) => e.id === 'canon-rel-bad5'), 'type 非字符串必须被抓：' + JSON.stringify(errsOf()));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── 检测器自检（2026-10-11 立）：每条检查两侧自证（违规必报 / 合法不报）──
+// 它是**防空跑**的：若某条检查失效，这里会因为"预期必须报却没报"而**红** ✓（§七.7②）
+t("检测器自检：所有检查两侧自证（能红 + 不误伤）", () => {
+  const r = runCheckerSelftest({ quiet: true });
+  assert.equal(r.fail, 0, "检测器自检有失败项：" + r.fail);
+  assert.ok(r.pass >= 15, "自检用例数异常偏少（疑空跑）：" + r.pass);   // ← 防空跑：用例数下限
+});
+
+// ---- P6（2026-10-13）：hooks 日志尾部窗口读（readJsonlLinesReverse）----
+t('P6：尾读 vs 整读——行数/顺序/过滤三向等价（含文件头行、空行、坏行）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-p6-'));
+  try {
+    const f = join(dir, 'hooks.jsonl');
+    const rows = [];
+    for (let i = 0; i < 800; i += 1) rows.push(JSON.stringify({ i, kind: i % 5 === 0 ? 'usage' : 'tool', ids: ['id' + i] }));
+    const text = rows.join('\n') + '\n' + '\n' + '{bad json\n';   // 尾坏行 + 空行 + 正常头
+    writeFileSync(f, text);
+    const full = lib.parseJsonl(readFileSync(f, 'utf8')).records;   // 尾坏行被 parseJsonl 记为 error
+    assert.equal(full.length, 800, '整读应得 800 条（坏行不计）');
+    for (const n of [1, 7, 800]) {
+      const got = lib.readJsonlLinesReverse(f, { lines: n });
+      assert.equal(got.length, Math.min(n, 800), `lines=${n} 应得 ${Math.min(n, 800)} 条`);
+      assert.deepEqual(got, full.slice(Math.max(0, full.length - n)), `lines=${n} 应与整读尾部逐条相同`);
+    }
+    const only = lib.readJsonlLinesReverse(f, { lines: 800, filter: (r) => r.kind === 'usage' });
+    assert.deepEqual(only, full.filter((r) => r.kind === 'usage'), '过滤路应与整读过滤逐条相同');
+    // 文件头行不得丢（曾有 off-by-one：块边界恰逢换行时首行被吞）
+    assert.equal(only[0].i, 0, '文件头行必须是第一条（i=0）');
+    // 缺失文件 → 空数组（与 existsSync 语义一致）
+    assert.deepEqual(lib.readJsonlLinesReverse(join(dir, 'nope.jsonl'), { lines: 10 }), []);
+    // 大文件的分块倒读（maxBytes 压到小于文件 ⇒ 多块读）：窗口取尾部，行数上限为准
+    const big = join(dir, 'big.jsonl');
+    const bigLines = [];
+    for (let i = 0; i < 4000; i += 1) bigLines.push(JSON.stringify({ i, pad: 'x'.repeat(40) }));
+    writeFileSync(big, bigLines.join('\n') + '\n');
+    const tail50 = lib.readJsonlLinesReverse(big, { lines: 50, maxBytes: 4096 });
+    assert.deepEqual(tail50, bigLines.slice(-50).map((l) => JSON.parse(l)), '分块倒扫：尾部 50 条');
+    // 字节上限是**硬闸**（如实短读），不是「忽略」：给 2KB 就别指望拿回 4000 条
+    const capped = lib.readJsonlLinesReverse(big, { lines: 100000, maxBytes: 2048 });
+    assert.ok(capped.length > 0 && capped.length < 200, 'byte 闸应如实截断：' + capped.length);
+    assert.deepEqual(capped, bigLines.slice(bigLines.length - capped.length).map((l) => JSON.parse(l)), '截断后仍是文件尾部窗口');
+    // 无尾换行的文件：最后一行照样算一条
+    const noNl = join(dir, 'no-nl.jsonl');
+    writeFileSync(noNl, bigLines.slice(0, 30).join('\n'));
+    assert.equal(lib.readJsonlLinesReverse(noNl, { lines: 5 }).length, 5, '无尾换行也要给足 5 条');
+    assert.equal(lib.readJsonlLinesReverse(noNl, { lines: 1 })[0].i, 29, '最后一条应是 i=29');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── B②-a / B③（2026-10-13，算法数学批）：负载均衡 D 项的显著性口径 + 排序层 NaN 兜底 ──
+t('B②-a（2026-10-13）D 项显著性：噪声不刹车、真恶化才刹车', () => {
+  const { usageWindowFromRecords, loadBalanceCorrection } = lib;
+  const now = Date.now();
+  const mk = (offsets, ids) => offsets.map((s, i) => ({ ts: new Date(now - s * 1000).toISOString(), kind: 'usage', ids: [ids[i % ids.length]] }));
+  // ① 小样本噪声：两半窗分布「看起来」位移巨大，但没有统计意义 ⇒ 不得刹车
+  const noise = usageWindowFromRecords([
+    ...mk([6 * 3600, 6 * 3600, 6 * 3600, 6 * 3600, 6 * 3600, 6 * 3600], ['a', 'b', 'c', 'd']),
+    ...mk([60, 60, 60, 60, 60, 60], ['a', 'a', 'a', 'a', 'a', 'a']),
+  ], {});
+  const cNoise = loadBalanceCorrection('a', { window: noise, count: 9 });
+  assert.ok(!cNoise.reasons.some((r) => r.code === 'slope-brake'), '噪声位移不得触发刹车：' + JSON.stringify(cNoise.reasons));
+  // ② 真恶化：**跨整个窗口**分布（两半窗都要有数据），后半某条占比显著上升 ⇒ 刹车触发且强度随显著性
+  //   注脚（2026-10-13 踩过）：夹具必须覆盖窗口两半，否则旧半为空 ⇒ G 检验无判（p=1）⇒ 不刹车（这是**正确**行为，
+  //   当时是夹具写错：6 条事件全在最近 6 小时内，mid 落在 3.5 天前 ⇒ 旧半为空）。
+  const sixH = 6 * 3600;
+  const worse = usageWindowFromRecords([
+    ...mk([5.5 * 86400, 5.0 * 86400, 4.5 * 86400, 4.2 * 86400, 4.0 * 86400, 3.8 * 86400], ['a', 'b', 'a', 'b', 'a', 'b']),
+    ...mk(Array.from({ length: 160 }, (_, i) => 60 + i), ['a']),
+  ], {});
+  const cWorse = loadBalanceCorrection('a', { window: worse, count: 100 });
+  assert.ok(cWorse.reasons.some((r) => r.code === 'slope-brake'), '真恶化必须刹车：' + JSON.stringify({ slope: worse.slope, rel: worse.relShift, p: worse.homogP, reasons: cWorse.reasons }));
+  const br = cWorse.reasons.find((r) => r.code === 'slope-brake');
+  assert.ok(br.p < 0.05, '刹车项须带显著性 p<0.05（实际 ' + br.p + '）');
+  assert.ok(cWorse.correction < 1, '刹车后 correction 必须 <1');
+  // ③ 旧窗口对象（无 relShift/homogP 字段）⇒ 退回旧口径，不抛、行为不变
+  //   注脚：D 项**只对超配额项**生效（error>0）；夹具须让 count>quota，否则不进 D 项（这是设计，不是 bug——2026-10-13 踩过）
+  const legacy = { byId: new Map([['a', 12]]), total: 20, distinct: 2, quota: 10, slope: 0.2, hhiNew: 0.6, hhiOld: 0.4 };
+  const cLegacy = loadBalanceCorrection('a', { window: legacy, count: 12 });
+  assert.ok(cLegacy.reasons.some((r) => r.code === 'slope-brake'), '旧窗口对象走旧口径（向后兼容）：' + JSON.stringify(cLegacy.reasons));
+});
+
+t('B③（2026-10-13）排序层卫生：NaN/Inf 分数与因子不得污染榜单', () => {
+  const { applyRank } = lib;
+  const rec = { id: 'canon-x', claim: 'x' };
+  const a = applyRank(NaN, 'canon', rec, null, {});
+  assert.ok(Number.isFinite(a.rank), 'NaN 词法分 ⇒ rank 必须有限（实际 ' + a.rank + '）');
+  assert.equal(a.rankSanitized === true || a.rank === 0, true, '须留痕或归零');
+  const b = applyRank(Infinity, 'canon', rec, { weight: Infinity, cls: 'evergreen', refuted: false }, {});
+  assert.ok(Number.isFinite(b.rank), 'Inf 因子/分数 ⇒ rank 必须有限（实际 ' + b.rank + '）');
+  assert.equal(b.factorSanitized === true, true, '非有限因子须打标 factorSanitized');
+});
+
+t('B①（2026-10-13）scoreTokens 不变量：记录分 ≥1 ⟺ 至少一次整词命中', () => {
+  const toks = ['尾读', '门控', '睡眠器', 'read', '二'];
+  let cases = 0;
+  for (const s of ['canon', 'orphan', 'mirror']) {
+    for (const r of lib.currentRecords(lib.loadStore(s).records).slice(0, 40)) {
+      const hay = JSON.stringify(r).toLowerCase();
+      for (const t of toks) {
+        const { whole, score } = lib.scoreTokens(hay, [t]);
+        cases += 1;
+        if (whole === 0) assert.ok(score < 1, '纯回退不得 ≥1：' + t + ' → ' + score);
+        assert.equal(score >= 1, whole >= 1, '≥1 ⟺ 整词命中（' + t + '）');
+      }
+    }
+  }
+  assert.ok(cases > 100, '样本量须足够（实际 ' + cases + '）');
+});
+
+// ── A2（2026-10-13）：候选分道（有证据才转正）+ dry 不写观测线 ──
+t('A2（2026-10-13）候选分道：无具体样本 ⇒ aggregate（不转正）', async () => {
+  const sleepMod = await import('./sleep.mjs');
+  const { hasConcreteSample } = sleepMod;
+  // 谓词：正例
+  for (const s of ['工具失败 edit: old_string was not found in "<LOCAL_PATH>/x.mjs"', '门控拦截 write: 拒绝直写 akasha/data/canon.jsonl',
+    'agent 错误: unknown tool "ops_read_many"', 'x exit 2: rg: <LOCAL_PATH>/openviking-server', 'cannot read "tmp/a.log": binary file']) {
+    assert.equal(hasConcreteSample([s]), true, '应判为有证据：' + s);
+  }
+  // 谓词：负例（通用文案 / 空 / 纯计数）
+  for (const s of ['被门控拦截的写入尝试', 'agent 级错误', '被门控拦截的写入尝试（失败回查候选）', '', null, undefined]) {
+    assert.equal(hasConcreteSample([s]), false, '应判为聚合型：' + JSON.stringify(s));
+  }
+  // 端到端（纯函数）：无样本 ⇒ aggregate；有样本 ⇒ orphan-candidate
+  const c = { toolErrorsSubstantive: 1, denials: 1, agentErrors: 1, recallMisses: 0 };
+  const samples = { 'tool-error': ['工具失败 edit: old_string was not found in "<LOCAL_PATH>/x.mjs"'], 'gate-denied': [], 'agent-error': [] };
+  const todos = sleepMod.buildTodos(c, ['n'], null, null, samples);
+  const kinds = Object.fromEntries(todos.map((x) => [x.code, x.kind]));
+  assert.equal(kinds['tool-error'], 'orphan-candidate', '有证据 ⇒ 可转正');
+  assert.equal(kinds['gate-denied'], 'aggregate', '无样本 ⇒ 聚合型');
+  assert.equal(kinds['agent-error'], 'aggregate', '无样本 ⇒ 聚合型');
+  assert.ok(todos.find((x) => x.code === 'gate-denied').note.includes('不转正'), '聚合型 note 须写明不转正');
+});
+
+t('A2（2026-10-13）dry 不写观测线（否则污染水位线：processedTo 会被自己的 emit 顶高）', async () => {
+  const sleepMod = await import('./sleep.mjs');
+  const { mkdtempSync, appendFileSync, readFileSync, existsSync, rmSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'sleep-dry-'));
+  const log = join(dir, 'hooks.jsonl');
+  appendFileSync(log, JSON.stringify({ kind: 'gate-denied', tool: 'write', message: '拒绝直写 akasha/data/canon.jsonl' }) + '\n', 'utf8');
+  const before = readFileSync(log, 'utf8');
+  const dry = sleepMod.sleepRun({ trigger: 'manual', log, stateFile: join(dir, 's.json'), inboxFile: join(dir, 'i.jsonl'), reportDir: join(dir, 'logs'), dry: true });
+  assert.equal(dry.ok, true);
+  assert.equal(readFileSync(log, 'utf8'), before, 'dry 不得往日志追加任何东西（含观测线）');
+  assert.ok(!existsSync(join(dir, 's.json')), 'dry 不写状态');
+  // 紧接着真跑：水位线必须仍是「读了 1 行」
+  const run = sleepMod.sleepRun({ trigger: 'manual', log, stateFile: join(dir, 's.json'), inboxFile: join(dir, 'i.jsonl'), reportDir: join(dir, 'logs') });
+  assert.equal(run.processedTo, 1, '水位线应为 1（dry 不污染）：' + JSON.stringify({ from: run.processedFrom, to: run.processedTo }));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── 类⑤（2026-10-13 举一反三）：promote 的「身份」与「证据」是两件事 ──
+t('类⑤（2026-10-13）promote 身份不碰撞：不同批、无证据，也不得互相顶掉', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'promote-id-'));
+  const ib = join(dir, 'inbox.jsonl');
+  const sf = join(dir, 'orphan.jsonl');
+  // 两批同 code、都无 samples/note，**计数不同**（旧键下 md5(code|"\"") 相同 ⇒ 第二条被静默跳过）
+  writeFileSync(ib, [
+    JSON.stringify({ ts: 't1', kind: 'todo', items: [{ kind: 'orphan-candidate', code: 'tool-error', count: 5 }] }),
+    JSON.stringify({ ts: 't2', kind: 'todo', items: [{ kind: 'orphan-candidate', code: 'tool-error', count: 7 }] }),
+  ].join('\n') + '\n', 'utf8');
+  const r = lib.promoteInbox({ inboxFile: ib, storeFile: sf });
+  assert.equal(r.promoted.length, 2, '两批都应转正（不得撞 id）：' + JSON.stringify(r));
+  assert.equal(new Set(r.promoted).size, 2, '两条 id 必须不同');
+  const recs = lib.loadStore('orphan', sf).records;
+  assert.equal(recs.length, 2, '落库两条');
+  // 零证据必须显式打标（别让后人把空洞当真观测）
+  assert.ok(recs.every((x) => x.evidence === 'none'), '零证据落库须带 evidence:none：' + JSON.stringify(recs.map((x) => x.evidence)));
+  assert.ok(recs.every((x) => String(x.observed).includes('无具体样本')), 'observed 须写明「无具体样本」');
+  // 幂等：同批重跑不得重复落库
+  const r2 = lib.promoteInbox({ inboxFile: ib, storeFile: sf });
+  assert.equal(r2.promoted.length, 0, '重跑幂等');
+  assert.equal(lib.loadStore('orphan', sf).records.length, 2, '重跑不增条');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('类⑤（2026-10-13）有证据的候选落库不得带 evidence:none（两态互斥）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'promote-ev-'));
+  const ib = join(dir, 'inbox.jsonl');
+  const sf = join(dir, 'orphan.jsonl');
+  writeFileSync(ib, JSON.stringify({ ts: 't1', kind: 'todo', items: [
+    { kind: 'orphan-candidate', code: 'tool-error', count: 2, samples: ['工具失败 edit: old_string was not found in "<LOCAL_PATH>/x.mjs"'] },
+  ] }) + '\n', 'utf8');
+  const r = lib.promoteInbox({ inboxFile: ib, storeFile: sf });
+  assert.equal(r.promoted.length, 1, JSON.stringify(r));
+  const rec = lib.loadStore('orphan', sf).records[0];
+  assert.notEqual(rec.evidence, 'none', '有证据 ⇒ 不打 evidence:none');
+  assert.ok(String(rec.observed).includes('old_string'), 'observed 里应带样本证据');
+  rmSync(dir, { recursive: true, force: true });
+});
+// ── I-01（2026-10-13 批次 1）：复审到期清单原型（信任级 × 时龄；audit 只读扩展）──
+t('I-01 复审到期：核心 30d / 一般 90d / 渲染条同档 + 未定年三分（能红 + 不误伤）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-due-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const mk = (id, extra) => ({ id, claim: 'c', source: { type: '复现', ref: 'r' }, ...extra });
+  writeFileSync(files.canon, [
+    mk('canon-due-core', { last_reviewed: '2026-09-01' }),                                            // T1 · 龄 42d > 30d ⇒ 到期
+    mk('canon-due-general', { source: { type: '官方', ref: 'r' }, last_reviewed: '2026-09-01' }),      // T3 · 42d < 90d ⇒ 未到
+    mk('canon-due-fresh', { last_reviewed: '2026-10-10' }),                                           // 龄 3d ⇒ 未到
+    mk('canon-akasha-usage', { source: { type: '官方', ref: 'r' }, last_reviewed: '2026-09-01' }),     // 渲染条 ⇒ 核心档
+    mk('canon-self-1', { source: { type: '官方', ref: 'r' }, tags: ['自我'], last_reviewed: '2026-09-01' }), // 自我层 ⇒ 核心档
+    { id: 'canon-due-nodate', claim: 'c', source: { type: '他人', ref: 'r' } }                        // 无锚 ⇒ undated
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const r = lib.reviewDue({ files, today: '2026-10-13' });
+  assert.deepEqual(r.items.map((x) => x.id), ['canon-akasha-usage', 'canon-due-core', 'canon-self-1'], '只报到期项：' + JSON.stringify(r.items));
+  const core = r.items.find((x) => x.id === 'canon-due-core');
+  assert.equal(core.intervalDays, 30, 'T1 核心档 30d');
+  assert.equal(core.ageDays, 42);
+  assert.equal(core.overdueDays, 12);
+  assert.equal(core.anchor, 'last_reviewed');
+  assert.equal(r.items.find((x) => x.id === 'canon-akasha-usage').cls, 'rendered', '渲染条按核心档');
+  assert.equal(r.items.find((x) => x.id === 'canon-self-1').cls, 'rendered', '自我层按核心档');
+  assert.equal(r.counts.undated, 1, '无日期锚须计入 undated（不静默）：' + JSON.stringify(r.counts));
+  assert.ok(!r.items.some((x) => x.id === 'canon-due-fresh'), '新鲜条目不得误报');
+  assert.ok(!r.items.some((x) => x.id === 'canon-due-general'), '一般档（90d）不得按核心档误报');
+  // 策略可覆写（两向）：收紧 ⇒ 更多到期；放宽/收紧一般档 ⇒ T3 也进来
+  const tight = lib.reviewDue({ files, today: '2026-10-13', policy: { coreDays: 1 } });
+  assert.ok(tight.items.some((x) => x.id === 'canon-due-fresh'), '核心档收紧后新鲜条目也到期（策略可覆写）');
+  const g40 = lib.reviewDue({ files, today: '2026-10-13', policy: { generalDays: 40 } });
+  assert.ok(g40.items.some((x) => x.id === 'canon-due-general'), '一般档收紧到 40d 后 T3 条目到期');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-01 复审到期：audit 带 review 块且只报不裁（info 级）', () => {
+  const r = lib.audit({ today: '2026-10-13' });
+  assert.ok(r.review && r.review.counts && typeof r.review.counts.due === 'number', 'audit 须带 review 清单：' + JSON.stringify(r.review?.counts));
+  assert.equal(r.review.policy.coreDays, 30);
+  assert.equal(r.review.policy.generalDays, 90);
+  assert.equal(r.review.policy.annualDays, 365);
+  assert.ok(Array.isArray(r.review.top) && Array.isArray(r.review.undated));
+  const f = r.findings.find((x) => x.code === 'review-due');
+  if (f) assert.equal(f.level, 'info', 'review-due 不得是 warn（原型：只报不裁）');
+});
+
+// ── I-02（2026-10-13 批次 1）：查询监控侧线 ──
+t('I-02 查询侧线：recordQuery 落线 + 凭据遮蔽 + 坏路径不抛（能红 + 不误伤）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-qlog-'));
+  const file = join(dir, 'query-log.jsonl');
+  const r1 = lib.recordQuery({ cmd: 'lookup', query: '门控 token=sk-abcdefgh12345678', hits: 3, ms: 7.4, ids: ['canon-a'] }, { queryLog: file, via: 'cli' });
+  assert.equal(r1.ok, true, JSON.stringify(r1));
+  const rec = JSON.parse(readFileSync(file, 'utf8').trim());
+  assert.equal(rec.cmd, 'lookup');
+  assert.equal(rec.via, 'cli');
+  assert.equal(rec.hits, 3);
+  assert.equal(rec.zero, false);
+  assert.equal(rec.ms, 7, 'ms 取整');
+  assert.ok(!String(rec.query).includes('sk-abcdefgh12345678'), '凭据必须遮蔽：' + rec.query);
+  assert.deepEqual(rec.ids, ['canon-a']);
+  assert.equal(rec.genre_render, false, '体裁渲染层未落地 ⇒ false');
+  const r2 = lib.recordQuery({ cmd: 'lookup', query: 'x', hits: 0 }, { queryLog: dir });   // 目录当文件 ⇒ 写不进
+  assert.equal(r2.ok, false, '写侧线失败须回执 ok:false（不抛）：' + JSON.stringify(r2));
+  assert.equal(lib.queryLogPathOf({ queryLog: false }), null, 'queryLog:false ⇒ 关断');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-02 查询侧线：四个检索入口各落一行、嵌套不双记；侧线坏时主流程不变（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-qlog2-'));
+  const qlog = join(dir, 'query-log.jsonl');
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  writeFileSync(files.canon, JSON.stringify({ id: 'canon-q-1', claim: '查询监控 夹具词', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-13' }) + '\n');
+  lib.lookupDetailed('查询监控', { files, contextBudget: false, queryLog: qlog });
+  lib.multiRecall('查询监控', { files, contextBudget: false, queryLog: qlog });
+  lib.brief('查询监控', { files, contextBudget: false, queryLog: qlog });
+  lib.cross('查询监控', { files, queryLog: qlog });
+  const lines = readFileSync(qlog, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((x) => x.cmd), ['lookup', 'recall', 'brief', 'cross'], '四入口各一行、无嵌套双记：' + JSON.stringify(lines.map((x) => x.cmd)));
+  assert.ok(lines.every((x) => x.hits >= 1 && x.zero === false), '四条都应有命中：' + JSON.stringify(lines));
+  const ok1 = lib.lookupDetailed('查询监控', { files, contextBudget: false, queryLog: dir });
+  assert.equal(ok1.hits.length, 1, '侧线写不进去，检索结果不受影响');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-02 查询侧线：metrics.queries 聚合（零结果率 / 高频 / 引用率）+ 数据不足不冒充（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-qlog3-'));
+  const qlog = join(dir, 'query-log.jsonl');
+  const hookLog = join(dir, 'hooks.jsonl');
+  writeFileSync(qlog, [
+    JSON.stringify({ ts: '2026-10-13T10:00:00Z', via: 'cli', cmd: 'lookup', query: '门控', hits: 2, zero: false, ms: 10, ids: ['canon-x'], session: null, genre_render: false }),
+    JSON.stringify({ ts: '2026-10-13T10:01:00Z', via: 'cli', cmd: 'lookup', query: '门控', hits: 0, zero: true, ms: 20, ids: [], session: 'session-a', genre_render: false })
+  ].join('\n') + '\n');
+  writeFileSync(hookLog, JSON.stringify({ ts: '2026-10-13T10:05:00Z', kind: 'usage', ids: ['canon-x'] }) + '\n');
+  const m = lib.metrics({ log: hookLog, queryLog: qlog });
+  assert.equal(m.queries.total, 2);
+  assert.equal(m.queries.zero, 1);
+  assert.equal(m.queries.zeroRate, 0.5);
+  assert.equal(m.queries.avgMs, 15);
+  assert.deepEqual(m.queries.topQueries[0], ['门控', 2]);
+  assert.equal(m.queries.referenced.of, 1, '只有带命中 id 的那次参与引用率');
+  assert.equal(m.queries.referenced.rate, null, '样本 < minSample ⇒ null（不冒充）');
+  const m4 = lib.metrics({ log: hookLog, queryLog: qlog, querySampleMin: 1 });
+  assert.equal(m4.queries.referenced.rate, 1, '样本足时如实给率');
+  assert.equal(m.queries.sessionCoverage.known, 1, '会话号覆盖如实统计');
+  const m2 = lib.metrics({ log: join(dir, 'none.jsonl'), queryLog: qlog });
+  assert.equal(m2.queries.referenced.rate, null, '无 usage 线 ⇒ 引用率 null（不冒充）');
+  const m3 = lib.metrics({ log: hookLog, queryLog: false });
+  assert.equal(m3.queries.total, 0, '关断 ⇒ 零条（不抛）');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── I-03（2026-10-13 批次 1）：记忆 diff（两时点「库变了什么」）──
+t('I-03 记忆 diff：新增/修订/退役分类 + 变化字段 + 未定年三分（能红 + 不误伤）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-diff-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const rec = (o) => JSON.stringify(o);
+  writeFileSync(files.canon, [
+    rec({ id: 'canon-d-root', claim: '原始主张', source: { type: '复现', ref: 'r' }, logged_at: '2026-10-10T00:00:00Z' }),
+    rec({ id: 'canon-d-root-r1', claim: '改过的主张', tags: ['工'], source: { type: '复现', ref: 'r' }, supersedes: 'canon-d-root', logged_at: '2026-10-12T09:00:00Z' }),
+    rec({ id: 'canon-d-new', claim: '窗口内新增', source: { type: '官方', ref: 'r' }, logged_at: '2026-10-12T10:00:00Z' }),
+    rec({ id: 'canon-d-out', claim: '窗口外', source: { type: '官方', ref: 'r' }, logged_at: '2026-10-01T10:00:00Z' }),
+    rec({ id: 'canon-d-nodate', claim: '无戳', source: { type: '他人', ref: 'r' } })
+  ].join('\n') + '\n');
+  const orphanBase = { summary: '被退役的孤案', observed: 'o', hypothesis: 'h', would_confirm: 'c', would_refute: 'f', severity: '中', created: '2026-10-01' };
+  writeFileSync(files.orphan, [
+    rec({ id: 'orphan-d-x', ...orphanBase, logged_at: '2026-10-01T00:00:00Z' }),
+    rec({ id: 'orphan-d-x-retired', ...orphanBase, retires: 'orphan-d-x', retired_at: '2026-10-12T12:00:00Z', logged_at: '2026-10-12T12:00:00Z' })
+  ].join('\n') + '\n');
+  const d = lib.memoryDiff({ files, since: '2026-10-12', until: '2026-10-12' });
+  assert.deepEqual(d.stores.canon.added.map((x) => x.id), ['canon-d-new'], JSON.stringify(d.stores.canon.added));
+  assert.deepEqual(d.stores.canon.revised.map((x) => x.id), ['canon-d-root-r1']);
+  const rev = d.stores.canon.revised[0];
+  assert.ok(rev.changed.includes('claim') && rev.changed.includes('tags'), '变化字段须列出：' + JSON.stringify(rev.changed));
+  assert.equal(d.stores.canon.undated.count, 1, '无戳须计入 undated：' + JSON.stringify(d.stores.canon.undated));
+  assert.deepEqual(d.stores.orphan.retired.map((x) => x.id), ['orphan-d-x-retired']);
+  assert.ok(!d.stores.canon.added.some((x) => x.id === 'canon-d-out'), '窗口外不得入窗');
+  const d2 = lib.memoryDiff({ files, since: '2026-10-10', until: '2026-10-12' });
+  assert.ok(d2.stores.canon.added.some((x) => x.id === 'canon-d-root'), '窗口须含起始日（两端闭合）');
+  const d3 = lib.memoryDiff({ files, since: '2026-10-12', until: '2026-10-12', stores: ['canon'] });
+  assert.equal(Object.keys(d3.stores).length, 1, '--store 过滤只留一库');
+  assert.throws(() => lib.memoryDiff({ files, since: '2026-10-13', until: '2026-10-12' }), /窗口非法/, 'since > until 须报错');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── I-04（2026-10-13 批次 1）：矛盾显现（链视图 + 冲突候选）──
+t('I-04 链视图：任意版本 id 都能定位整链，逐步标变化字段（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-chain-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  writeFileSync(files.canon, [
+    JSON.stringify({ id: 'canon-c-1', claim: '一', source: { type: '复现', ref: 'r' }, logged_at: '2026-10-01T00:00:00Z' }),
+    JSON.stringify({ id: 'canon-c-1-r1', claim: '二', source: { type: '复现', ref: 'r' }, supersedes: 'canon-c-1', logged_at: '2026-10-02T00:00:00Z' }),
+    JSON.stringify({ id: 'canon-c-1-r2', claim: '三', source: { type: '复现', ref: 'r' }, supersedes: 'canon-c-1-r1', logged_at: '2026-10-03T00:00:00Z' })
+  ].join('\n') + '\n');
+  const v = lib.chainView('canon-c-1', { files });                    // 用根 id 查
+  assert.equal(v.store, 'canon');
+  assert.deepEqual(v.versions.map((x) => x.id), ['canon-c-1', 'canon-c-1-r1', 'canon-c-1-r2']);
+  assert.equal(v.currentId, 'canon-c-1-r2');
+  assert.equal(v.retired, false);
+  assert.deepEqual(v.versions[1].changed, ['claim'], 'r1 只改了 claim：' + JSON.stringify(v.versions[1].changed));
+  const v2 = lib.chainView('canon-c-1-r1', { files });                // 用链中版本查
+  assert.deepEqual(v2.versions.map((x) => x.id), v.versions.map((x) => x.id));
+  assert.equal(lib.chainView('canon-不存在', { files }), null);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-04 冲突候选：作废侧 × 同题另一条 ⇒ 报；无关条不得误报（能红 + 不误伤）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-conflict-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const mk = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-13' });
+  writeFileSync(files.canon, [
+    mk('canon-cf-a', '口令轮换流程：旧方案作废，改用双人复核'),
+    mk('canon-cf-b', '口令轮换流程的完整记录：旧方案与双人复核的对照'),
+    mk('canon-cf-c', '与主题无关的第三条：葡萄成熟时可以采摘')
+  ].join('\n') + '\n');
+  const r = lib.conflictReport('口令轮换', { files });
+  assert.equal(r.kind, 'topic');
+  assert.ok(r.pairs.some((p) => [p.a, p.b].includes('canon-cf-a') && [p.a, p.b].includes('canon-cf-b')), '作废侧×同题须报：' + JSON.stringify(r.pairs));
+  assert.ok(!r.pairs.some((p) => [p.a, p.b].includes('canon-cf-c')), '无关条不得误报：' + JSON.stringify(r.pairs));
+  const r2 = lib.conflictReport('canon-cf-a', { files });
+  assert.equal(r2.kind, 'id');
+  assert.ok(r2.chain && r2.chain.root === 'canon-cf-a', 'id 模式须带链视图');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── I-11（2026-10-13 批次 2 · 体裁隔离 P0）：process 默认不回放 + 符号剥皮 + 反思通道 ──
+t('I-11 P0-②：stripGenre 幂等 + 白名单（枚举内剥、枚举外零改动）（能红 + 不误伤）', () => {
+  assert.equal(lib.stripGenre('A ⇒ B'), 'A → B', '⇒→→');
+  assert.equal(lib.stripGenre('done ✓ ok'), 'done ok', '✓ 删除（规整空格）');
+  assert.equal(lib.stripGenre('完成。好。'), '完成。', '。好。→。');
+  assert.equal(lib.stripGenre('好。开始'), '开始', '行首好。→删');
+  assert.equal(lib.stripGenre('嗯好。继续'), '嗯。继续', '句中好。→。');
+  const keep = '★ ◆ ▶ ①② **粗体** —— 只动枚举内';
+  const out = lib.stripGenre(keep);
+  assert.equal(out, '★ ◆ ▶ ①② **粗体** —— 只动枚举内', '枚举外字符零改动：' + JSON.stringify(out));
+  const sample = '思考：先读规格 ⇒ 再落码 ✓ 好。收口 ⇒ ✓ 结束';
+  const once = lib.stripGenre(sample);
+  assert.equal(lib.stripGenre(once), once, '幂等：重复运行结果一致');
+  assert.ok(!once.includes('⇒') && !once.includes('✓') && !once.includes('好。'), '剥皮后不应残留枚举符号：' + once);
+});
+
+t('I-11 P0-①：process 默认不回放（给段数与指引）；日常通道剥皮；反思通道给原文（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-genre-'));
+  const file = join(dir, 'session.jsonl');
+  const mk = (o) => JSON.stringify(o);
+  const rawProc = '思考：先读规格 ⇒ 再落码 ✓ 好。';
+  const rawConc = '结论：规格已读 ⇒ 开工 ✓。好。';
+  const rawUser = '用户原话：帮我看看 ⇒ 这个 ✓ 好。';
+  writeFileSync(file, [
+    mk({ kind: 'intent', session: 's1', seq: 1, id: 'seg-s1-1', gist: rawUser, keywords: ['规格'], time: '2026-10-13T01:00:00Z' }),
+    mk({ kind: 'conclusion', session: 's1', seq: 2, id: 'seg-s1-2', gist: rawConc, keywords: ['规格'], time: '2026-10-13T01:01:00Z' }),
+    mk({ kind: 'process', session: 's1', seq: 3, id: 'seg-s1-3', gist: rawProc, keywords: ['规格'], time: '2026-10-13T01:01:30Z' })
+  ].join('\n') + '\n');
+  // ① 默认：不含 process 原文；只报「存在 N 段」+ 指引
+  const d = sessionMod.lookupSegmentsDetailed('规格', { storeFile: file });
+  assert.ok(d.hits.every((h) => h.kind !== 'process'), '默认不得含 process 段：' + JSON.stringify(d.hits.map((h) => h.kind)));
+  assert.ok(d.withheld && d.withheld.process === 1, '默认须报段数与指引：' + JSON.stringify(d.withheld));
+  assert.ok(/raw-process/.test(d.withheld.hint || ''), '指引须点出调取参数');
+  // ② 剥皮：结论段剥；用户原话/工具记录不剥（哨兵）
+  const conc = d.hits.find((h) => h.kind === 'conclusion');
+  assert.ok(conc && !conc.gist.includes('⇒') && !conc.gist.includes('✓') && !conc.gist.includes('好。'), '默认面结论段须剥皮：' + (conc && conc.gist));
+  const intent = d.hits.find((h) => h.kind === 'intent');
+  assert.ok(intent && intent.gist === rawUser, '用户原话零改动（误剥哨兵）：' + (intent && intent.gist));
+  // ③ 日常通道（--process）也剥；反思通道（rawProcess）给原文
+  const dProc = sessionMod.lookupSegmentsDetailed('规格', { storeFile: file, includeProcess: true });
+  const p = dProc.hits.find((h) => h.kind === 'process');
+  assert.ok(p && !p.gist.includes('⇒'), '--process 日常通道也要剥：' + (p && p.gist));
+  const dRaw = sessionMod.lookupSegmentsDetailed('规格', { storeFile: file, rawProcess: true });
+  assert.equal(dRaw.reflect, true, '反思通道须标记 reflect');
+  const pr = dRaw.hits.find((h) => h.kind === 'process');
+  assert.ok(pr && pr.gist === rawProc, '反思通道须给原文（不剥）：' + (pr && pr.gist));
+  // ④ 断言 4：同查询新旧输出 diff ⊆ {剥皮规则 ∪ 默认不返回}
+  const rawById = new Map(dRaw.hits.map((h) => [h.id, h]));
+  for (const h of d.hits) {
+    const r = rawById.get(h.id);
+    assert.ok(r, '默认命中须在反思通道同域可见：' + h.id);
+    if (['conclusion', 'process', 'node'].includes(h.kind)) assert.equal(h.gist, lib.stripGenre(r.gist), '差异必须恰为剥皮规则：' + h.id);
+    else assert.equal(h.gist, r.gist, '非剥皮类零改动：' + h.id);
+  }
+  assert.ok(dRaw.hits.some((h) => h.kind === 'process') && !d.hits.some((h) => h.kind === 'process'), 'process 属「默认不返回」集合');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-11 P0：CLI 接线（默认剥皮 + --raw-process 反思通道）（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-genre-cli-'));
+  const file = join(dir, 'session.jsonl');
+  const mk = (o) => JSON.stringify(o);
+  writeFileSync(file, [
+    mk({ kind: 'intent', session: 's1', seq: 1, id: 'seg-s1-1', gist: '用户原话：帮我看看', keywords: ['规格'], time: '2026-10-13T01:00:00Z' }),
+    mk({ kind: 'conclusion', session: 's1', seq: 2, id: 'seg-s1-2', gist: '结论：规格已读 ⇒ 开工 ✓。好。', keywords: ['规格'], time: '2026-10-13T01:01:00Z' }),
+    mk({ kind: 'process', session: 's1', seq: 3, id: 'seg-s1-3', gist: '思考：先读规格 ⇒ 再落码 ✓ 好。', keywords: ['规格'], time: '2026-10-13T01:01:30Z' })
+  ].join('\n') + '\n');
+  const run = (extra) => spawnSync(process.execPath, [join(ROOT, 'akasha.mjs'), 'session', 'lookup', '规格', '--store', file, ...extra], { encoding: 'utf8' });
+  const a = run([]);
+  assert.equal(a.status, 0, a.stderr || a.stdout);
+  assert.ok(!String(a.stdout).includes('⇒'), 'CLI 默认输出不得含 ⇒：' + a.stdout);
+  assert.ok(String(a.stdout).includes('过程记录'), 'CLI 默认须给不回放提示：' + a.stdout);
+  const b = run(['--raw-process']);
+  assert.equal(b.status, 0, b.stderr || b.stdout);
+  assert.ok(String(b.stdout).includes('⇒'), '--raw-process 须给原文（不剥）：' + b.stdout);
+  assert.ok(String(b.stdout).includes('反思通道'), '反思通道须自标：' + b.stdout);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── I-12（2026-10-13 批次 2）：剂量闸（P1-③）+ 任务门控·长会话收紧（P1-④） ──
+t('I-12 P1-③：skeletonCount / doseGate 纯函数（白名单计数 + 越限定位）（能红）', () => {
+  assert.equal(lib.skeletonCount('a ⇒ b ✓ 好。c ⇒'), 4, '计数只含白名单三符');
+  assert.equal(lib.skeletonCount('★ ◆ ▶ 普通文本'), 0, '枚举外不计数');
+  const g = lib.doseGate(['⇒ ⇒ ⇒', '⇒ ⇒ ⇒', '⇒ ⇒ ⇒'], { threshold: 5 });
+  assert.equal(g.total, 9);
+  assert.equal(g.cutoff, 1, '第二条累计 6 > 5 ⇒ 自该条起摘要：' + JSON.stringify(g));
+  assert.equal(lib.doseGate(['⇒'], { threshold: 5 }).cutoff, null, '不越限 ⇒ cutoff=null');
+  assert.equal(lib.doseSummary('一二三四五六七八九十', { summaryChars: 5 }), '一二三四五…');
+});
+
+t('I-12 P1-③：lookup 剂量闸——超阈后条目摘要化 + dose 元数据；reflect/0 不受限（能红 + 不误伤）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-dose-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const mkClaim = () => '剂量闸夹具◆' + '甲'.repeat(80) + ' ⇒ ✓ 好。';
+  writeFileSync(files.canon, [1, 2, 3, 4].map((i) => JSON.stringify({ id: 'canon-dose-' + i, claim: mkClaim(), source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-13' })).join('\n') + '\n');
+  const r = lib.lookupDetailed('剂量闸夹具', { files, contextBudget: false, doseThreshold: 5 });
+  assert.ok(r.dose, '应触发剂量闸：' + JSON.stringify(r.dose));
+  assert.equal(r.dose.threshold, 5);
+  assert.ok(r.dose.trimmed >= 2, JSON.stringify(r.dose));
+  const trimmed = r.hits.filter((h) => h.dose === true);
+  assert.ok(trimmed.length >= 2 && trimmed.every((h) => String(h.snippet).endsWith('…')), '后续条目须摘要化：' + JSON.stringify(trimmed.map((h) => h.snippet)));
+  assert.ok(!r.hits[0].dose, '越限前条目不受限');
+  const rr = lib.lookupDetailed('剂量闸夹具', { files, contextBudget: false, doseThreshold: 5, reflect: true });
+  assert.ok(!rr.dose && rr.hits.every((h) => !h.dose), 'reflect 不受剂量闸');
+  const off = lib.lookupDetailed('剂量闸夹具', { files, contextBudget: false, doseThreshold: 0 });
+  assert.ok(!off.dose, 'doseThreshold:0 关闸');
+  const hi = lib.lookupDetailed('剂量闸夹具', { files, contextBudget: false, doseThreshold: 999 });
+  assert.ok(!hi.dose, '未越限不得触发');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-12 P1-④：session 剂量闸 + 长会话自动收紧（strict 档）；反思通道不受闸（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-dose-sess-'));
+  const file = join(dir, 'session.jsonl');
+  const mkseg = (i) => JSON.stringify({ kind: 'conclusion', session: 's2', seq: i, id: 'seg-s2-' + i, gist: '剂量闸会话夹具◆' + '乙'.repeat(80) + ' ⇒ ✓ 好。', keywords: ['剂量闸会话夹具'], time: '2026-10-13T02:00:00Z' });
+  writeFileSync(file, [1, 2, 3, 4].map(mkseg).join('\n') + '\n');
+  const d = sessionMod.lookupSegmentsDetailed('剂量闸会话夹具', { storeFile: file, doseThreshold: 5 });
+  assert.ok(d.dose && d.dose.trimmed >= 2, JSON.stringify(d.dose));
+  assert.ok(d.hits.filter((h) => h.dose).every((h) => String(h.gist).endsWith('…')), '后续条目摘要化');
+  const d2 = sessionMod.lookupSegmentsDetailed('剂量闸会话夹具', { storeFile: file, session: 's2', longSessionSegs: 3 });
+  assert.ok(d2.dose && d2.dose.strict === true && d2.dose.threshold === lib.GENRE_DOSE_DEFAULTS.strictThreshold, '长会话自动收紧档：' + JSON.stringify(d2.dose));
+  const d3 = sessionMod.lookupSegmentsDetailed('剂量闸会话夹具', { storeFile: file, session: 's2', longSessionSegs: 999 });
+  assert.ok(!d3.dose || d3.dose.strict === false, '短会话不收紧：' + JSON.stringify(d3.dose));
+  const d4 = sessionMod.lookupSegmentsDetailed('剂量闸会话夹具', { storeFile: file, doseThreshold: 5, rawProcess: true });
+  assert.ok(!d4.dose, '反思通道不受剂量闸');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-11 复查补齐：cross 主行默认剥皮（只剥不截断）+ reflect 给原文（能红 + 契约守护）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-cross-strip-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const claim = 'cross 剥皮夹具：完成 ⇒ 收口 ✓。好。' + '甲'.repeat(120);
+  writeFileSync(files.canon, JSON.stringify({ id: 'canon-cross-1', claim, source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-13' }) + '\n');
+  const c = lib.cross('cross 剥皮夹具', { files });
+  const line = String(c.groups[0].items[0].line);
+  assert.ok(!line.includes('⇒') && !line.includes('✓') && !line.includes('好。'), 'cross 主行须默认剥皮：' + line.slice(0, 60));
+  assert.ok(line.length >= 120, '只剥符号、不截断（契约）：len=' + line.length);
+  const cr = lib.cross('cross 剥皮夹具', { files, reflect: true });
+  assert.ok(String(cr.groups[0].items[0].line).includes('⇒') && String(cr.groups[0].items[0].line).includes('✓'), 'reflect 须给原文');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-11 复查补齐②：mirror_match 叙事正文默认剥皮 + reflect 给原文（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-mirror-strip-'));
+  const mf = join(dir, 'mirror.jsonl');
+  writeFileSync(mf, JSON.stringify({
+    id: 'mirror-strip-1', situation: '情境：卡住 ⇒ 试了 ✓ 好。', behavior: '行为 ⇒ 收到', outcome: '结果 ✓。好。',
+    social_reaction: '反应', emotion: '情绪', patterns: ['模式 ⇒ 一']
+  }) + '\n');
+  const hits = lib.mirrorMatch('卡住', { file: mf });
+  assert.ok(hits.length >= 1, 'mirror 夹具须命中：' + JSON.stringify(hits));
+  const s = String(hits[0].situation);
+  assert.ok(!s.includes('⇒') && !s.includes('✓') && !s.includes('好。'), 'mirror 读侧须剥皮：' + s);
+  assert.ok(!String(hits[0].patterns[0]).includes('⇒'), 'patterns 同剥');
+  const raw = lib.mirrorMatch('卡住', { file: mf, reflect: true });
+  assert.ok(String(raw[0].situation).includes('⇒') && String(raw[0].situation).includes('✓'), 'reflect 须给原文');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── I-08 / I-09 / I-10（2026-10-14，批次 2 尾段）：热缓冲阈值 / 因果字段 / 复审闭环 ──
+t('I-09：因果字段 caused_by/led_to 校验（数组才收；空数组/非字符串拒）+ 写入往返（能红）', () => {
+  const base = { id: 'x', claim: 'c', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-14' };
+  assert.deepEqual(lib.validateRecord('canon', { ...base }), []);
+  assert.deepEqual(lib.validateRecord('canon', { ...base, caused_by: ['a'] }), []);
+  assert.ok(lib.validateRecord('canon', { ...base, caused_by: 'a' }).length >= 1, '字符串须拒');
+  assert.ok(lib.validateRecord('canon', { ...base, led_to: [] }).length >= 1, '空数组须拒');
+  assert.ok(lib.validateRecord('canon', { ...base, led_to: ['  '] }).length >= 1, '空白串须拒');
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-causal-'));
+  const f = join(dir, 'canon.jsonl');
+  lib.appendRecord('canon', { ...base, id: 'canon-causal-1', caused_by: ['canon-x'] }, { file: f });
+  const back = lib.loadStore('canon', f).records.find((r) => r.id === 'canon-causal-1');
+  assert.deepEqual(back.caused_by, ['canon-x'], '字段须往返');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-08：孤儿热缓冲溢出阈值（orphan-backlog 只报不裁；阈值可覆写）（能红 + 不误伤）', () => {
+  const a = lib.audit({ orphanBacklogN: 0 });   // 0 ⇒ 有孤儿即报（真库当前 49 条）
+  assert.ok(a.findings.some((f) => f.code === 'orphan-backlog'), '阈值 0 时须报：' + JSON.stringify(a.findings.map((f) => f.code)));
+  assert.equal(a.ok, true, 'info 级只报不裁：ok 不得翻转');
+  const b = lib.audit({ orphanBacklogN: 99999 });
+  assert.ok(!b.findings.some((f) => f.code === 'orphan-backlog'), '大阈值不得报（不误伤）');
+});
+
+t('I-10：复审闭环——pack（链尾 + 协议 + 因果邻居）/ log 留痕 / 维持打戳（能红）', () => {
+  // pack：真库只读（链尾解析 + 协议三问 + 相关条目）
+  const p = lib.reviewPack('canon-genre-p1-dose-20261013');
+  assert.ok(p.found && p.record, JSON.stringify(Object.keys(p)));
+  assert.equal(p.protocol.questions.length, 3, '协议须三问');
+  assert.equal(p.current, 'canon-genre-p1-dose-20261013-r1', 'pack 须给链尾：' + p.current);
+  assert.ok(p.related.some((x) => x.id === 'canon-genre-p0-20261013'), '相关条目须含因果邻居：' + JSON.stringify(p.related.map((x) => x.id)));
+  // log：夹具文件（append + 时间序读回 + limit）
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-review-'));
+  const f = join(dir, 'review-log.jsonl');
+  lib.appendReviewLog({ store: 'canon', id: 'canon-1', verdict: '维持', by: 'self', note: 'n1' }, { file: f });
+  lib.appendReviewLog({ store: 'canon', id: 'canon-2', verdict: '升级', by: 'subagent', note: null }, { file: f });
+  const items = lib.readReviewLog({ file: f });
+  assert.equal(items.length, 2);
+  assert.equal(items[1].id, 'canon-2', '读回应按时间序（旧在前）：' + JSON.stringify(items.map((x) => x.id)));
+  assert.equal(lib.readReviewLog({ file: f, limit: 1 })[0].id, 'canon-2', 'limit 取最近');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-10：CLI review log 维持 ⇒ 打复审戳 + 落留痕（夹具根；能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-review-cli-'));
+  const dataDir = join(dir, 'data'); mkdirSync(dataDir, { recursive: true });
+  const logsDir = join(dir, 'logs'); mkdirSync(logsDir, { recursive: true });
+  writeFileSync(join(dataDir, 'canon.jsonl'), JSON.stringify({ id: 'canon-rv-1', claim: '复审夹具', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-01-01' }) + '\n');
+  const env = { ...process.env, AKASHA_ROOT: dataDir, AKASHA_LOGS: logsDir, AKASHA_QUERY_LOG: 'off' };
+  const r = spawnSync(process.execPath, [join(ROOT, 'akasha.mjs'), 'review', 'log', 'canon-rv-1', '--verdict', '维持', '--by', 'subagent', '--note', '夹具复审'], { cwd: ROOT, encoding: 'utf8', env });
+  assert.equal(r.status, 0, r.stderr || r.stdout);
+  const recs = readFileSync(join(dataDir, 'canon.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(recs.length, 2, '须追加修订版：' + recs.length);
+  assert.equal(recs[1].supersedes, 'canon-rv-1');
+  assert.notEqual(recs[1].last_reviewed, '2026-01-01', '维持须打复审戳：' + recs[1].last_reviewed);
+  const logLines = readFileSync(join(logsDir, 'review-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(logLines.length, 1);
+  assert.equal(logLines[0].verdict, '维持');
+  assert.equal(logLines[0].by, 'subagent');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-08 附：promote dry 列表去重（同批同码同数、无证据 ⇒ 归一同一 id，只列一次）（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-promote-'));
+  const inbox = join(dir, 'inbox.jsonl');
+  const orphanFile = join(dir, 'orphan.jsonl');
+  writeFileSync(inbox, JSON.stringify({ ts: '2026-10-14T00:00:00Z', items: [
+    { kind: 'orphan-candidate', code: 'tool-error', count: 3 },
+    { kind: 'orphan-candidate', code: 'tool-error', count: 3 }
+  ] }) + '\n');
+  writeFileSync(orphanFile, '');
+  const r = lib.promoteInbox({ dry: true, inboxFile: inbox, storeFile: orphanFile });
+  assert.equal(r.wouldPromote.length, new Set(r.wouldPromote).size, '列表须去重：' + JSON.stringify(r.wouldPromote));
+  assert.equal(r.wouldPromote.length, 1, '同归一 id 只列一次：' + JSON.stringify(r.wouldPromote));
+  // 同族：已在库的同 id 也不能在「已存在」里重复列（2026-10-14 举一反三）——先学到该 id 再放进库复跑
+  const learnedId = r.wouldPromote[0];
+  writeFileSync(orphanFile, JSON.stringify({ id: learnedId, summary: 's', observed: 'o', hypothesis: 'h', would_confirm: 'c', would_refute: 'r', severity: '低', created: '2026-10-14' }) + '\n');
+  const r2 = lib.promoteInbox({ dry: true, inboxFile: inbox, storeFile: orphanFile });
+  assert.equal(r2.skipped.length, new Set(r2.skipped).size, 'skipped 须去重：' + JSON.stringify(r2.skipped));
+  assert.equal(r2.skipped.length, 1, '同一 id 命中两次只列一次：' + JSON.stringify(r2.skipped));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-15：可信度衰减建议（三条件全中才报；引用侧读不到 → 跳过不假报；info 不裁）（能红）', () => {
+  const a = lib.audit({ decayDays: 1, usage: new Map() });
+  const f = a.findings.find((x) => x.code === 'credibility-decay');
+  assert.ok(f, '应报衰减建议：' + JSON.stringify(a.findings.map((x) => x.code)));
+  assert.equal(a.ok, true, 'info 不裁：ok 不得翻转');
+  const b = lib.audit({ decayDays: 99999, usage: new Map() });
+  assert.ok(!b.findings.some((x) => x.code === 'credibility-decay'), '时龄不够不报');
+  const c = lib.audit({ decayDays: 1, usageWindow: { missing: true } });
+  assert.ok(!c.findings.some((x) => x.code === 'credibility-decay'), '引用侧读不到时不得假报零（整体跳过）');
+  const someId = f.detail[0];
+  const d = lib.audit({ decayDays: 1, usage: new Map([[someId, 3]]) });
+  const d2 = d.findings.find((x) => x.code === 'credibility-decay');
+  assert.ok(!(d2 && d2.detail.includes(someId)), '有引用者不得进清单：' + someId);
+});
+
+t('C 小面：summary / diff 读侧默认剥皮 + --reflect 给原文（夹具根；能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-smallfaces-'));
+  const dataDir = join(dir, 'data'); mkdirSync(dataDir, { recursive: true });
+  const logsDir = join(dir, 'logs'); mkdirSync(logsDir, { recursive: true });
+  const today = new Date().toISOString().slice(0, 10);
+  writeFileSync(join(dataDir, 'canon.jsonl'), JSON.stringify({ id: 'canon-sf-1', claim: '小面夹具 ⇒ 收口 ✓。好。', source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today }) + '\n');
+  const env = { ...process.env, AKASHA_ROOT: dataDir, AKASHA_LOGS: logsDir, AKASHA_QUERY_LOG: 'off' };
+  const run = (...args) => spawnSync(process.execPath, [join(ROOT, 'akasha.mjs'), ...args], { cwd: ROOT, encoding: 'utf8', env });
+  const a = run('summary');
+  assert.equal(a.status, 0, a.stderr || a.stdout);
+  assert.ok(a.stdout.includes('canon-sf-1'), '摘要须含夹具：' + a.stdout);
+  assert.ok(!a.stdout.includes('⇒') && !a.stdout.includes('✓'), 'summary 默认须剥皮：' + a.stdout);
+  const b = run('summary', '--reflect');
+  assert.ok(b.stdout.includes('⇒'), 'summary --reflect 须给原文：' + b.stdout);
+  const c = run('diff', '--since', today, '--until', today);
+  assert.equal(c.status, 0, c.stderr || c.stdout);
+  assert.ok(c.stdout.includes('canon-sf-1'), 'diff 须含夹具：' + c.stdout);
+  assert.ok(!c.stdout.includes('⇒') && !c.stdout.includes('✓'), 'diff 默认须剥皮：' + c.stdout);
+  const d = run('diff', '--since', today, '--until', today, '--reflect');
+  assert.ok(d.stdout.includes('⇒'), 'diff --reflect 须给原文：' + d.stdout);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('K1 严格版：逐字保真（show --reflect 逐字 / 默认剥皮）+ 编造测试（lookup/brief 说不知道、show 未找到）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-k1-'));
+  const dataDir = join(dir, 'data'); mkdirSync(dataDir, { recursive: true });
+  const logsDir = join(dir, 'logs'); mkdirSync(logsDir, { recursive: true });
+  const today = new Date().toISOString().slice(0, 10);
+  const claim = 'K1 保真夹具：唯一短语「青雀衔环速记」——逐字可核。收口 ⇒ 留痕 ✓。好。';
+  writeFileSync(join(dataDir, 'canon.jsonl'), JSON.stringify({ id: 'canon-k1-fixture', claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today }) + '\n');
+  const env = { ...process.env, AKASHA_ROOT: dataDir, AKASHA_LOGS: logsDir, AKASHA_QUERY_LOG: 'off' };
+  const run = (...args) => spawnSync(process.execPath, [join(ROOT, 'akasha.mjs'), ...args], { cwd: ROOT, encoding: 'utf8', env });
+  // ① 逐字保真：--reflect 给原文（含 ⇒/✓），默认剥皮去掉完成态符号
+  const raw = run('show', 'canon-k1-fixture', '--reflect');
+  assert.equal(raw.status, 0, raw.stderr || raw.stdout);
+  assert.ok(raw.stdout.includes('青雀衔环速记') && raw.stdout.includes('⇒') && raw.stdout.includes('✓'), 'show --reflect 须逐字含原文：' + raw.stdout.slice(0, 200));
+  const stripped = run('show', 'canon-k1-fixture');
+  assert.ok(stripped.stdout.includes('青雀衔环速记'), '默认 show 仍须含正文：' + stripped.stdout.slice(0, 200));
+  assert.ok(!stripped.stdout.includes('⇒') && !stripped.stdout.includes('✓'), '默认 show 须剥完成态符号：' + stripped.stdout.slice(0, 200));
+  // ② 编造测试：库内没有的，两侧（lookup/brief）都必须说「确定不知道」；show 说未找到且 exit 1
+  const lk = run('lookup', 'zzq-k1-无此主题-nonesuch');
+  assert.ok(lk.stdout.includes('确定不知道'), 'lookup 须报确定不知道：' + lk.stdout.slice(0, 200));
+  const br = run('brief', 'zzq-k1-无此主题-nonesuch');
+  assert.ok(br.stdout.includes('确定不知道'), 'brief 须报确定不知道：' + br.stdout.slice(0, 200));
+  const sh = run('show', 'k1-nonesuch-id');
+  assert.ok(sh.stdout.includes('未找到') && sh.status === 1, 'show 不存在 id 须未找到且 exit 1：' + sh.status + '｜' + sh.stdout.slice(0, 120));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('计分守卫：单字 token 不参整词（防「的」洪水；2026-10-14 K1 复检缺陷修复，能红）', () => {
+  const hay = '的'.repeat(70) + '目标短语青雀衔环速记';
+  // 单字功能词：贡献必须为 0（修复前 whole=70 → 噪声洪水）
+  assert.deepEqual(lib.matchParts(hay, '的'), { whole: 0, fb: 0 }, '单字 token 不得计分');
+  assert.equal(lib.scoreTokens(hay, ['的']).score, 0, '单字 token 记录分须为 0');
+  // 多字词不受影响（出现次数计分保持原设计）
+  assert.equal(lib.matchParts('青雀青雀青雀', '青雀').whole, 3, '多字词按出现次数计分不回归');
+  // 端到端：尾加「的」不得把真命中挤出（对照修复前：目标被 的-洪水埋掉）
+  const a = lib.scoreTokens(hay.toLowerCase(), lib.tokenize('青雀衔环'));
+  const b = lib.scoreTokens(hay.toLowerCase(), lib.tokenize('青雀衔环 的'));
+  assert.ok(a.score >= 1 && b.score >= 1, '带/不带「的」都应命中目标：' + a.score + ' / ' + b.score);
+});
+
+t('K3：可复查/可修订实际使用计数（复审线/退役/近7天修订/矛盾检测调用；夹具注入；能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-k3-'));
+  const today = new Date().toISOString().slice(0, 10);
+  const canonFile = join(dir, 'canon.jsonl');
+  writeFileSync(canonFile, [
+    { id: 'canon-k3-root', claim: 'A', source: { type: '复现', ref: 'r' }, logged_at: '2026-10-01T00:00:00Z' },
+    { id: 'canon-k3-root-r1', claim: 'A2', source: { type: '复现', ref: 'r' }, supersedes: 'canon-k3-root', logged_at: new Date().toISOString() },
+    { id: 'canon-k3-gone', retires: 'canon-k3-someone', retired_reason: 't', retired_at: '2026-10-05' }
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const reviewFile = join(dir, 'review-log.jsonl');
+  writeFileSync(reviewFile, [
+    JSON.stringify({ ts: '2026-10-14T01:00:00Z', verdict: '维持', id: 'x', by: 'self' }),
+    JSON.stringify({ ts: '2026-10-14T02:00:00Z', verdict: '修正', id: 'y', by: 'subagent' })
+  ].join('\n') + '\n');
+  const queryFile = join(dir, 'query-log.jsonl');
+  writeFileSync(queryFile, [1, 2, 3].map((i) => JSON.stringify({ ts: '2026-10-14T0' + i + ':00:00Z', cmd: 'conflict', query: 'q' + i, hits: i })).join('\n') + '\n');
+  // 六库全注入（空文件）——否则未注入的库会回落到真库数据，断言就不再是封闭夹具（本测试首跑即踩中）
+  const files = { canon: canonFile };
+  for (const s of ['mirror', 'orphan', 'pricing', 'lexicon', 'frontier']) { const f = join(dir, s + '.jsonl'); writeFileSync(f, ''); files[s] = f; }
+  const st = lib.revisabilityStats({ files, reviewLog: reviewFile, queryLog: queryFile, today });
+  assert.equal(st.retired, 1, JSON.stringify(st));
+  assert.equal(st.revised7d, 1, '近 7 天修订数：' + st.revised7d);
+  assert.equal(st.review.total, 2);
+  assert.equal(st.review.byVerdict['修正'], 1);
+  assert.equal(st.review.lastVerdict, '修正', '最新一行 = 末尾（升序返回）');
+  assert.equal(st.calls.conflict, 3, '矛盾检测调用计数：' + st.calls.conflict);
+  const m = lib.metrics({ log: join(dir, 'hooks.jsonl'), queryLog: false, files, reviewLog: reviewFile, today });
+  assert.ok(m.revisability && m.revisability.review.total === 2, 'metrics 须带 revisability 字段');
+  // 举一反三守卫（2026-10-14 复检）：诊断类调用（conflict）走同一侧线，但**不得污染检索面指标**
+  const ql2 = join(dir, 'query-log2.jsonl');
+  writeFileSync(ql2, [
+    JSON.stringify({ ts: '2026-10-14T01:00:00Z', cmd: 'lookup', query: '真词', hits: 0, zero: true, ms: 10, ids: [] }),
+    JSON.stringify({ ts: '2026-10-14T02:00:00Z', cmd: 'conflict', query: '诊断q', hits: 0, zero: true, ms: null, ids: [] }),
+    JSON.stringify({ ts: '2026-10-14T03:00:00Z', cmd: 'conflict', query: '诊断q', hits: 2, zero: false, ms: null, ids: [] }),
+    JSON.stringify({ ts: '2026-10-14T04:00:00Z', via: 'probe', cmd: 'lookup', query: '探针长句用户原话……', hits: 0, zero: true, ms: 5, ids: [] })
+  ].join('\n') + '\n');
+  const m2 = lib.metrics({ log: join(dir, 'hooks.jsonl'), files, reviewLog: reviewFile, queryLog: ql2, today });
+  assert.equal(m2.queries.total, 4, 'byCmd 全量计数');
+  assert.equal(m2.queries.retrieval, 1, '检索面计数：' + JSON.stringify(m2.queries));
+  assert.equal(m2.queries.probes, 1, '机制探针分流计数：' + m2.queries.probes);
+  assert.equal(m2.queries.zeroRate, 1, '零结果率只算检索面（1/1）：' + m2.queries.zeroRate);
+  assert.ok(!m2.queries.topQueries.some(([t]) => t === '诊断q' || t.includes('探针长句')), '高频 top 不得含诊断/探针：' + JSON.stringify(m2.queries.topQueries));
+  assert.equal(m2.queries.byCmd.conflict, 2, '诊断计数仍如实展示');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('睡眠 apply · merge 验收（A 档）：keep 逐字不动 / 墓碑 / 幂等 / 豁免 / 回滚 / 审计 / 指纹（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-apply-merge-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
+  writeFileSync(files.canon, [
+    mk('canon-ap-keep', '青雀衔环速记：夹具同文甲。'),
+    mk('canon-ap-absorb', '青雀衔环速记：夹具同文乙。'),
+    mk('canon-ap-disc', '青雀衔环速记：夹具同文丙。'),
+    mk('canon-ap-absorb2', '青雀衔环速记：夹具同文丁。')
+  ].join('\n') + '\n');
+  const planned = sleepMod.sleepPlan({ files, out: false, today });
+  assert.ok(planned.ok, JSON.stringify(planned));
+  const rlog = join(dir, 'review-log.jsonl'); const rcpt = join(dir, 'receipt.json'); const rcpt2 = join(dir, 'receipt2.json');
+  const plan = {
+    planId: 'plan-ap-test', version: 1, basis: planned.plan.basis, ops: [
+      { op: 'merge', store: 'canon', keep: 'canon-ap-keep', absorb: ['canon-ap-absorb'], reason: 'near-duplicate', mergedText: null, evidence: {} },
+      { op: 'discard', store: 'canon', id: 'canon-ap-disc', reason: 'snapshot-superseded', evidence: {} },
+      { op: 'merge', store: 'canon', keep: 'canon-akasha-usage', absorb: ['canon-ap-absorb2'], reason: 'near-duplicate', mergedText: null, evidence: {} },
+      { op: 'merge', store: 'canon', keep: null, needsHuman: true, absorb: [], reason: 'near-duplicate', mergedText: null, evidence: {} }
+    ]
+  };
+  const keepLineBefore = readFileSync(files.canon, 'utf8').split('\n').find((l) => l.includes('canon-ap-keep'));
+  const dry = sleepMod.applyPlan(plan, { files, dry: true, out: rcpt, reviewLog: rlog });
+  assert.ok(dry.ok && dry.dry, JSON.stringify(dry));
+  assert.ok(!readFileSync(files.canon, 'utf8').includes('-retired'), 'dry 不得写库');
+  assert.ok(!existsSync(rlog), 'dry 不得落审计');
+  const app = sleepMod.applyPlan(plan, { files, dry: false, out: rcpt, reviewLog: rlog });
+  assert.ok(app.ok && !app.dry, JSON.stringify(app));
+  assert.equal(app.receipt.summary.retired, 2, '退役数：' + JSON.stringify(app.receipt.summary));
+  assert.equal(app.receipt.summary.refused, 2, '拒绝数（豁免 + needsHuman）：' + JSON.stringify(app.receipt.summary));
+  writeFileSync(rcpt2, readFileSync(rcpt, 'utf8'));
+  const keepLineAfter = readFileSync(files.canon, 'utf8').split('\n').find((l) => l.includes('canon-ap-keep') && !l.includes('-retired'));
+  assert.equal(keepLineAfter, keepLineBefore, '① keep 必须一字不动');
+  const recs1 = lib.loadStore('canon', files.canon).records;
+  const tomb = recs1.find((r) => r.id === 'canon-ap-absorb-retired');
+  assert.ok(tomb && tomb.retires === 'canon-ap-absorb', '② 墓碑指向被退役者');
+  assert.ok(String(tomb.retired_reason).includes('merged-into canon-ap-keep'), '② 墓碑带合并去向：' + tomb.retired_reason);
+  const cur1 = lib.currentRecords(recs1);
+  assert.ok(!cur1.some((r) => r.id === 'canon-ap-absorb' || r.id === 'canon-ap-disc'), '③ absorb/discard 离当前集');
+  assert.ok(cur1.some((r) => r.id === 'canon-ap-keep'), '③ keep 在集');
+  assert.ok(app.receipt.ops.some((o) => o.status === 'refused-exempt'), '⑥ 协议条豁免须拒');
+  assert.ok(app.receipt.ops.some((o) => o.status === 'refused-needs-human'), '⑥ needsHuman 须拒');
+  const stale = sleepMod.applyPlan(plan, { files, dry: false, out: rcpt, reviewLog: rlog });
+  assert.ok(!stale.ok && /指纹过期/.test(String(stale.error)), '⑦ 指纹过期须拒绝：' + JSON.stringify(stale));
+  const again = sleepMod.applyPlan(plan, { files, dry: false, force: true, out: rcpt, reviewLog: rlog });
+  assert.equal(again.receipt.summary.retired, 0, '④ 幂等：force 重跑不得再退役');
+  assert.equal(again.receipt.summary.skipped, 2, '④ 幂等：两项均 skip');
+  const rl = readFileSync(rlog, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.ok(rl.some((x) => x.verdict === '合并') && rl.some((x) => x.verdict === '退役'), '⑧ 审计两行：' + JSON.stringify(rl));
+  assert.ok(existsSync(rcpt), '⑧ 回执落盘');
+  const rv = sleepMod.revokePlan(plan, { files, dry: false, receipt: rcpt2, out: join(dir, 'revoke.json'), reviewLog: rlog });
+  assert.ok(rv.ok && !rv.dry, JSON.stringify(rv));
+  const recs2 = lib.loadStore('canon', files.canon).records;
+  const cur2 = lib.currentRecords(recs2);
+  assert.ok(cur2.some((r) => r.id === 'canon-ap-absorb'), '⑤ 回滚后 absorb 回当前集');
+  assert.ok(cur2.some((r) => r.id === 'canon-ap-disc'), '⑤ 回滚后 discard 回当前集');
+  assert.ok(String(cur2.find((r) => r.id === 'canon-ap-absorb').claim).includes('同文乙'), '⑤（根 id, 正文）复原');
+  assert.ok(recs2.length > recs1.length - 1, '⑤ 历史行只增不减');
+  assert.ok(rl.concat(readFileSync(rlog, 'utf8').trim().split('\n').map((l) => JSON.parse(l))).some((x) => x.verdict === '回滚'), '⑤ 回滚留痕');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('睡眠 apply · discard 验收（独立）：退役生效 / 链历史仍在 / 回滚复原', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-apply-disc-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
+  writeFileSync(files.canon, [mk('canon-dc-old-20261001', '旧快照。'), mk('canon-dc-new-20261005', '新快照。')].join('\n') + '\n');
+  const planned = sleepMod.sleepPlan({ files, out: false, today });
+  const rcpt = join(dir, 'r.json'); const rlog = join(dir, 'review-log.jsonl');
+  const plan = { planId: 'plan-dc-test', version: 1, basis: planned.plan.basis, ops: [{ op: 'discard', store: 'canon', id: 'canon-dc-old-20261001', reason: 'snapshot-superseded', evidence: { supersededBy: 'canon-dc-new-20261005' } }] };
+  const app = sleepMod.applyPlan(plan, { files, dry: false, out: rcpt, reviewLog: rlog });
+  assert.ok(app.ok && app.receipt.summary.retired === 1, JSON.stringify(app));
+  const recs = lib.loadStore('canon', files.canon).records;
+  assert.ok(!lib.currentRecords(recs).some((r) => r.id === 'canon-dc-old-20261001'), '旧快照离当前集');
+  assert.ok(lib.allIds(recs).has('canon-dc-old-20261001'), '链历史仍在（行只增）');
+  const tomb = recs.find((r) => r.id === 'canon-dc-old-20261001-retired');
+  assert.equal(tomb.retired_reason, 'snapshot-superseded');
+  const rv = sleepMod.revokePlan(plan, { files, dry: false, receipt: rcpt, out: join(dir, 'rv.json'), reviewLog: rlog });
+  assert.ok(rv.ok);
+  const after = lib.loadStore('canon', files.canon).records;
+  assert.ok(lib.currentRecords(after).some((r) => r.id === 'canon-dc-old-20261001'), '回滚复原');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('睡眠 R4：keep 按代际（三代际判例 + 端到端；不得自吸收）', () => {
+  const recById = new Map([
+    ['canon-kv-x-v0-3-20261007', { logged_at: '2026-10-06T00:00:00Z' }],
+    ['canon-kv-x-v0-4-20261007', { logged_at: '2026-10-07T00:00:00Z' }]
+  ]);
+  const gen = sleepMod.reselectKeep(['canon-kv-x-v0-3-20261007', 'canon-kv-x-v0-4-20261007'], recById);
+  assert.equal(gen.keep, 'canon-kv-x-v0-4-20261007', '代际 ⇒ 取最新：' + JSON.stringify(gen));
+  const plain = sleepMod.reselectKeep(['canon-dup-a', 'canon-dup-b'], new Map());
+  assert.equal(plain.keep, null);
+  assert.equal(plain.needsHuman, false, '无版本标记 ⇒ 沿用原 keep（真重复取最早）');
+  const amb = sleepMod.reselectKeep(['canon-x-v1-2-a', 'canon-x-v1-2-b'], new Map());
+  assert.equal(amb.needsHuman, true, '版本标记重复 ⇒ 交人工');
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-r4-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = (id, claim, at) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today, logged_at: at });
+  writeFileSync(files.canon, [
+    mk('canon-r4-src-v0-3-20261007', '同源两代材料：青雀衔环速记骨架。', '2026-10-06T00:00:00Z'),
+    mk('canon-r4-src-v0-4-20261007', '同源两代材料：青雀衔环速记骨架。', '2026-10-07T00:00:00Z')
+  ].join('\n') + '\n');
+  const planned = sleepMod.sleepPlan({ files, out: false, today });
+  assert.ok(planned.ok, JSON.stringify(planned));
+  const merge = planned.plan.ops.find((o) => o.op === 'merge' && o.store === 'canon');
+  assert.ok(merge, '应产出 merge：' + JSON.stringify(planned.plan.ops));
+  assert.equal(merge.keep, 'canon-r4-src-v0-4-20261007', '端到端：keep 取最新代：' + JSON.stringify(merge));
+  assert.deepEqual(merge.absorb, ['canon-r4-src-v0-3-20261007'], 'absorb 从全组重算、不得含 keep 自身');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('revokes 护栏（P4）：撤销后即便 allowResurrect 也拒重加同 id', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-revokes-'));
+  const file = join(dir, 'canon.jsonl');
+  writeFileSync(file, JSON.stringify({ id: 'canon-rv-1', claim: '护栏杆。', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-14' }) + '\n');
+  lib.retireRecord('canon', 'canon-rv-1', { file, reason: '测试' });
+  lib.revokeRetire('canon', 'canon-rv-1', { file });
+  assert.ok(lib.currentRecords(lib.loadStore('canon', file).records).some((r) => r.id === 'canon-rv-1'), '撤销后回当前集');
+  assert.throws(() => lib.appendRecord('canon', { id: 'canon-rv-1', claim: 'X', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-14' }, { file, allowResurrect: true }), /revise/, '撤销过 ⇒ 即便 allowResurrect 也拒');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('睡眠 apply 复检三修：回执合并（force 重跑后仍可 revoke）/ 双重退役撤销取活墓碑 / keep 离集拒执行', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-apply-recheck-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
+  writeFileSync(files.canon, [mk('canon-rc-keep', '回执合并夹具。'), mk('canon-rc-absorb', '回执合并夹具二。')].join('\n') + '\n');
+  const planned = sleepMod.sleepPlan({ files, out: false, today });
+  const rcpt = join(dir, 'r.json'); const rlog = join(dir, 'review-log.jsonl');
+  const plan = { planId: 'plan-rc-test', version: 1, basis: planned.plan.basis, ops: [{ op: 'merge', store: 'canon', keep: 'canon-rc-keep', absorb: ['canon-rc-absorb'], reason: 'near-duplicate', mergedText: null, evidence: {} }] };
+  assert.ok(sleepMod.applyPlan(plan, { files, dry: false, out: rcpt, reviewLog: rlog }).ok);
+  // ① force 重跑（全 skip）后回执仍保留墓碑 → revoke 可用
+  sleepMod.applyPlan(plan, { files, dry: false, force: true, out: rcpt, reviewLog: rlog });
+  const rc = JSON.parse(readFileSync(rcpt, 'utf8'));
+  assert.ok(rc.ops[0].detail[0].tombstone, '回执合并：force 重跑后墓碑记录仍在：' + JSON.stringify(rc.ops[0]));
+  const rv = sleepMod.revokePlan(plan, { files, dry: false, receipt: rcpt, out: join(dir, 'rv.json'), reviewLog: rlog });
+  assert.equal(rv.revoke.results[0].status, 'revoked', '回执合并后 revoke 生效：' + JSON.stringify(rv.revoke));
+  // ② 撤销后再退役（双重退役）：不得静默 no-op、须落新墓碑；按原 id 撤销须命中「活的」墓碑
+  const r2 = lib.retireRecord('canon', 'canon-rc-absorb', { file: files.canon, reason: '二次退役' });
+  assert.equal(r2.already, undefined, '撤销后须能再退役（不得静默 no-op）：' + JSON.stringify(r2));
+  const recs2 = lib.loadStore('canon', files.canon).records;
+  const tombs = recs2.filter((r) => r.retires === 'canon-rc-absorb');
+  assert.equal(tombs.length, 2, '二次退役须落新墓碑（id 不撞）：' + JSON.stringify(tombs.map((r) => r.id)));
+  assert.ok(!lib.currentRecords(recs2).some((r) => r.id === 'canon-rc-absorb'), '二次退役后离集');
+  const rv2 = lib.revokeRetire('canon', 'canon-rc-absorb', { file: files.canon });
+  assert.notEqual(rv2.already, true, '按原 id 撤销须命活墓碑：' + JSON.stringify(rv2));
+  assert.ok(lib.currentRecords(lib.loadStore('canon', files.canon).records).some((r) => r.id === 'canon-rc-absorb'), '二次退役撤销后回当前集');
+  // ③ keep 离集 ⇒ 拒执行（不退役 absorb）
+  lib.retireRecord('canon', 'canon-rc-keep', { file: files.canon, reason: '把 keep 挪走' });
+  const before = lib.loadStore('canon', files.canon).records.length;
+  const miss = sleepMod.applyPlan(plan, { files, dry: false, force: true, out: rcpt, reviewLog: rlog });
+  assert.ok(miss.receipt.ops.some((o) => o.status === 'refused-keep-missing'), 'keep 离集须拒：' + JSON.stringify(miss.receipt.ops));
+  assert.equal(lib.loadStore('canon', files.canon).records.length, before, 'refused-keep-missing 不得写库');
+  // ④ 回执指向不存在的墓碑 ⇒ 如实 'missing'（不得谎报 'revoked'；2026-10-14 整体复检修）
+  const bogus = join(dir, 'bogus.json');
+  writeFileSync(bogus, JSON.stringify({ planId: 'plan-rc-test', ops: [{ op: 'discard', store: 'canon', id: 'canon-rc-absorb', tombstone: 'canon-rc-absorb-retired-NOPE' }] }));
+  const rvx = sleepMod.revokePlan({ planId: 'plan-rc-test', ops: [] }, { files, dry: false, receipt: bogus, out: join(dir, 'rvx.json'), reviewLog: rlog });
+  assert.equal(rvx.revoke.results[0].status, 'missing', '缺墓碑须如实 missing：' + JSON.stringify(rvx.revoke.results));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('查询日志读侧不受写侧开关影响（AKASHA_QUERY_LOG=off 时 metrics/K3 仍如实读数；2026-10-14 整体复检修）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-qread-'));
+  const qlog = join(dir, 'query-log.jsonl');
+  writeFileSync(qlog, [
+    JSON.stringify({ ts: '2026-10-14T01:00:00Z', cmd: 'lookup', query: 'a', hits: 1, zero: false, ms: 5, ids: [] }),
+    JSON.stringify({ ts: '2026-10-14T02:00:00Z', cmd: 'conflict', query: 'c', hits: 0, zero: true, ms: null, ids: [] })
+  ].join('\n') + '\n');
+  const prev = process.env.AKASHA_QUERY_LOG;
+  process.env.AKASHA_QUERY_LOG = 'off';
+  try {
+    // 写侧：off ⇒ 不写（既有语义不变）
+    assert.equal(lib.queryLogPathOf({}), null, '写侧 off 仍关断');
+    const rp = lib.queryLogReadPathOf({});
+    assert.ok(rp && rp.endsWith('query-log.jsonl'), '读侧路径须可得（不认 off）：' + rp);
+    // 读侧：off 也必须读到已有数据（此前被静默读成 0——真缺陷）
+    const m = lib.metrics({ log: join(dir, 'none.jsonl'), queryLog: qlog });
+    assert.equal(m.queries.retrieval, 1, 'off 下查询维度仍应读数：' + JSON.stringify(m.queries));
+    const st = lib.revisabilityStats({ files: Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')])), queryLog: qlog, reviewLog: join(dir, 'none.jsonl') });
+    assert.equal(st.calls.conflict, 1, 'off 下 K3 矛盾检测计数仍应读数：' + JSON.stringify(st.calls));
+  } finally {
+    if (prev === undefined) delete process.env.AKASHA_QUERY_LOG; else process.env.AKASHA_QUERY_LOG = prev;
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('diff（memoryDiff）：撤销记录单列「revoked」，不得计入 added（2026-10-14 整体复检修）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-diff-rev-'));
+  const file = join(dir, 'canon.jsonl');
+  const today = new Date().toISOString().slice(0, 10);
+  writeFileSync(file, JSON.stringify({ id: 'canon-dv-1', claim: 'x', source: { type: '复现', ref: 'r' }, last_reviewed: today }) + '\n');
+  lib.retireRecord('canon', 'canon-dv-1', { file, reason: 't' });
+  lib.revokeRetire('canon', 'canon-dv-1', { file });
+  const d = lib.memoryDiff({ since: today, until: today, stores: ['canon'], files: { canon: file } });
+  const b = d.stores.canon;
+  assert.equal(b.revoked.length, 1, '撤销须单列：' + JSON.stringify(b));
+  assert.equal(b.retired.length, 1);
+  const addedIds = b.added.map((x) => x.id);
+  assert.ok(!addedIds.some((x) => x.includes('-revoked')), '撤销不得落入 added：' + JSON.stringify(addedIds));
+  assert.equal(d.totals.revoked, 1, 'totals.revoked：' + JSON.stringify(d.totals));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('内置时钟：nowSnapshot 字段/对照锚/at 换算（注入时刻）+ 脉搏行时钟前缀与关断（2026-10-14）', () => {
+  const D = new Date('2026-10-14T09:05:00.000Z');
+  const r = lib.nowSnapshot({ now: D, at: ['2026-10-07', '2026-10-13T09:05:00Z', '不是时间'] });
+  assert.equal(r.now.utc, '2026-10-14T09:05:00.000Z');
+  assert.equal(r.now.weekday, '周三');
+  assert.ok(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(r.now.local), r.now.local);
+  assert.match(r.now.tzOffset, /^[+-]\d{2}:\d{2}$/);
+  assert.equal(r.at.length, 3);
+  assert.ok(r.at[0].daysAgo > 7 && r.at[0].daysAgo < 8, 'YYYY-MM-DD 按 UTC 午夜：' + JSON.stringify(r.at[0]));
+  assert.equal(r.at[1].daysAgo, 1, '整一天：' + JSON.stringify(r.at[1]));
+  assert.ok(typeof r.at[1].age === 'string' && r.at[1].age.length > 0, 'age 串必在：' + JSON.stringify(r.at[1]));
+  assert.equal(r.at[1].direction, '过去');
+  assert.ok(r.at[2].error, '非法输入如实报错：' + JSON.stringify(r.at[2]));
+  assert.ok(r.refs && 'lastWrite' in r.refs && 'lastSleep' in r.refs, '对照锚字段必在：' + JSON.stringify(r.refs));
+  const p = { stores: { canon: { count: 1, current: 1 } }, newest: { store: 'canon', id: 'x', ageText: '1 分钟前' } };
+  const line = sleepMod.renderPulseLine(p, { now: D });
+  assert.ok(line.startsWith('[2026-10-14 周三 17:05]'), '时钟前缀（本地）：' + line);
+  assert.ok(line.includes('· 相关主题先 brief'), 'C3 半句仍在');
+  const prev = process.env.AKASHA_CLOCK;
+  process.env.AKASHA_CLOCK = 'off';
+  try { assert.ok(!sleepMod.renderPulseLine(p, { now: D }).startsWith('['), 'AKASHA_CLOCK=off 须关断'); } finally { if (prev === undefined) delete process.env.AKASHA_CLOCK; else process.env.AKASHA_CLOCK = prev; }
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);

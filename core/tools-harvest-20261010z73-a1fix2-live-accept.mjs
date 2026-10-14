@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z73-a1fix2-live-accept.mjs
 // 2026-10-10：A1 豁免+root-id 修正的 MCP 面活体验收（重启后）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-a1-id-convention-gap'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

@@ -9,7 +9,7 @@
  },
  "realProfile": {
   "verified": true,
-  "evidence": "真实桌面 profile（DSH 0.2.0-rc.2，端口 19387）此前经官方 @deepseek-ai/dsh-mcp-client 运行 mcp__akasha__* 工具；本版改为自带 stdio 客户端后，在活树 dev 副本上以真实 core（H:\\Harness\\akasha\\mcp.mjs）冒烟通过（18 工具注册 + akasha_check ok）。**切换 installed 副本需重打包 + 安装 + 重启（由用户操作）**（2026-10-10）"
+  "evidence": "真实桌面 profile（DSH 0.2.0-rc.2，端口 <PORT>）此前经官方 @deepseek-ai/dsh-mcp-client 运行 mcp__akasha__* 工具；本版改为自带 stdio 客户端后，在活树 dev 副本上以真实 core（<AKASHA_DIR>\\mcp.mjs）冒烟通过（18 工具注册 + akasha_check ok）。**切换 installed 副本需重打包 + 安装 + 重启（由用户操作）**（2026-10-10）"
  },
  "externalReadback": {
   "verified": true,

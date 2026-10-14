@@ -1,9 +1,9 @@
 // c2-record.mjs —— 台账补 C2 实数 + canon 记录（C2 落地 / npm 5-5 更正）
 import { readFileSync, writeFileSync } from 'node:fs';
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 // ① 台账 §1 补 C2 实数与口径局限
-const F = '<LOCAL_PATH>';
+const F = '<LOCAL_PATH>\\dist\\akasha-oss\\docs\\observation-ledger.md';
 let t = readFileSync(F, 'utf8');
 const anchor = '**候选对策（不实现，登记待评估；须测试期解冻后另行裁定）**';
 const insert = [

@@ -7,7 +7,7 @@
 //   A. 把 4 条非学术条目从 frontier 的「当前集」里标注退役（v0 无删除原语，走 revise 标退役 + 指向 canon）
 //   B. 为这 4 条写 canon 条目（工具/指南类慢知识）
 //   C. 把已读两篇论文的可操作结论写成 canon（他人来源）
-import { appendRecord, loadStore, currentRecords, revise, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise, allIds } from './lib.mjs';
 
 const CHECK = '2026-10-08';
 const report = [];

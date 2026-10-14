@@ -3,7 +3,7 @@
 // ② canon 留痕一条（本次前沿层增补与核对结论）。
 // 幂等：revise 前比对链尾 note；canon 按 id 查重。
 // 用法：node akasha\tools\harvest-20261007b-meta.mjs
-import { appendRecord, loadStore, currentRecords, revise } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise } from './lib.mjs';
 
 const D = '2026-10-07';
 

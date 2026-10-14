@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007t-sessionarchive.mjs
 // 2026-10-07 留痕：DSH 会话档案速查（canon：位置 / 容器格式 / 思维链三层存储 / 工具 / 坑）。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-session-archive-guide-20261007',

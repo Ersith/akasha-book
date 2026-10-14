@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z69-a1-dedupe.mjs
 // 2026-10-10：z68 幂等串写错导致同一段观察追加两遍 → 去重（保留一份）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-rank-a1-loadbalance'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

@@ -15,8 +15,8 @@ const execFileAsync = promisify(execFile);
 const CLI = process.argv.includes('--cli')
   ? process.argv[process.argv.indexOf('--cli') + 1]
   : '<DSH_INSTALL>';
-const OSS = '<LOCAL_PATH>';
-const OUT = '<LOCAL_PATH>';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const OUT = '<LOCAL_PATH>\\_scratch\\store-e3';
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
 
 const PLUGINS = [

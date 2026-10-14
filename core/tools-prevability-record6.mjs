@@ -1,9 +1,9 @@
 // prevability-record6.mjs —— §15 三档表 + 两套 r + 阈值推导 + 复核包导出
 import { readFileSync, writeFileSync } from 'node:fs';
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OUT = '<LOCAL_PATH>';
-const OSS = '<LOCAL_PATH>';
+const OUT = '<LOCAL_PATH>\\_scratch\\prevability';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
 const rep = JSON.parse(readFileSync(OUT + '\\counterfactual-tiers.json', 'utf8'));
 const cases = readFileSync(OUT + '\\cases.jsonl', 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l));
 const byId = new Map(cases.map((c) => [c.case_id, c]));
@@ -45,7 +45,7 @@ if (!t.includes('## 15.')) {
     '',
   ].join('\n');
   writeFileSync(P, t + block, 'utf8');
-  writeFileSync('<LOCAL_PATH>', t + block, 'utf8');
+  writeFileSync('<LOCAL_PATH>\\docs\\recall-preventability-test-plan.md', t + block, 'utf8');
   console.log('  [plan] §15 已追加（双份）');
 } else console.log('  [plan] already');
 

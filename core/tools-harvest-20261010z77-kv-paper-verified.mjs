@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z77-kv-paper-verified.mjs
 // 2026-10-10：KV 相位论文的正文级核实（数字落地）+ 对 A2 的判定。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-kv-phase-memory-judgment'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

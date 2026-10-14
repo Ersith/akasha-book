@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z78-a2-merged.mjs
 // 2026-10-10：A2 上下文预算分配并入活树的交付记录。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-a2-context-budget-20261010'))) { console.log('已存在，跳过'); process.exit(0); }

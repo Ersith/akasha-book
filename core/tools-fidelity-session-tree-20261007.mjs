@@ -2,8 +2,8 @@
 // 2026-10-07 会话层 v0.2 保真抽查（RECOMP 口径的机械版）：
 // 对每个当前代 L1 节点，从孩子段提取「受保护 token」（路径 / 数字 /「引文」/ ASCII≥4），
 // 统计其在 节点 gist（展示层 400）/ extra（找回层 1200）/ 两者皆无 的保有率。只读。
-import { loadStore, currentRecords } from '../lib.mjs';
-import { latestNodes } from '../session.mjs';
+import { loadStore, currentRecords } from './lib.mjs';
+import { latestNodes } from './session.mjs';
 
 const RECORDS = loadStore('session').records;
 const byId = new Map(RECORDS.map((r) => [r.id, r]));

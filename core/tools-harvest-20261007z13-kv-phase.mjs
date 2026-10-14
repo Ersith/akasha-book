@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007z13-kv-phase.mjs
 // 2026-10-07 留痕：KV 压缩相位盲区论文（arXiv 2609.36322）入 frontier 基石。幂等。
-import { loadStore, appendRecord, currentRecords } from '../lib.mjs';
+import { loadStore, appendRecord, currentRecords } from './lib.mjs';
 
 const ID = 'front-kv-phase-sensitive-20261007';
 const exists = loadStore('frontier').records.some((r) => r.id === ID);

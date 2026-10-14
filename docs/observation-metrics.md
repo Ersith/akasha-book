@@ -24,7 +24,7 @@
 ## 3. 怎么跑
 
 ```powershell
-cd H:\Harness\akasha
+cd <AKASHA_DIR>
 node tools\observe.mjs --since 2026-10-10                    # 单窗口
 node tools\observe.mjs --base 2026-10-06:2026-10-09 --obs 2026-10-13:2026-10-17   # 两窗口对照
 node tools\observe.mjs --since 2026-10-10 --json             # 附 JSON 摘要（可存档）

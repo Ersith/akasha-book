@@ -1,6 +1,6 @@
 // append-ch29.mjs —— 追加 CHECKS R29（门控覆盖缺口 + 覆盖清单测试）
 import { readFileSync, appendFileSync } from 'node:fs';
-const F = '<LOCAL_PATH>';
+const F = '<LOCAL_PATH>\\dist\\akasha-oss\\CHECKS.md';
 const MARK = '## R29 ·';
 const t = readFileSync(F, 'utf8');
 if (t.includes(MARK)) { console.log('  = R29 已存在'); process.exit(0); }

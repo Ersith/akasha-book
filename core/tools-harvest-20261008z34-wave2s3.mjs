@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z34-wave2s3.mjs
 // 2026-10-08 留痕：wave2 §2.2（MCP 只读 plan）+ §3（可信度分档）双落地。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const oss = tips.find((r) => r.id.startsWith('canon-oss-package-20261007'));

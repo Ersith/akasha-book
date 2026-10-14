@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007p-oss2.mjs
 // 2026-10-07 留痕：canon-oss-package-20261007 → 修订（LICENSE 定 MIT / 论文 v0.4 / 暂不发布 / 命名反馈）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const cur = currentRecords(loadStore('canon').records).find(r => r.id.startsWith('canon-oss-package-20261007'));
 if (!cur) { console.log('找不到 oss 条'); }

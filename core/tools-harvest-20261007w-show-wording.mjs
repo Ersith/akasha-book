@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007w-show-wording.mjs
 // 2026-10-07 留痕：F3 文案修正——usage ⑯「show 旧版本语义」措辞消歧（修订链）。幂等。
-import { loadStore, revise } from '../lib.mjs';
+import { loadStore, revise } from './lib.mjs';
 
 const records = loadStore('canon').records;
 const tip = (() => {

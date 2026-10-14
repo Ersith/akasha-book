@@ -1,6 +1,6 @@
 // akasha/tools/audit-controls-20261009.mjs —— 举一反三扫描：全库「修复/生效」类主张缺对照者
 // 用法：node tools/audit-controls-20261009.mjs [--sample N]
-import { loadStore, currentRecords, STORES } from '../lib.mjs';
+import { loadStore, currentRecords, STORES } from './lib.mjs';
 
 const TRIG = /(修复|已修|修正|解决|生效|已消除|已上线|已启用|验证通过|已复现|reproduced|fixed)/i;
 const CTRL = /(对照|反例|对照组|control|对拍|前值|后值|before|after|回滚|字节未改|未复现|不成立|零残差|全等|双跑|两次)/i;

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007v-replay.mjs
 // 2026-10-07 留痕：阶段 3「阿巴阿巴回放」实验结果 → canon。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-session-replay-20261007',

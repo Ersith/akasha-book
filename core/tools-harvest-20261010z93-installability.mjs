@@ -1,5 +1,5 @@
 // akasha/tools/harvest-20261010z93-installability.mjs —— 对外可安装性（用户问：别的用户会不会踩同样的坑）
-import { loadStore, currentRecords, appendRecord, revise } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord, revise } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (!canon.some((r) => r.id.startsWith('canon-installability-20261010'))) {

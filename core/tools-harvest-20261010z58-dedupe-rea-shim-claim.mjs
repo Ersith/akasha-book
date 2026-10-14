@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z58-dedupe-rea-shim-claim.mjs
 // 2026-10-10：清理 canon-mcp-rea-shim 链尾的重复段落（z57 双跑所致）。幂等，走修订链。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-mcp-rea-shim'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

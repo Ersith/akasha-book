@@ -2,7 +2,7 @@
 // 2026-10-07 检索修复留痕：① 新 canon（检索回退行为规格）② orphan-brief-phrase-miss 修订链 r1（修复闭环）
 // ③ canon-akasha-usage 尾段更新（自举状态修正 + ⑬ 全库摘要 + ⑭ 检索计分）。
 // 幂等：已有的跳过；只追加。
-import { appendRecord, loadStore, currentRecords, revise } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise } from './lib.mjs';
 
 let added = 0; let revised = 0; let skipped = 0;
 

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z44-self-layer.mjs
 // 2026-10-09 留痕：自我层自动注入（gate 1.2.2 akasha:self）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 if (tips.some((r) => r.id.startsWith('canon-self-layer-autoinject'))) { console.log('已存在，跳过'); process.exit(0); }

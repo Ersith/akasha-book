@@ -1,5 +1,5 @@
 // akasha/tools/audit-controls-20261009b.mjs —— 收窄版：只抓「强修复主张」缺证据
-import { loadStore, currentRecords, STORES, show } from '../lib.mjs';
+import { loadStore, currentRecords, STORES, show } from './lib.mjs';
 
 const STRONG = /(已修复|修复完成|修好了|已解决|已生效|修复验证|已消除|问题已解|不再复现)/;
 const EVID = /(实测|验证|回归|复跑|全绿|通过|哈希|sha|sha256|ls-remote|双跑|对拍|字节未变|字节未改|diff|校验|check|assertions|对照|反例|对照组)/i;

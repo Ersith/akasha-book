@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007k-paper-v02.mjs
 // 2026-10-07 论文 v0.2 留痕：canon-paper-v01 → r1（补 v0.2 说明）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const cur = currentRecords(loadStore('canon').records).find(r => r.id.startsWith('canon-paper-v01-20261007'));
 if (!cur) { console.log('找不到 canon-paper-v01 条'); }

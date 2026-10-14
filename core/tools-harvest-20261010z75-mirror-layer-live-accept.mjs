@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z75-mirror-layer-live-accept.mjs
 // 2026-10-10：镜像元数据 + 知识分层的 MCP 面活体验收（重启后）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-mirror-layer-knowledge'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

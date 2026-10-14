@@ -1,8 +1,8 @@
 // c1-record2.mjs —— §8 实施记录 + canon（修正引号后重跑）
 import { readFileSync, writeFileSync } from "node:fs";
-import { loadStore, currentRecords, revise } from "../lib.mjs";
+import { loadStore, currentRecords, revise } from "./lib.mjs";
 
-const OSS = "<LOCAL_PATH>";
+const OSS = "<LOCAL_PATH>\\dist\\akasha-oss";
 const P = OSS + "\\docs\\c1-c3-schedule.md";
 let doc = readFileSync(P, "utf8");
 if (!doc.includes("## 8. 实施记录")) {
@@ -17,7 +17,7 @@ if (!doc.includes("## 8. 实施记录")) {
     "",
   ].join("\n");
   writeFileSync(P, doc + block, "utf8");
-  writeFileSync("<LOCAL_PATH>", doc + block, "utf8");
+  writeFileSync("<LOCAL_PATH>\\docs\\c1-c3-schedule.md", doc + block, "utf8");
   console.log("  [plan] §8 已追加（双份）");
 } else console.log("  [plan] already");
 

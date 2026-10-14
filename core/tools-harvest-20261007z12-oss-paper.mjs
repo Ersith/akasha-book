@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007z12-oss-paper.mjs
 // 2026-10-07 留痕：开源包维护同步 + 论文 v0.5 → OSS 链 与 论文链 各追加一版。幂等。
-import { loadStore, revise, currentRecords } from '../lib.mjs';
+import { loadStore, revise, currentRecords } from './lib.mjs';
 
 const OSS_APPENDIX =
   ' **维护同步 v1（2026-10-07 晚）**：core 全量重同步（lib / akasha / mcp / sleep / test / SCHEMA + 新增 `session.mjs` / `loop-detect.mjs`，示例库口径 **77/77**）+ 插件四→五件（gate 1.2.0 / hooks 1.2.0 / sleep 1.5.1 / **session 0.2.3**，全部 selftest 绿）+ 论文 v0.5 入包 + CHECKS **R5** 复扫零禁项（模式说明改描述式写法；「苦力怕」判定保留）。插件默认值统一 `homedir()`；跨运行环境断言加固（截断帧双路信号）；**46 文件**。';

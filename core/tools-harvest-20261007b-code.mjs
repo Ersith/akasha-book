@@ -2,7 +2,7 @@
 // 2026-10-07 手工补录（用户批准·第二轮）：外部记忆系统「可依代码」——
 //   canon 1 条（代码索引）+ frontier 1 条（Letta）+ 3 条 note 修订（ACE / MIRIX / Nested Learning 补实现线索）。
 // 幂等：新增查 id；修订查「是否存在 supersedes 后继」；只追加。
-import { appendRecord, loadStore, revise } from '../lib.mjs';
+import { appendRecord, loadStore, revise } from './lib.mjs';
 
 const ADDS = [
   ['frontier', {

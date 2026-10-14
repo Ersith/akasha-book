@@ -1,7 +1,7 @@
 // akasha/tools/harvest-20261007-external.mjs
 // 2026-10-07 手工补录（用户批准）：外部记忆系统对标 —— 4 条 frontier + 1 条 canon 盘点 + 1 条 orphan 观察。
 // 幂等：已存在 id 一律跳过；只追加，不覆盖、不改写。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const RECORDS = [
   ['frontier', {

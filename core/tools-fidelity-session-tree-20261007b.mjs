@@ -3,8 +3,8 @@
 //  A. 段层保真：抽样 40 段/会话 → ptr.seq 回原档取原文 → 受保护 token 在 seg.gist+why+keywords 的保有率（钻取链真正的承诺面）
 //  B. 节点提及率：每个 L1 节点，孩子里每条 conclusion 的「信号 token」（引文/路径/数字/ASCII≥4/CJK≥3 关键词）是否在节点 gist+extra 出现 ≥1
 //  C. 节点顶结论 token 保真：每节点取权重前 3 条 conclusion，其 token 在节点文本的保有率
-import { loadStore } from '../lib.mjs';
-import { latestNodes, resolveSessionFile, readSessionArchive, SESSION_DEFAULTS } from '../session.mjs';
+import { loadStore } from './lib.mjs';
+import { latestNodes, resolveSessionFile, readSessionArchive, SESSION_DEFAULTS } from './session.mjs';
 const RECORDS = loadStore('session').records;
 const byId = new Map(RECORDS.map((r) => [r.id, r]));
 const sessions = [...new Set(RECORDS.filter((r) => r.kind !== 'node').map((r) => r.session))];

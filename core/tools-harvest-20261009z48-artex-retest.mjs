@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z48-artex-retest.mjs
 // 2026-10-09：ARTEX 复测机制实验吸收（对照纪律/三态裁决/证据版本化）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const rec = tips.find((r) => r.id.startsWith('canon-artex-study'));

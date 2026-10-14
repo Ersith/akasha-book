@@ -5,7 +5,7 @@
 
 ## 1. 沙箱与冻结（每题一致起点）
 
-- 沙箱根：`H:\Harness\_ab\`（独立于生产；**不碰** `akasha\data`、profile、OSS 仓）。
+- 沙箱根：`<LOCAL_PATH>\_ab\`（独立于生产；**不碰** `akasha\data`、profile、OSS 仓）。
 - 每题 fixture：`_ab/tasks/T<NN>/`（种子文件 + `seed.tar` + `seed.sha256`）。
 - 起点快照：`git init` 的本地仓（每题一仓），**双臂都从 `seed` 提交开始**。
 - 臂切换：

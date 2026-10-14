@@ -6,12 +6,12 @@ import { readFileSync, appendFileSync, writeFileSync, readdirSync, mkdirSync } f
 import { dirname, join } from 'node:path';
 import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
-import { ROOT, STORES, loadStore, storePath, tokenize, scoreTokens, redact, writeFileAtomic, appendRecord, retiredIds, withFileLock, validateRecord } from './lib.mjs';
+import { ROOT, STORES, loadStore, storePath, tokenize, scoreTokens, redact, writeFileAtomic, appendRecord, retiredIds, withFileLock, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary } from './lib.mjs';
 
 export const SESSION_DEFAULTS = {
   storeFile: join(ROOT, 'data', 'session.jsonl'),
   metaFile: join(ROOT, 'data', 'session-meta.json'),
-  sessionsRoot: '<LOCAL_PATH>'
+  sessionsRoot: '<LOCAL_PATH>\\official-home\\sessions'
 };
 
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
@@ -142,6 +142,18 @@ function extractKeywords(text, tools = []) {
 
 const KIND_LIMIT = { intent: 400, conclusion: 400, action: 360, process: 200 };
 
+/** 体裁隔离 P0-②（2026-10-13）：哪些段类型属「模型产出」（＝读侧剥皮对象）——
+ *  conclusion＝assistant 正文（produced-doc）· process＝思维链（thinking-raw）· node＝弧线树节点（机械摘要）。
+ *  intent（用户原话＝user-said）与 action（工具/外部记录）**不剥**（错标/误剥哨兵）。 */
+const SEG_STRIP_KINDS = new Set(['conclusion', 'process', 'node']);
+
+// ── 脚手架过滤（2026-10-11 立；2026-10-11 深夜**前移到索引时**）──
+// 原只用于"主题推断"，但索引侧同样中招：宿主的注入块（<system-reminder>、<hindsight_knowledge>、
+// runtime context、库脉脉冲行、【起床包】、[坑前提示]…）会作为 `user/message` 落进 intent 段
+// ⇒ 框架注入污染检索与主题统计。故本常量提到模块级、**生成意图段时一并过滤**（DRY，一处定义两处用）。
+// 口径：**只影响派生索引**（session.jsonl），**原始会话日志一字不动** ✓（索引可重建，原文即真源）。
+export const SCAFFOLD_RE = /<system-reminder>|<hindsight_knowledge|<openviking-context|Current runtime context|【阿卡夏·起床包】|阿卡夏·睡眠：|阿卡夏·库脉搏|阿卡夏·称呼：|小阿卡夏·会话层：|\[极限观测|\[约定\]|\[坑前提示|<memory uri=|This is an automatically generated checkpoint/;
+
 /** 轻量内容指纹（djb2 → 8 hex）：同内容幂等、变内容追加新版（F2 漂移修复；不引 crypto）。 */
 function fp8(s) {
   let h = 5381;
@@ -158,6 +170,8 @@ function makeSeg(sid, sid8, { seq, time, turn, step, kind, gist, why, keywords, 
     turn: Number.isInteger(turn) ? turn : null,
     step: Number.isInteger(step) ? step : null,
     kind,
+    // ⚠️ 索引写入路径**必须**脱敏（2026-10-11 手检实证：intent 路径曾绕过本函数 ⇒ 真 npm token 明文落进 session.jsonl ✗）。
+    //    凡在此之外内联构造段的地方，gist 同样要套 redact（见下方三处）✓
     gist: redact(cut(cleanText(gist), KIND_LIMIT[kind] ?? 400))
   };
   if (why) rec.why = redact(cut(cleanText(why), 120));
@@ -173,13 +187,22 @@ const contentText = (content) =>
 
 /** 记录数组 → 段数组（纯函数；v0.1 机械启发式）。段序：assistant 内 conclusion 先、process 后。
  *  emitFrom：**配对/状态按传入的全量记录维护**（修复「中途索引切批 → 调用与结果分属两批」的漏配），
- *  但只输出「须新产出」的段：结果 seq（或未配对调用的 call seq）> emitFrom。emitFrom=0 ⇒ 全量输出（--full 重建）。 */
-export function extractSegments(records, { session, emitFrom = 0 } = {}) {
+ *  但只输出「须新产出」的段：emitFrom=0 ⇒ 全量输出（--full 重建）。判定按下面两条**明确规则**（2026-10-12 二次复查同步注释）：
+ *    ① 未配对冲刷（pending 残余）：`callSeq > emitFrom` **且** `callSeq ∉ recordedUnpaired`（后者防全量重建重复冲刷，靠 id 去重是最后兜底而非唯一防线）；
+ *    ② 配对完成版：`resultSeq > emitFrom` **或** `callSeq ∉ completedCallSeqs`（后者即「迟到结果补发」修复，见下）。
+ *  completedCallSeqs（2026-10-12 配对 emit 门修复）：库中**已有完成版**的 ptr.callSeq 集合。
+ *  修复的洞：冲刷推进水位后，迟到结果（seq ≤ emitFrom）此前被整条吞掉 ⇒ **完成版永不落库**（注释「结果后到 → 走完成版」与实现不符）。
+ *  修法（消除闸门、不绕幂等）：结果配对成功且 `callSeq ∉ completedCallSeqs` ⇒ **强制 emit**（与 emitFrom 无关）；已在集内 ⇒ 照旧跳过（靠 id 去重兜底）。 */
+export function extractSegments(records, { session, emitFrom = 0, completedCallSeqs = null, recordedUnpaired = null } = {}) {
   const sid = String(session ?? 'unknown');
   const sid8 = sid.slice(0, 8);
   const out = [];
   const pending = new Map();
   const lastReasoning = new Map();
+  const doneSet = completedCallSeqs && typeof completedCallSeqs.has === 'function' ? completedCallSeqs : null;
+  const unpairedSet = recordedUnpaired && typeof recordedUnpaired.has === 'function' ? recordedUnpaired : null;
+  // 迟到结果是否值得补发：配对成功且库中尚无完成版 ⇒ 强制 emit（消除「水位推进吞掉结果」的闸门；幂等靠 id 去重）。
+  const emitPair = (rSeq, callSeq) => (rSeq > emitFrom || (doneSet != null && !doneSet.has(callSeq)));
   const list = Array.isArray(records) ? records : [];
   list.forEach((rec, i) => {
     if (!rec || typeof rec !== 'object') return;
@@ -190,14 +213,15 @@ export function extractSegments(records, { session, emitFrom = 0 } = {}) {
     const step = d.step ?? null;
     if (rec.type === 'user/message') {
       const text = contentText(d.content);
-      if (text && seq > emitFrom) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'intent', gist: text, keywords: extractKeywords(text), ptr: { seq } }));
+      // 脚手架过滤（2026-10-11 深夜修）：注入块不是用户意图 ⇒ 不生成 intent 段（详见 SCAFFOLD_RE 注释）。
+      if (text && seq > emitFrom && !SCAFFOLD_RE.test(text)) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'intent', gist: redact(text), keywords: extractKeywords(text), ptr: { seq } }));
     } else if (rec.type === 'assistant/message') {
       const items = Array.isArray(d.message?.content) ? d.message.content : [];
       const textItem = items.find((x) => x && x.type === 'text' && typeof x.text === 'string');
       const reasoningItem = items.find((x) => x && (x.type === 'reasoning' || x.type === 'thinking') && typeof x.text === 'string');
       if (reasoningItem) lastReasoning.set(`${turn}:${step}`, firstLine(reasoningItem.text));
-      if (textItem && seq > emitFrom) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'conclusion', gist: textItem.text, keywords: extractKeywords(textItem.text), ptr: { seq } }));
-      if (reasoningItem && seq > emitFrom) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'process', gist: reasoningItem.text, keywords: extractKeywords(reasoningItem.text), ptr: { seq } }));
+      if (textItem && seq > emitFrom) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'conclusion', gist: redact(textItem.text), keywords: extractKeywords(textItem.text), ptr: { seq } }));
+      if (reasoningItem && seq > emitFrom) out.push(makeSeg(sid, sid8, { seq, time, turn, step, kind: 'process', gist: redact(reasoningItem.text), keywords: extractKeywords(reasoningItem.text), ptr: { seq } }));
     } else if (rec.type === 'tool/call') {
       const callId = d.callId ?? `seq-${seq}`;
       pending.set(callId, { seq, time, turn, step, name: String(d.name ?? '?'), args: String(d.arguments ?? '') });
@@ -206,7 +230,7 @@ export function extractSegments(records, { session, emitFrom = 0 } = {}) {
       const p = callId ? pending.get(callId) : null;
       if (p) {
         pending.delete(callId);
-        if (seq > emitFrom) {
+        if (emitPair(seq, p.seq)) {
           const resultText = contentText(d.content) || contentText(d.message?.content);
           const why = lastReasoning.get(`${p.turn}:${p.step}`) ?? '';
           const gist = `${p.name}：${cut(cleanText(p.args), 120)} ↳ ${cut(cleanText(resultText), 160)}`;
@@ -216,7 +240,8 @@ export function extractSegments(records, { session, emitFrom = 0 } = {}) {
     }
   });
   for (const p of pending.values()) {
-    if (p.seq <= emitFrom) continue; // 旧批未配对不再重复冲刷（其残更早已留档；结果后到 → 走完成版）
+    if (p.seq <= emitFrom) continue;                                   // 旧批未配对不再重复冲刷（其残更早已留档）
+    if (unpairedSet != null && unpairedSet.has(p.seq)) continue;        // 已有「（无结果）」记录 ⇒ 不重复冲刷（全量重建友好，见函数头②）
     const why = lastReasoning.get(`${p.turn}:${p.step}`) ?? '';
     const gist = `${p.name}：${cut(cleanText(p.args), 120)}（无结果）`;
     out.push(makeSeg(sid, sid8, { seq: p.seq, time: p.time, turn: p.turn, step: p.step, kind: 'action', gist, why, keywords: extractKeywords(gist + ' ' + p.args, [p.name]), tools: [p.name], ptr: { seq: p.seq, callSeq: p.seq } }));
@@ -262,8 +287,18 @@ export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.store
     let maxSeq = lastSeq;
     records.forEach((rec, i) => { const seq = seqOf(rec, i); if (seq > maxSeq) maxSeq = seq; });
     // 配对按「全量记录」维护（修复中途索引切批的漏配）；产出只取新：emitFrom=lastSeq（--full 时 0）。
-    const segs = extractSegments(records, { session: sid, emitFrom: full ? 0 : lastSeq });
-    const existing = new Set(loadStore('session', storeFile).records.map((r) => r.id));
+    // 已完成集合（2026-10-12 emit 门修复）：库中已有完成版（gist 含 ↳）的 callSeq —— 修复「水位推进后迟到结果被吞」。
+    const inStore = loadStore('session', storeFile).records;
+    const completedCallSeqs = new Set(
+      inStore.filter((r) => r.kind === 'action' && String(r.gist ?? '').includes('↳') && Number.isInteger(r.ptr?.callSeq))
+        .map((r) => r.ptr.callSeq)
+    );
+    const recordedUnpaired = new Set(
+      inStore.filter((r) => r.kind === 'action' && r.session === sid && String(r.gist ?? '').includes('（无结果）') && Number.isInteger(r.ptr?.callSeq))
+        .map((r) => r.ptr.callSeq)
+    );
+    const segs = extractSegments(records, { session: sid, emitFrom: full ? 0 : lastSeq, completedCallSeqs, recordedUnpaired });
+    const existing = new Set(inStore.map((r) => r.id));
     const incoming = segs.filter((x) => !existing.has(x.id));
     const skipped = segs.length - incoming.length;
     appendSegments(storeFile, incoming);
@@ -319,20 +354,22 @@ export function lookupSegments(query, opts = {}) {
 
 /** (a) 带覆盖度的会话层检索（2026-10-11）：返回 {hits, matched, sessionTotal, offset, nextOffset, exhausted}
  *  —— matched = 主题相关段总数（裁剪前），sessionTotal = 本次作用域内段总数（用户可据此知道自己看了多少）。 */
-export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, limit = 10, offset = 0, level, all = false, storeRecords = null } = {}) {
+export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.storeFile, session, kind, since, until, includeProcess = false, rawProcess = false, doseThreshold, longSessionSegs, limit = 10, offset = 0, level, all = false, storeRecords = null } = {}) {
+  // 体裁隔离 P0-①（2026-10-13）：`rawProcess` ＝**反思通道**（显式要过程）——含过程段、且**不剥皮**（§4.7 原则 3）。
+  const incProcess = includeProcess || rawProcess;
   const q = String(query ?? '').trim();
   if (!q) return { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true };
   const tokens = tokenize(q);
   if (!tokens.length) return { hits: [], matched: 0, sessionTotal: 0, offset: 0, nextOffset: 0, exhausted: true };
   // (1) 2026-10-11：**默认面只给 conclusion + intent**——实测发现动作段（646 条）gist 是工具调用参数，
   //     排到结论前会把"我调过什么"误读成"我们想过什么"。要动作/节点/过程须显式指定（kind / level / --actions）。
-  const SEG_KINDS = ['intent', 'action', 'conclusion', ...(includeProcess ? ['process'] : [])];
+  const SEG_KINDS = ['intent', 'action', 'conclusion', ...(incProcess ? ['process'] : [])];
   let kinds;
   if (kind != null) kinds = (Array.isArray(kind) ? kind : String(kind).split(',')).map((x) => String(x).trim()).filter(Boolean);
   else if (level === 'nodes') kinds = ['node'];
   else if (level === 'segs') kinds = SEG_KINDS;
   else if (all) kinds = [...SEG_KINDS, 'node'];          // all=true＝看历史全貌，回宽面（与"不做版本归并"同义）
-  else kinds = ['conclusion', 'intent', 'node', ...(includeProcess ? ['process'] : [])];   // 默认：结论+意图+节点；process 仍须显式（includeProcess）
+  else kinds = ['conclusion', 'intent', 'node', ...(incProcess ? ['process'] : [])];   // 默认：结论+意图+节点；process 仍须显式（includeProcess / rawProcess）
   const records = loadStore('session', storeFile).records;
   const sess = resolveSessionPrefix(records, session);
   const view = all ? records : collapseActionVersions(records);
@@ -363,6 +400,8 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
     if (sc.score <= 0) continue;
     const score = sc.score;
     const weight = score + (r.kind === 'conclusion' ? 1.0 : 0);
+    // 体裁隔离（2026-10-13）：读侧剥皮（P0-②）与剂量闸（P1-③）统一在**排序后**做——
+    //   ⚠ 实测教训：先在构造时剥皮 ⇒ 剂量闸拿到的是已剥文本 ⇒ 负荷恒 0（哑闸）。剂量必须按**原文**计。
     const hit = { id: r.id, session: r.session, seq: r.seq, time: r.kind === 'node' ? (r.time_from ?? '') : r.time, turn: r.turn ?? null, step: r.step ?? null, kind: r.kind, score: +score.toFixed(3), strong: sc.whole >= 1, weight: +weight.toFixed(3), gist: r.gist };
     if (r.kind === 'node') {
       hit.level = r.level;
@@ -378,6 +417,19 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
     scopeTotal += 1;
   }
   const matched = hits.length;
+  // I-11 P0-①（2026-10-13）：过程段默认不回放——默认面只报「存在 N 段过程记录」+ 调取指引（**给指针、不给原文**）。
+  let withheldProcess = 0;
+  if (!incProcess) {
+    for (const r of view) {
+      if (r.kind !== 'process') continue;
+      if (sess && r.session !== sess) continue;
+      if (since || until) { const day = String(r.time || '').slice(0, 10); if (!day || (since && day < String(since).slice(0, 10)) || (until && day > String(until).slice(0, 10))) continue; }
+      const gistL = String(r.gist ?? '').toLowerCase();
+      const extraKeywords = (r.keywords ?? []).filter((k) => !gistL.includes(String(k).toLowerCase()));
+      const hay = [r.gist, r.extra, r.why, extraKeywords.join(' ')].filter(Boolean).join(' ').toLowerCase();
+      if (scoreTokens(hay, tokens).score > 0) withheldProcess += 1;
+    }
+  }
   const off = Math.max(0, Math.floor(offset) || 0);
   const rankedAll = hits.sort((a, b) => b.weight - a.weight || a.seq - b.seq);
   const ranked = rankedAll.slice(off, off + limit);
@@ -404,8 +456,28 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
       if (list && list.length) h.promoted_to = list.map((x) => ({ store: x.store, id: x.id, retired: isRetired(x.store, x.id) }));
     }
   }
+  // I-12 P1-③/P1-④（2026-10-13）：**剂量闸**（按**原文**计负荷）+ **任务门控（长会话自动收紧）**；随后做 P0-② 剥皮。
+  //   顺序纪律：**先计负荷、后剥皮/摘要**——反过来会把负荷算成 0（哑闸，当日实测教训）。
+  let dose = null;
+  const longSegs = Number.isInteger(longSessionSegs) ? longSessionSegs : GENRE_DOSE_DEFAULTS.longSessionSegs;
+  const scopedSegCount = records.filter((r) => r.kind !== 'promotion' && (!sess || r.session === sess)).length;
+  const autoStrict = !!sess && scopedSegCount >= longSegs;
+  const doseTh = Number.isInteger(doseThreshold) ? doseThreshold : (autoStrict ? GENRE_DOSE_DEFAULTS.strictThreshold : GENRE_DOSE_DEFAULTS.threshold);
+  const dg = (!rawProcess && doseTh > 0 && ranked.length) ? doseGate(ranked.map((h) => h.gist), { threshold: doseTh }) : null;
+  for (let i = 0; i < ranked.length; i += 1) {
+    const over = !!dg && dg.cutoff !== null && i >= dg.cutoff;
+    // P0-②：`conclusion`/`process`/`node`（模型产出）剥；`intent`（用户原话）/`action`（工具记录）不剥；反思通道全不剥。
+    const base = rawProcess ? ranked[i].gist : (SEG_STRIP_KINDS.has(ranked[i].kind) ? stripGenre(String(ranked[i].gist ?? '')) : ranked[i].gist);
+    ranked[i] = over ? { ...ranked[i], gist: doseSummary(base), dose: true } : { ...ranked[i], gist: base };
+  }
+  if (dg && dg.cutoff !== null) dose = { threshold: doseTh, total: dg.total, from: dg.cutoff, trimmed: ranked.length - dg.cutoff, strict: autoStrict };
   const nextOffset = off + ranked.length;
-  return { hits: ranked, matched, sessionTotal: scopeTotal, offset: off, nextOffset, exhausted: nextOffset >= matched };
+  return {
+    hits: ranked, matched, sessionTotal: scopeTotal, offset: off, nextOffset, exhausted: nextOffset >= matched,
+    reflect: rawProcess,
+    dose,
+    withheld: withheldProcess ? { process: withheldProcess, hint: `存在 ${withheldProcess} 段过程记录（默认不回放）；--raw-process 可调取原文（反思通道，不剥皮）` } : null
+  };
 }
 
 /** 薄封装：解析会话名前缀（供 renderSessionContext / sessionClusters 用）。 */
@@ -421,9 +493,10 @@ export function sessionClusters({ storeFile = SESSION_DEFAULTS.storeFile, sessio
   const allRecords = loadStore('session', storeFile).records;
   const sess = resolvedSess(allRecords, session);
   const kinds = source === 'intent' ? ['intent'] : (source === 'conclusion' ? ['conclusion'] : ['intent', 'conclusion']);
-  // 脚手架过滤（2026-10-11 实测）：intent 段里混着系统提示/注入块（<system-reminder>、<hindsight_knowledge>、
-  // 【起床包】、runtime context…）——那是脚手架不是对话，会把簇带成 prompt/memory/search。
-  const SCAFFOLD = /<system-reminder>|<hindsight_knowledge|<openviking-context|Current runtime context|【阿卡夏·起床包】|阿卡夏·睡眠：|阿卡夏·库脉搏|阿卡夏·称呼：|小阿卡夏·会话层：|\[极限观测|\[约定\]|\[坑前提示|<memory uri=|This is an automatically generated checkpoint/;
+  // 脚手架过滤（2026-10-11 实测；2026-10-11 深夜**常量已提到模块级** SCAFFOLD_RE，索引侧同用 ⇒ 一处定义两处用）：
+  // intent 段里混着系统提示/注入块（<system-reminder>、<hindsight_knowledge>、【起床包】、runtime context…）
+  // ——那是脚手架不是对话，会把簇带成 prompt/memory/search。
+  const SCAFFOLD = SCAFFOLD_RE;
   const allScoped = allRecords.filter((r) => kinds.includes(r.kind) && (!sess || r.session === sess));
   const recs = allScoped.filter((r) => !SCAFFOLD.test(String(r.gist || '')));
   const skippedScaffold = allScoped.length - recs.length;
@@ -631,9 +704,10 @@ export function renderSessionContext({ storeFile = SESSION_DEFAULTS.storeFile, s
   let pack = '';
   const packParts = [];
   for (let i = conclusions.length - 1; i >= 0; i--) {
-    const piece = '；' + String(conclusions[i].gist).slice(0, 140);
+    // I-11 P0-②（2026-10-13）：上下文装载面同属读侧渲染 ⇒ 结论段剥皮（⇒→→ / ✓ 删 / 好。→。）；剥后再按预算切。
+    const piece = '；' + stripGenre(String(conclusions[i].gist)).slice(0, 140);
     if (used() + piece.length > budget) break;
-    packParts.unshift(String(conclusions[i].gist).slice(0, 140));
+    packParts.unshift(stripGenre(String(conclusions[i].gist)).slice(0, 140));
     pack = packParts.length ? '；最近结论：' + packParts.join('；') : '';
     if (used() >= budget) break;
   }
@@ -726,7 +800,7 @@ function pickNodeText(items, cap) {
 const NODE_EXTRA_CAP = 1200;
 
 /** 机械切块 + 递归聚合（纯函数式：只读 store；写盘用 appendNodes）。切块＝按 turn 边界每 chunkTurns 个 turn 一块。 */
-export function buildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, chunkTurns = 8, fanout = 4 } = {}) {
+export function buildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, chunkTurns = 8, segCap = 40, fanout = 4 } = {}) {
   const sid = String(session ?? 'unknown');
   const sid8 = sid.slice(0, 8);
   const seen = new Set();
@@ -743,7 +817,11 @@ export function buildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, chu
   let turnsIn = new Set();
   for (const s of segs) {
     const t = Number.isInteger(s.turn) ? s.turn : null;
-    if (cur.length && t !== null && !turnsIn.has(t) && turnsIn.size >= chunkTurns) {
+    // 两种切法：① 跨 chunkTurns 轮换块（原有）；② **单块段数上限 segCap**（2026-10-12 调参补）——
+    //   超长 turn（实测有 1000+ 段/轮）会把 ① 憋成巨型块，② 兜底保证节点粒度。
+    const turnBreak = cur.length && t !== null && !turnsIn.has(t) && turnsIn.size >= chunkTurns;
+    const capBreak = segCap > 0 && cur.length >= segCap;
+    if (turnBreak || capBreak) {
       chunks.push(cur);
       cur = [];
       turnsIn = new Set();
@@ -803,6 +881,47 @@ export function buildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, chu
   return { treegen: now > prevGen ? now : prevGen + 1, nodes };
 }
 
+/** 弧线树 v0.3 · 自动建树（2026-10-12；用户令「弧线树搞下吧」）。
+ *  三条纪律（ARTEX 移植要点，机械实现、无 LLM）：
+ *   ① **签名未变即复用**——指纹 =（段数, 最大 seq）；新代节点自身带 `treeFingerprint`（不新增元数据档）；一致 ⇒ 直接返回不重跑。
+ *   ② **复活段不折叠**——新段（seq > 上代最大 seq）永归新一代「热」层：上代节点原地留档（append-only），新代覆盖含新段的区间。
+ *   ③ **无损可展开**——节点带 `children` + `ptr`，全保真仍走 ptr 回原档（既有语义不变）。
+ *  节流：`minIntervalMs`（默认 10 分钟）内不重复建（lastBuildAt 由上代节点的 latestSeq 推得）。 */
+export function autoBuildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, minIntervalMs = 600000, force = false, chunkTurns = 8, fanout = 4 } = {}) {
+  const sid = String(session ?? 'unknown');
+  const all = loadStore('session', storeFile).records;
+  const segs = [];
+  const seen = new Set();
+  for (const r of all) {
+    if (r.session !== sid || r.kind === 'node' || seen.has(r.id)) continue;
+    seen.add(r.id);
+    segs.push(r);
+  }
+  const segCount = segs.length;
+  const latestSeq = segs.reduce((m, r) => Math.max(m, Number(r.seq) || 0), 0);
+  const nodeRecs = all.filter((r) => r.kind === 'node' && r.session === sid);
+  const latestGen = nodeRecs.reduce((m, r) => Math.max(m, Number(r.treegen) || 0), 0);
+  const curNodes = nodeRecs.filter((r) => (Number(r.treegen) || 0) === latestGen);
+  const curFp = curNodes.length ? (curNodes[0].treeFingerprint ?? null) : null;
+  const fp = { segCount, latestSeq };
+  if (!force) {
+    if (curNodes.length && curFp && curFp.segCount === segCount && curFp.latestSeq === latestSeq) {
+      return { built: false, reason: 'fingerprint-unchanged', treegen: latestGen, segCount, latestSeq, nodes: curNodes.length };
+    }
+    if (curNodes.length && minIntervalMs > 0) {
+      const builtAt = curNodes.reduce((m, r) => Math.max(m, Date.parse(String(r.logged_at ?? '')) || 0), 0);
+      if (builtAt && Date.now() - builtAt < minIntervalMs) {
+        return { built: false, reason: 'throttled', treegen: latestGen, segCount, latestSeq, nodes: curNodes.length, nextEligibleInMs: minIntervalMs - (Date.now() - builtAt) };
+      }
+    }
+  }
+  if (!segCount) return { built: false, reason: 'no-segments', treegen: latestGen, segCount: 0, latestSeq: 0, nodes: 0 };
+  const { treegen, nodes } = buildTree({ session: sid, storeFile, chunkTurns, fanout });
+  const stamped = nodes.map((n) => ({ ...n, treeFingerprint: fp }));   // ① 签名挂在节点上（自描述，无需新档）
+  appendNodes(storeFile, stamped, treegen);
+  return { built: true, reason: 'built', treegen, segCount, latestSeq, nodes: stamped.length };
+}
+
 /** 节点批量追加（append-only；整批带 treegen 代际标记）。 */
 export function appendNodes(storeFile, nodes, treegen) {
   mkdirSync(dirname(storeFile), { recursive: true });
@@ -839,7 +958,7 @@ export function renderTree(storeFile, session) {
   for (const lv of levels) {
     lines.push(`L${lv}：`);
     for (const n of nodes.filter((x) => x.level === lv)) {
-      lines.push(`  - ${n.id} [${String(n.time_from).slice(0, 16)} → ${String(n.time_to).slice(0, 16)}] ${String(n.gist).slice(0, 80)}`);
+      lines.push(`  - ${n.id} [${String(n.time_from).slice(0, 16)} → ${String(n.time_to).slice(0, 16)}] ${stripGenre(String(n.gist)).slice(0, 80)}`);   // I-11 P0-②：节点 gist 同属读侧渲染
     }
   }
   lines.push('细节：session node <id>；检索：session lookup <词> --level nodes');

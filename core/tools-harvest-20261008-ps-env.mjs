@@ -1,7 +1,7 @@
 // 2026-10-08：两条环境级坑的 canon（今晚在写库与重训时各踩一次，均可复现）。
 // 写入走 lib.appendRecord（与 CLI add 同一校验）；幂等：已存在同 id 跳过。
 // 注意：本文件本身就踩了它描述的第一个坑——所以内容全部写在文件里，不经命令行参数传递。
-import { appendRecord, loadStore, currentRecords, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, allIds } from './lib.mjs';
 
 const RECORDS = [
   {

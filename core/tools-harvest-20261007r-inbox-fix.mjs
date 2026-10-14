@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007r-inbox-fix.mjs
 // 2026-10-07 留痕：orphan-muxr1cs2 → r2（inbox 消费记账修复完成）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const cur = currentRecords(loadStore('orphan').records).find(r => r.id.startsWith('orphan-muxr1cs2'));
 if (!cur) console.log('找不到 orphan-muxr1cs2（current）');

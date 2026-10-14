@@ -6,16 +6,30 @@ import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 
 import { execFileSync } from 'node:child_process';
 
 const LIVE = '<AKASHA_DIR>';
-const OSS_CORE = '<LOCAL_PATH>';
+const OSS_CORE = '<LOCAL_PATH>/dist/akasha-oss/core';
 const NODE = '<DSH_INSTALL>';
 
 // 固定清单：源码 + 文档（不含 data/，数据由 sync-data-to-oss.mjs 专管）
-const FILES = ['lib.mjs', 'session.mjs', 'sleep.mjs', 'akasha.mjs', 'mcp.mjs', 'test.mjs', 'SCHEMA.md', 'PROTOCOL.md', 'MEMORY-TEST.md', 'CHECKS.md'];
+const FILES = ['lib.mjs', 'session.mjs', 'sleep.mjs', 'akasha.mjs', 'mcp.mjs', 'test.mjs', 'loop-detect.mjs', 'SCHEMA.md', 'PROTOCOL.md', 'MEMORY-TEST.md', 'CHECKS.md'];
 
 const MAP = [
   [/\.\.\/dsh-akasha-([a-z]+)\//g, '../plugins/akasha-$1/'],
   [/'dsh-mcp-akasha\//g, "'plugins/mcp-akasha/"],
   [/\.\.\/akasha\//g, '../../core/'],
+  // 2026-10-14 · R6 补：旧映射对「转义变体 / 裸路径 / @local」覆盖不全（首扫 53 文件残留）——按长→短补齐
+  [/@local\//g, '@akasha-book/'],
+  [/"\.\/tools\/([a-z0-9-]+)\.mjs"/g, '"./tools-$1.mjs"'],       // 2026-10-14 R30：仓内 tools 扁平命名（tools-*.mjs）——import 须同步改写（test.mjs → tools/checker-selftest.mjs 曾因此跑不起来）
+  [/'\.\/tools\/([a-z0-9-]+)\.mjs'/g, "'./tools-$1.mjs'"],
+  [/'\.\.\/tools\/([a-z0-9-]+)\.mjs'/g, "'./tools-$1.mjs'"],
+  [/"\.\.\/tools\/([a-z0-9-]+)\.mjs"/g, '"./tools-$1.mjs"'],
+  [/(from\s+['"])\.\.\/(lib|session|sleep|mcp|loop-detect)\.mjs(['"])/g, '$1./$2.mjs$3'],   // 扁平化后同目录引用（tools-X.mjs 的 '../lib.mjs' → './lib.mjs'）
+  [/([A-Za-z]):[\\]{1,4}Harness[\\]{1,4}akasha/g, '<AKASHA_DIR>'],
+  [/([A-Za-z]):[\\/]+Harness[\\/]+akasha/g, '<AKASHA_DIR>'],
+  [/([A-Za-z]):[\\]{1,4}DSHHarness([\\]{1,4}[^\s"'`)?]*)?/g, '<DSH_INSTALL>'],
+  [/([A-Za-z]):[\\/]+DSHHarness([\\/][^\s"'`)?]*)?/g, '<DSH_INSTALL>'],
+  [/([A-Za-z]):[\\]{1,4}Harness/g, '<LOCAL_PATH>'],
+  [/([A-Za-z]):[\\/]+Harness/g, '<LOCAL_PATH>'],
+  [/[A-Za-z]:[\\/]+个人资料整理_[0-9]+[^\s"'`)?]*/g, '<LOCAL_PATH>'],
   [/[A-Za-z]:[\\/]+Harness[\\/]+akasha/g, '<AKASHA_DIR>'],
   [/[A-Za-z]:[\\/]+Harness[\\/]+dsh-akasha-([a-z]+)/g, '<AKASHA_DIR>/../plugins/akasha-$1'],
   [/[A-Za-z]:[\\/]+Harness[\\/]+dsh-mcp-akasha/g, '<AKASHA_DIR>/../plugins/mcp-akasha'],

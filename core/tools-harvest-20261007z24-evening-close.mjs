@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007z24-evening-close.mjs
 // 2026-10-07 留痕：当晚「外部评估 → 三档修复」里程碑收口（代码+文档+记忆+canon）。幂等。
-import { loadStore, appendRecord } from '../lib.mjs';
+import { loadStore, appendRecord } from './lib.mjs';
 
 const CID = 'canon-external-eval-delivery-20261007';
 if (loadStore('canon').records.some((r) => r.id === CID)) { console.log('已存在，跳过：' + CID); }

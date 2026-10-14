@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z67-a1-live-first.mjs
 // 2026-10-10：A1 首次活体生效记录（修正"现库休眠"表述）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-rank-a1-loadbalance'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

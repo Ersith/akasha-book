@@ -11,7 +11,7 @@
 //   · 可预防漏召 = recallSignals 的 preventable 口径（回合级）；会话级另算
 //   · 矛盾式漏召（H5 候选）= 会话层 gist 命中「更正/恰恰相反/我错了/已纠正」等更正语（**候选，须人工复核**）
 import { readFileSync } from "node:fs";
-import { recallSignals, RECALL_TRAP_MAP, sessionKeyOf } from "../lib.mjs";
+import { recallSignals, RECALL_TRAP_MAP, sessionKeyOf } from "./lib.mjs";
 
 const LOG = "<AKASHA_DIR>\\logs\\hooks.jsonl";
 const SESS = "<AKASHA_DIR>\\data\\session.jsonl";

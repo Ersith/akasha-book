@@ -1,5 +1,5 @@
 // 2026-10-08：全库体检结论 + 不变式常驻门 —— 留痕入户（用户要求「保险起见整个阿卡夏之书再看看」）。
-import { appendRecord, loadStore, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, allIds } from './lib.mjs';
 
 const REC = {
   id: 'canon-akasha-wholelib-audit-20261008',

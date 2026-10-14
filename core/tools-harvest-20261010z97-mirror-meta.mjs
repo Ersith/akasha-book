@@ -1,5 +1,5 @@
 // akasha/tools/harvest-20261010z97-mirror-meta.mjs —— 给 10 条镜像补 era/context/evidence/patterns（幂等）
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 // 逐条判断：evidence＝own-log（我们自己的实战）| story（典故/教材）；era＝事件月份或"典故"；context＝场景类；patterns＝可复用模式
 const TABLE = {

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z43-social-learning-r4.mjs
 // 2026-10-09 补档：出处澄清 + 人类优先级排序 + 记录缺口说明。幂等（守卫用追加文本原句）。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const rec = tips.find((r) => r.id.startsWith('canon-social-learning-v1'));

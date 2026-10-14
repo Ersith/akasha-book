@@ -2,9 +2,9 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS } from './lib.mjs';
-import { replayHistory, sleepPlan, sleepRun } from './sleep.mjs';
-import { indexSession, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, buildTopics, lookupTopics, appendSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
+import { checkAll, detectConflicts, multiRecall, rollbackBatch, memoryDiff, conflictReport, stripGenre, autonomyReadings, expandRecord, assertDataRoot, recordRejected, listRejected, blindspotsFor, progressiveRecall, calibrationOf, generationInfo, committedOf, blindspotMap, renderDiscipline, verifyDiscipline, STORES, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS, reviewPack, appendReviewLog, readReviewLog, nowSnapshot } from './lib.mjs';
+import { applyPlan, replayHistory, revokePlan, sleepPlan, sleepRun } from './sleep.mjs';
+import { indexSession, autoBuildTree, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, buildTopics, lookupTopics, appendSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -21,9 +21,27 @@ const asJson = !!flags.json;
 const print = (obj, human) => console.log(asJson ? JSON.stringify(obj, null, 2) : human);
 
 let code = 0;
+// #36 fail-loud（2026-10-12 窗口 5）：启动即验数据根；读命令不得在坏根上「装健康」。
+// 例外：init/doctor 类自举命令不验（它们就是用来修根的）；其余在读库前先验。
+if (!['init', 'doctor'].includes(cmd)) {
+  try { assertDataRoot(); }
+  catch (e) { console.error('阿卡夏：' + e.message); process.exit(2); }
+}
+
 switch (cmd) {
   case 'check': {
     const r = checkAll();
+    // #18 冲突检测（2026-10-12）：`check --conflicts` 附加「同题并存候选」——只提示不裁决。
+    if (flags.conflicts) {
+      const recs = {};
+      for (const s of STORES) recs[s] = currentRecords(loadStore(s).records);
+      const pairs = detectConflicts(recs);
+      console.log('冲突候选（只提示不裁决）：' + pairs.length + ' 对');
+      for (const p of pairs.slice(0, Number(flags.conflicts) > 0 ? Number(flags.conflicts) : 12)) {
+        console.log('  [' + p.store + '] ' + (p.a ?? '（截断占位）') + ' × ' + (p.b ?? '') + (p.ratio ? '  ratio ' + p.ratio + ' · 共享 ' + JSON.stringify(p.common) : '') + (p.note ? '  — ' + p.note : ''));
+      }
+      if (pairs.length > 12) console.log('  …（按质量排序，只显示前 12 对；全文用 --conflicts N 或 --json）');
+    }
     print(r, r.ok
       ? 'OK — ' + Object.entries(r.stores).map(([k, v]) => `${k} ${v.ok}/${v.total}`).join('，')
       : 'FAIL：\n' + r.errors.map(e => '  [' + e.store + '] ' + JSON.stringify(e.errors || e.error)).join('\n'));
@@ -36,14 +54,31 @@ switch (cmd) {
     break;
   }
   case 'lookup': {
-    if (flags.all) { console.error('六库 lookup 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
+    if (flags.all) { console.error('六库 lookup 没有 --all（那是会话层动作段并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
     const rSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: null };
     const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
     if (!rSel.ok || !rUnt.ok) { console.error(rSel.error || rUnt.error); code = 1; break; }
     const __paging = { offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined };
-    const { hits, stats, knowledge, budget } = lookupDetailed(rest.join(' '), { since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, ...__paging });
+    const recallMode = !!flags.recall;   // #7 多路召回 + RRF（2026-10-12 窗口 3；默认关，行为与并前一致）
+    const perspective = flags.perspective ? String(flags.perspective) : undefined;   // #37（窗口 5）：world|experience
+    if (perspective && !['world', 'experience'].includes(perspective)) { console.error('--perspective 须为 world|experience'); code = 1; break; }
+    const __doseTh = Number.isFinite(Number(flags['dose-threshold'])) ? Number(flags['dose-threshold']) : undefined;   // I-12 P1-③：0=关闸
+    const { hits, stats, knowledge, budget, rrf, trace, dose } = recallMode
+      ? multiRecall(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, doseThreshold: __doseTh, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, ...__paging })
+      : lookupDetailed(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, doseThreshold: __doseTh, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, perspective, ...__paging });
     const tierOf = (h) => (h.displayTier ? ' ' + h.displayTier : '') + (h.stale ? ' 待复核' : '') + (h.refuted ? ' refuted' : '');
-    const lines = hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score})${tierOf(h)}${h.undated ? ' [未定年]' : ''} ${h.snippet}`) : ['（无结果）'];
+    // #35 --trace（2026-10-12 窗口 5）：逐条列出计分零件（可审、可复核、可 A/B）。
+    const renderTrace = (t) => [
+      `${t.strong ? '强' : '弱'} ${t.store} ${t.id}`,
+      `  score=${t.score} rank=${t.rank} tier=${t.tier ?? '—'}${t.displayTier && t.displayTier !== t.tier ? '（展示 ' + t.displayTier + '）' : ''}${t.stale ? ' 待复核' : ''}${t.zeroWeight ? ' 零权重' : ''}`,
+      `  severity=${t.severity ?? '—'} complexity=${t.complexity ?? '—'} factor=${t.factor ?? '—'}${t.factorApplied ? '' : '（未乘：孤案/零权重）'} balance=${t.balance?.enabled ? 'on ' + JSON.stringify(t.balance) : 'off'}`
+    ].join('\n');
+    if (flags.trace && Array.isArray(trace)) {
+      print(trace, ['命中 ' + hits.length + ' 条（trace 视图）', ...trace.map(renderTrace)].join('\n'));
+      break;
+    }
+    const G = (t) => flags.reflect ? String(t ?? '') : stripGenre(String(t ?? ''));   // I-11 P0-②：读侧剥皮（--reflect＝反思通道，不剥）
+    const lines = hits.length ? hits.map(h => `[${h.store}] ${h.id} (${h.score})${tierOf(h)}${h.undated ? ' [未定年]' : ''} ${G(h.snippet)}`) : ['（无结果）'];
     if (knowledge) {
       const tag = { known: '记得·库内', uncertain: '不确定', 'confirmed-unknown': '确定不知道' }[knowledge.stance] || knowledge.stance;
       lines.push(`· 认知态：${tag}（${knowledge.stance}）`);
@@ -54,6 +89,7 @@ switch (cmd) {
       lines.push(`· 另有 ${stats.undated} 条日期未知${ex}· ${stats.excluded} 条因日期范围排除。日期未知＝无法参与「该时段发生了什么」的判断，≠该时段没有它。`);
       if (flags.report) lines.push(`· 报告：范围内 ${stats.dated} · 未知 ${stats.undated} · 范围外 ${stats.excluded} · 时间来源 event_time ${stats.timeSource.event_time} / logged_at ${stats.timeSource.logged_at}${flags.undated ? '（--undated 已并入）' : '（--undated 可并入）'}`);
     }
+    if (dose) lines.push(`· 剂量闸：符号负荷 ${dose.total} > 阈值 ${dose.threshold} ⇒ 后 ${dose.trimmed} 条已摘要（--dose-threshold N 调闸、--reflect 不受限）`);
     if (budget && (budget.trimmed > 0 || budget.offset > 0)) lines.push('[装载] ' + budget.hint);
     print(flags.report ? { hits, stats, knowledge, budget } : hits, lines.join('\n'));
     break;
@@ -62,18 +98,25 @@ switch (cmd) {
     if (flags.all) { console.error('六库 brief 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
     if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
     if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
-    const b = brief(rest.join(' '), { perStore: Number(flags.per) || 3, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined });
+    const __doseThB = Number.isFinite(Number(flags['dose-threshold'])) ? Number(flags['dose-threshold']) : undefined;   // I-12 P1-③：0=关闸
+    const b = brief(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, doseThreshold: __doseThB, perStore: Number(flags.per) || 3, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined });
     const lines = [`主题简报「${b.query}」：` + (b.groups.length ? `命中 ${b.groups.length} 库` : '无命中')];
+    // #31 --ladder（2026-10-12 窗口 5）：先亮「停在哪一层、为何没下钻」。
+    if (flags.ladder && Array.isArray(b.ladder)) {
+      lines.push('检索梯：');
+      for (const x of b.ladder) lines.push(`  ${x.stopped ? '★' : '·'} ${x.layer} ×${x.hit}  — ${x.why}`);
+    }
+    const G = (t) => flags.reflect ? String(t ?? '') : stripGenre(String(t ?? ''));   // I-11 P0-②：读侧剥皮（--reflect＝反思通道，不剥）
     for (const g of b.groups) {
       lines.push(`[${g.store} ×${g.total}${g.hits.length < g.total ? ` → top${g.hits.length}` : ''}]`);
       for (const h of g.hits) {
         const t = (h.time ? `[${h.time}] ` : '') + (typeof h.valence === 'number' && h.valence < 0 ? '⚠ ' : '');
-        if (g.store === 'frontier') lines.push(`  - ${t}${h.title} [${h.status}] ${h.topic}${h.supports.length ? '  supports=' + h.supports.join(' ') : ''}`);
-        else if (g.store === 'canon') lines.push(`  - ${t}${h.displayTier ? h.displayTier + ' ' : ''}${h.stale ? '待复核 ' : ''}${h.id}: ${h.claim}（${h.source} · ${h.ref}）`);
-        else if (g.store === 'mirror') lines.push(`  - ${t}${h.id}: ${h.situation} → ${h.outcome}`);
-        else if (g.store === 'orphan') lines.push(`  - ${t}[${h.severity}] ${h.id}: ${h.summary}`);
-        else if (g.store === 'pricing') lines.push(`  - ${t}${h.id}: ${h.behavior}（valence ${h.valence}）`);
-        else if (g.store === 'lexicon') lines.push(`  - ${t}${h.term}: ${h.resolution}`);
+        if (g.store === 'frontier') lines.push(`  - ${t}${G(h.title)} [${h.status}] ${h.topic}${h.supports.length ? '  supports=' + h.supports.join(' ') : ''}`);
+        else if (g.store === 'canon') lines.push(`  - ${t}${h.displayTier ? h.displayTier + ' ' : ''}${h.stale ? '待复核 ' : ''}${h.id}: ${G(h.claim)}（${h.source} · ${h.ref}）`);
+        else if (g.store === 'mirror') lines.push(`  - ${t}${h.id}: ${G(h.situation)} → ${G(h.outcome)}`);
+        else if (g.store === 'orphan') lines.push(`  - ${t}[${h.severity}] ${h.id}: ${G(h.summary)}`);
+        else if (g.store === 'pricing') lines.push(`  - ${t}${h.id}: ${G(h.behavior)}（valence ${h.valence}）`);
+        else if (g.store === 'lexicon') lines.push(`  - ${t}${h.term}: ${G(h.resolution)}`);
         else lines.push(`  - ${t}${h.id}`);
       }
     }
@@ -85,6 +128,7 @@ switch (cmd) {
       if (k.search) lines.push('· 外网契约：' + k.search.interface + '（宿主实现；core 不搜索）');
     }
     if (b.note) lines.push(b.note);
+    if (b.dose) lines.push(`· 剂量闸：符号负荷 ${b.dose.total} > 阈值 ${b.dose.threshold} ⇒ 后 ${b.dose.trimmed} 条已摘要（--dose-threshold N 调闸、--reflect 不受限）`);
     if (flags.since || flags.until) {
       const cov = dateCoverageStats({ since: flags.since, until: flags.until });
       lines.push(`· 日期说明：全库另有 ${cov.undated} 条日期未知未参与过滤（范围外 ${cov.excluded}）——未知≠该时段没有。`);
@@ -152,7 +196,7 @@ switch (cmd) {
     if (flags.all) { console.error('六库 cross 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
     if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
     if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
-    const c = cross(rest[0] || '', { perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined });
+    const c = cross(rest[0] || '', { via: 'cli', reflect: !!flags.reflect, perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined });
     const lines = [];
     const dateNote = () => {
       if (!(flags.since || flags.until)) return;
@@ -212,13 +256,21 @@ switch (cmd) {
         } catch (e) { print(null, String(e.message)); code = 1; }
         break;
       }
+      // --na '<json>'：当前处境的事实对象（#3 not_applicable 条件求值；不传=不过滤）
+      let naCtx;
+      if (flags.na !== undefined && flags.na !== true) {
+        try { naCtx = JSON.parse(String(flags.na)); }
+        catch (e) { print(null, '--na 须为 JSON 对象，如 \'{"context":"创作虚构"}\'（' + e.message + '）'); code = 1; break; }
+      }
       hits = mirrorMatch(text, {
+          reflect: !!flags.reflect,   // I-11 复查补齐②：mirror 叙事默认剥皮；--reflect 给原文
           limit: Number(flags.limit) || 3, mode: flags.mode, role: flags.role,
           evidence: flags.evidence, era: typeof flags.era === 'string' ? flags.era : undefined,
-          context: typeof flags.context === 'string' ? flags.context : undefined
+          context: typeof flags.context === 'string' ? flags.context : undefined,
+          notApplicable: naCtx
         });
       } catch (e) {
-        print(null, String(e.message) + '\n用法：node akasha.mjs mirror compare <情境> | mirror outcome <id> --verdict 成功|部分|失败 [--rework N] | mirror import <文件> --source <出处> --era <时代> --context <语境> | mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]');
+        print(null, String(e.message) + '\n用法：node akasha.mjs mirror compare <情境> | mirror outcome <id> --verdict 成功|部分|失败 [--rework N] | mirror import <文件> --source <出处> --era <时代> --context <语境> | mirror match <情境文本> [--limit N] [--mode task|improve|all] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …] [--na \'{"field":"值"}\']');
         code = 1; break;
       }
       const scopeParts = [];
@@ -244,10 +296,11 @@ switch (cmd) {
   }
   case 'summary': {
     const s = summary({ per: Number(flags.per) || 3 });
+    const G = (t) => flags.reflect ? String(t ?? '') : stripGenre(String(t ?? ''));   // C 小面（2026-10-14）：摘要最近条目行默认剥皮
     const lines = [`全库摘要（${s.today}）——` + Object.entries(s.stores).map(([k, v]) => `${k} ${v.total}`).join(' / ')];
     for (const [name, st] of Object.entries(s.stores)) {
       lines.push(`[${name} ×${st.total}]`);
-      for (const r of st.recent) lines.push(`  - ${r.id}${r.event_time ? ' [' + r.event_time + ']' : ''}: ${r.line}`);
+      for (const r of st.recent) lines.push(`  - ${r.id}${r.event_time ? ' [' + r.event_time + ']' : ''}: ${G(r.line)}`);
       if (st.by_status) lines.push('  status：' + Object.entries(st.by_status).map(([k, v]) => `${k} ${v}`).join('，'));
     }
     lines.push('· 审计：' + (s.audit.ok ? 'OK' : s.audit.findings.map(f => `${f.code}×${f.count}`).join('，')));
@@ -256,18 +309,64 @@ switch (cmd) {
     break;
   }
   case 'show': {
+    // #33 --expand（2026-10-12 窗口 5）：沿 promoted_from 回溯源头（只读）；id 会逐库查找。
+    if (flags.expand) {
+      const idArg = rest[0] || '';
+      let e = { found: false, id: idArg, origin: null, chain: [], note: '未找到该 id（六库当前集都没有）' };
+      for (const s of ['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier']) {
+        try { const x = expandRecord(s, idArg, {}); if (x.found) { e = x; break; } } catch { /* 单库读失败不致命 */ }
+      }
+      print(e, e.found
+        ? [`[${e.store}] ${e.id}`, e.origin ? `源：${e.origin.store} ${e.origin.id}（session ${e.origin.session ?? '?'} · seq ${e.origin.seq ?? '?'}）${e.origin.dangling ? ' ⚠ 悬空' : ''}` : '源：无（原生条目）', e.note].join('\n')
+        : '未找到：' + (e.note || ''));
+      if (!e.found) code = 1;
+      break;
+    }
     const r = show(rest[0] || '');
     if (!r.record) { print(r, '（未找到：' + (r.note || '') + '）'); code = 1; break; }
     const head = r.found ? `[${r.store}] ${r.id}` : `（${r.note}）`;
     const c = r.credibility;
     const credLines = c ? ['可信度：' + (c.label || '（无层级）') + (c.cls ? ' · ' + c.cls : ''), ...c.steps.map((st) => `  ${st.id}  ${st.why} → ${st.tier || '—'}${st.refuted ? ' refuted' : ''}`)] : [];
-    print(r, [head, ...credLines, JSON.stringify(r.record, null, 2)].join('\n'));
+    // I-11 P0-②（2026-10-13）：读侧剥皮（--reflect＝反思通道，不剥）——⇒/✓/好。 非 JSON 结构字符，序列化后整段剥安全。
+    const recText = JSON.stringify(r.record, null, 2);
+    print(r, [head, ...credLines, flags.reflect ? recText : stripGenre(recText)].join('\n'));
     break;
   }
   case 'sleep': {
+    if (flags.replay && (flags.apply || flags.revoke)) { console.error('--replay 与 --apply/--revoke 互斥：回放只读（报告 misses 会不会变），不改库。'); code = 1; break; }
+    if (flags.apply || flags.revoke) {
+      const pick = (k) => (typeof flags[k] === 'string' ? flags[k] : undefined);
+      if (flags.apply) {
+        const ref = pick('apply');
+        if (!ref) { console.error('用法：sleep --apply <planId|计划文件> [--yes] [--only <id>] [--force]'); code = 1; break; }
+        const r = applyPlan(ref, { dry: flags.yes !== true, force: flags.force === true, only: pick('only') });
+        if (!r.ok) { console.error('执行失败：' + r.error); code = 1; break; }
+        const rc = r.receipt;
+        const lines = [(r.dry ? '演练（未写库；确认后加 --yes 执行）' : '已执行') + '：' + rc.planId + ' · 退役 ' + rc.summary.retired + ' / 跳过 ' + rc.summary.skipped + ' / 拒绝 ' + rc.summary.refused + (rc.basisOk ? '' : ' · ⚠ 指纹过期（--force 强行）')];
+        for (const op of rc.ops) {
+          if (op.status === 'filtered') continue;
+          if (op.op === 'merge') lines.push('  merge [' + op.store + '] keep ' + (op.keep ?? '（待人工指定）') + ' ← ' + (op.absorb || []).join(', ') + ' · ' + op.status + (op.why ? '（' + op.why + '）' : ''));
+          else lines.push('  ' + op.op + ' [' + op.store + '] ' + (op.id ?? '?') + ' · ' + op.status + (op.why ? '（' + op.why + '）' : ''));
+          for (const d of op.detail || []) lines.push('    - ' + d.id + ' ' + d.status + (d.reason ? '（' + d.reason + '）' : '') + (d.tombstone ? ' → ' + d.tombstone : ''));
+        }
+        if (r.receiptFile) lines.push('  回执：' + r.receiptFile);
+        print(r, lines.join('\n'));
+        break;
+      }
+      const ref = pick('revoke');
+      if (!ref) { console.error('用法：sleep --revoke <planId|计划文件> [--yes]'); code = 1; break; }
+      const r = revokePlan(ref, { dry: flags.yes !== true });
+      if (!r.ok) { console.error('撤销失败：' + r.error); code = 1; break; }
+      const rv = r.revoke;
+      const lines = [(r.dry ? '演练（未写库；确认后加 --yes 执行）' : '已撤销') + '：' + rv.planId + ' · 墓碑 ' + rv.count + ' 个'];
+      for (const x of rv.results) lines.push('  ' + x.id + ' ' + x.status + (x.record ? ' → ' + x.record : ''));
+      if (r.outFile) lines.push('  回执：' + r.outFile);
+      print(r, lines.join('\n'));
+      break;
+    }
     if (flags.replay) {
       // 历史回放：只读。同一份旧日志再数 recall.misses，并对照计划会移出的 id。不写库。
-      if (flags.apply || flags.rollback) { console.error('sleep --apply / --rollback 尚未实现：回放只报告 misses 会不会变，不改库。'); code = 1; break; }
+      if (flags.rollback) { console.error('sleep --rollback 无此实现——回滚请用 `sleep --revoke <planId>`。'); code = 1; break; }
       const pick = (k) => (typeof flags[k] === 'string' ? flags[k] : undefined);
       const out = flags.out === undefined ? false : pick('out');
       if (flags.out !== undefined && out === undefined) { console.error('sleep --replay 的 --out 须为文件路径（省略则只打印，不落盘）。'); code = 1; break; }
@@ -287,8 +386,8 @@ switch (cmd) {
       break;
     }
     if (flags.plan) {
-      // wave2 §2 第一批：只出计划（只读六库，只写计划文件；不动水位线）。--apply / 回滚尚未实现。
-      if (flags.apply || flags.rollback) { console.error('sleep --apply / --rollback 尚未实现：先评审 --plan 的输出（wave2 §2 下一批）。'); code = 1; break; }
+      // wave2 §2 第一批：只出计划（只读六库，只写计划文件；不动水位线）。**--apply / --revoke 已实现（2026-10-14，A 档）**，在 case 顶部处理。
+      if (flags.rollback) { console.error('sleep --rollback 无此实现——回滚请用 `sleep --revoke <planId>`。'); code = 1; break; }
       const pick = (k) => (typeof flags[k] === 'string' ? flags[k] : undefined);
       const r = sleepPlan({ today: pick('today'), theta: pick('theta'), maxOps: pick('max'), orphanDays: pick('orphan-days'), staleDays: pick('stale-days'), log: pick('log'), out: pick('out') });
       if (!r.ok) { console.error('睡眠计划失败：' + r.error); code = 1; break; }
@@ -310,11 +409,11 @@ switch (cmd) {
           .filter((x) => x.top).sort((a, b) => b.top.jaccard - a.top.jaccard)[0];
         if (best) lines.push(`    - near-duplicate：最高 Jaccard ${best.top.jaccard}（θ ${best.theta}；${best.st} 库 ${best.n} 条里最像的一对：${best.top.a} ↔ ${best.top.b}）`);
       }
-      lines.push('  · mergedText 留空待填；--apply 尚未实现（待计划评审）。');
+      lines.push('  · mergedText 留空待填；--apply（A 档：keep 不动＋absorb 软退役）/ --revoke 已实现（2026-10-14）。');
       print({ ...p, planFile: r.planFile }, lines.join('\n'));
       break;
     }
-    if (flags.apply || flags.rollback) { console.error('sleep --apply / --rollback 尚未实现：先评审 --plan 的输出（wave2 §2 下一批）。'); code = 1; break; }
+    if (flags.rollback) { console.error('sleep --rollback 无此实现——回滚请用 `sleep --revoke <planId>`。'); code = 1; break; }
     const r = sleepRun({ trigger: 'manual', dry: !!flags.dry });
     if (!r.ok) { print(r, '睡眠失败：' + r.error); code = 1; break; }
     const head = r.dry ? '（dry-run）将蒸馏：' : '已蒸馏：';
@@ -322,6 +421,8 @@ switch (cmd) {
     break;
   }
   case 'promote': {
+    // I-08（2026-10-14）：转正前先过「晋升标准清单」（复验通过 / 去重查过 / 重要度标注 / 来源证据链完整）——打出来，人工过目。
+    console.log('晋升标准清单（I-08·转正前逐条自检）：① 复验通过？ ② 去重查过（同 code 不重复）？ ③ 重要度标注（severity）？ ④ 来源证据链完整（observed/hypothesis/would_confirm/would_refute 有实词）？');
     const r = promoteInbox({ dry: !!flags.dry });
     print(r, r.dry
       ? `将转正 ${r.wouldPromote.length} 条（dry-run）：${r.wouldPromote.join(', ') || '（无）'}；已存在 ${r.skipped.length}`
@@ -399,7 +500,71 @@ switch (cmd) {
     const warns = r.findings.filter(f => f.level === 'warn');
     const lines = [`审计（${r.today}）：` + (r.ok ? 'OK' : `警告 ${warns.length} 条`)];
     for (const f of r.findings) lines.push(`[${f.level}] ${f.code} ×${f.detail.length}`);
+    // I-01（2026-10-13 批次 1）：--due 打印复审到期清单（信任级 × 时龄）——原型，供人工核。
+    if (flags.due) {
+      const rv = r.review;
+      lines.push(`复审到期清单（核心 ${rv.policy.coreDays}d / 一般 ${rv.policy.generalDays}d / 年审 ${rv.policy.annualDays}d）——扫描 ${rv.counts.scanned} · 到期 ${rv.counts.due} · 无日期锚 ${rv.counts.undated}：`);
+      if (!rv.counts.due) lines.push('  （本日无到期）');
+      for (const x of rv.top) lines.push(`  [${x.store}] ${x.id}  ${x.tier ?? '—'}${x.cls === 'rendered' ? '（渲染条）' : ''}  龄 ${x.ageDays}d > ${x.intervalDays}d · 超 ${x.overdueDays} 天（锚 ${x.anchor}）`);
+      if (rv.counts.undated) lines.push(`  · 无日期锚 ${rv.counts.undated} 条（例：${rv.undated.slice(0, 3).map((x) => x.store + '/' + x.id).join('、')}）——未知 ≠ 刚审过`);
+    }
     print(r, lines.join('\n'));
+    break;
+  }
+  case 'now': {
+    // 内置时钟（2026-10-14）：主动查询「现在几点 + 时间对照锚」——为自我行为提供时间依据。
+    const r = nowSnapshot({ at: typeof flags.at === 'string' ? flags.at.split(',') : undefined });
+    const lines = [`现在：${r.now.local} ${r.now.weekday}（${r.now.tzOffset} · UTC ${r.now.utc} · unix ${r.now.unix}）`];
+    if (r.refs.lastWrite) lines.push(`对照·最近写入：${r.refs.lastWrite.store}#${r.refs.lastWrite.id}（${r.refs.lastWrite.age ?? '?'}）`);
+    if (r.refs.lastSleep) lines.push(`对照·上次睡眠：${r.refs.lastSleep.at ?? '?'}（距今 ${r.refs.lastSleep.age ?? '?'}）`);
+    for (const x of r.at) lines.push(x.error ? `对照·${x.input}：${x.error}` : `对照·${x.input} → ${x.direction} ${x.age}（${x.daysAgo} 天）`);
+    lines.push('口径：本地时区 ' + r.now.tzOffset + '；`--at` 的 YYYY-MM-DD 按 UTC 午夜解析。');
+    print(r, lines.join('\n'));
+    break;
+  }
+  case 'diff': {
+    // I-03（2026-10-13 批次 1）：两时点「库变了什么」——只读。
+    const rSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: new Date().toISOString().slice(0, 10) };
+    const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: new Date().toISOString().slice(0, 10) };
+    if (!rSel.ok || !rUnt.ok) { console.error(rSel.error || rUnt.error); code = 1; break; }
+    let d;
+    try { d = memoryDiff({ since: rSel.day, until: rUnt.day, stores: flags.store ? [String(flags.store)] : undefined }); }
+    catch (e) { console.error(e.message); code = 1; break; }
+    const lines = [`库变化（${d.since} → ${d.until}）${flags.store ? '（仅 ' + flags.store + '）' : ''}：`];
+    const G = (t) => flags.reflect ? String(t ?? '') : stripGenre(String(t ?? ''));   // C 小面（2026-10-14）：新增条目的行默认剥皮
+    let anyChange = false;
+    for (const [name, b] of Object.entries(d.stores)) {
+      const n = b.added.length + b.revised.length + b.retired.length + (b.revoked?.length ?? 0);
+      if (!n && !b.undated.count) continue;
+      anyChange = true;
+      lines.push(`[${name}] 新增 ${b.added.length} · 修订 ${b.revised.length} · 退役 ${b.retired.length}${b.revoked?.length ? ' · 撤销 ' + b.revoked.length : ''}` + (b.undated.count ? `（另有未定年 ${b.undated.count} 条不入窗——未知 ≠ 没变）` : ''));
+      for (const x of b.added.slice(0, 8)) lines.push(`  + ${x.id}  ${G(x.line)}`);
+      for (const x of b.revised.slice(0, 8)) lines.push(`  ~ ${x.id} ← ${x.supersedes}` + (x.changed ? (x.changed.length ? `  改：${x.changed.join('、')}` : '  （无字段变化）') : ''));
+      for (const x of b.retired.slice(0, 8)) lines.push(`  - ${x.target}（墓碑 ${x.id}）` + (x.reason ? `：${x.reason}` : ''));
+      for (const x of (b.revoked ?? []).slice(0, 8)) lines.push(`  ↩ ${x.target}（撤销 ${x.id}）` + (x.reason ? `：${x.reason}` : ''));
+    }
+    if (!anyChange) lines.push('（该窗口无变化）');
+    lines.push(`合计：新增 ${d.totals.added} / 修订 ${d.totals.revised} / 退役 ${d.totals.retired} / 撤销 ${d.totals.revoked ?? 0} / 未定年 ${d.totals.undated}`);
+    print(d, lines.join('\n'));
+    break;
+  }
+  case 'conflict': {
+    // I-04（2026-10-13 批次 1）：修订链对比视图 + 冲突候选——只读、只提示不裁决。
+    const q = rest.join(' ');
+    if (!q) { print(null, '用法：node akasha.mjs conflict <id | 主题词> [--top N]'); code = 1; break; }
+    const cr = conflictReport(q, { top: Number(flags.top) || undefined });
+    const lines = [];
+    if (cr.chain) {
+      lines.push(`修订链「${cr.chain.root}」（${cr.chain.store}）：${cr.chain.retired ? '已退役（不在当前集）' : '当前版本 ' + (cr.chain.currentId ?? '—')}，共 ${cr.chain.versions.length} 版`);
+      for (const v of cr.chain.versions) lines.push(`  ${v.id}${v.day ? ' [' + v.day + ']' : ''}${v.tombstone ? '（墓碑 → ' + v.tombstone + '）' : ''}${v.changed ? '  改：' + (v.changed.length ? v.changed.join('、') : '（无字段变化）') : ''}`);
+    }
+    if (cr.pairs.length) {
+      lines.push(`冲突候选（只提示不裁决）${cr.pairs.length} 对：`);
+      for (const p of cr.pairs) lines.push(`  [${p.store}] ${p.a ?? '（截断占位）'} × ${p.b ?? ''}  ratio ${p.ratio}  共享 ${JSON.stringify(p.common)}` + (p.markers && p.markers.a && p.markers.a.length ? `  作废侧 ${JSON.stringify(p.markers.a)}` : ''));
+    } else {
+      lines.push(cr.chain ? '冲突候选：无（该链周边无机械候选）。' : `「${cr.query}」：无冲突候选——0 候选 ≠ 无矛盾（机械对照只到词法层）。`);
+    }
+    print(cr, lines.join('\n'));
     break;
   }
   case 'metrics': {
@@ -414,7 +579,22 @@ switch (cmd) {
     if (r.topUsage.length) lines.push('引用 top：' + r.topUsage.slice(0, 5).map(([id, n]) => `${id}×${n}`).join('，'));
     const mt = r.memoryTools;
     lines.push(`轻查动作率（记忆工具·MCP 面，2026-10-07 起）：调用 ${mt.calls} 次（占工具 ${(mt.share * 100).toFixed(1)}% / 每回合 ${mt.perTurn} 次）` + (Object.keys(mt.byTool).length ? '；' + Object.entries(mt.byTool).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t, n]) => `${t.replace('mcp__akasha__', '')}×${n}`).join('，') : ''));
+    // I-02（2026-10-13 批次 1）：查询维度（侧线 logs/query-log.jsonl）——先起数据，不改索引。
+    const qy = r.queries;
+    if (qy) {
+      const cmds = Object.entries(qy.byCmd).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}×${n}`).join('，');
+      lines.push(`查询监控（${qy.total} 次：${cmds || '—'}）：**检索面**（lookup/brief/cross/recall）零结果率 ${qy.zeroRate === null ? '—' : (qy.zeroRate * 100).toFixed(1) + '%'} / 平均 ${qy.avgMs ?? '—'} ms（诊断类调用与机制探针只计 byCmd/${qy.probes ?? 0}，不进检索面指标）`
+        + (qy.topQueries.length ? `；高频 top：${qy.topQueries.slice(0, 3).map(([t, n]) => `${t}×${n}`).join('，')}` : '')
+        + (qy.referenced.rate === null ? `；命中被引用率：数据不足（${qy.referenced.n}/${qy.referenced.of}，样本 < ${qy.referenced.minSample}）` : `；命中被引用率 ${(qy.referenced.rate * 100).toFixed(1)}%（${qy.referenced.n}/${qy.referenced.of}）`)
+        + `；会话号覆盖 ${qy.sessionCoverage.known}/${qy.sessionCoverage.total}`);
+    }
     const rc = r.recall;
+    const kv = r.revisability;
+    if (kv) {
+      const rv = kv.review;
+      const byV = Object.entries(rv.byVerdict).map(([k, n]) => `${k}×${n}`).join('，') || '—';
+      lines.push(`回看-纠正（K3，全量口径·不受 since）：复审线 ${rv.total}（${byV}${rv.lastAt ? `；最近 ${String(rv.lastAt).slice(0, 16)} ${rv.lastVerdict ?? ''}` : ''}）· 退役 ${kv.retired} · 近 7 天修订 ${kv.revised7d} 版（最近 ${kv.lastRevisedAt ? String(kv.lastRevisedAt).slice(0, 16) : '—'}）· 矛盾检测调用 ${kv.calls.conflict} 次（${kv.calls.windowNote}）`);
+    }
     if (rc) {
           const prev = rc.preventable ?? { fails: 0, missed: 0, missRate: 0 };
           const byTool = Object.entries(rc.byTool ?? {}).sort((a, b) => b[1].fails - a[1].fails).slice(0, 3)
@@ -428,9 +608,96 @@ switch (cmd) {
     break;
   }
   case 'add': {
-    const obj = JSON.parse(flags.data || '{}');
-    const r = appendRecord(flags.store, obj);
-    print(r, '已追加：' + r.id);
+    try {
+      const obj = JSON.parse(flags.data || '{}');
+      const r = appendRecord(flags.store, obj);
+      const c = committedOf(r);   // #23：写入回执统一（committed=true 才说「已追加」）
+      print(c, '已追加：' + c.id + '（committed=' + c.committed + '）');
+    } catch (e) { print(null, '未落盘：' + e.message + '（committed=false）'); code = 1; }
+    break;
+  }
+  case 'readings': {
+    const r = autonomyReadings({ since: typeof flags.since === 'string' ? flags.since : undefined });
+    print(r, '自治读数（只读·如实；样本不足 ⇒ null，不冒充 PASS）' + (r.ok === null ? ' — ok=null（缺：' + r.missing.join('/') + '）' : ' — ok=true')
+      + '\n' + Object.entries(r.readings).map(([k, v]) => '  ' + k + ' = ' + String(v.value) + (v.num !== null ? '  [' + v.num + '/' + v.den + ']' : '') + '  — ' + v.note).join('\n'));
+    break;
+  }
+  case 'negative': {
+    // #2 负记忆两层（2026-10-12 窗口 6）：list 查档；add 手工记一条（kind 限 rejected-write/undecided）。
+    if (rest[0] === 'add') {
+      try {
+        const r = recordRejected({ kind: flags.kind ? String(flags.kind) : 'undecided', reason: flags.reason ? String(flags.reason) : '（未填 reason）', what: flags.what ? String(flags.what) : '', ref: flags.ref ? String(flags.ref) : '' });
+        print(r, '已记负记忆：' + r.id + ' [' + r.kind + '] ' + r.reason);
+      } catch (e) { print(null, String(e.message)); code = 1; }
+      break;
+    }
+    const list = listRejected({ kind: flags.kind ? String(flags.kind) : undefined });
+    print(list, list.length ? '负记忆 ' + list.length + ' 条：\n' + list.map((x) => '  ' + x.ts.slice(0, 10) + ' [' + x.kind + '] ' + x.reason + (x.what ? ' — ' + x.what : '')).join('\n') : '负记忆为空（没有已归档的「被拒 / 未决」）');
+    break;
+  }
+  case 'blindspots': {
+    // #4 BLINDSPOT（2026-10-12 窗口 6）：把「这次没检的面」摊开（与 lookup/brief 返回体同源）。
+    const bs = blindspotsFor({ perspective: flags.perspective ? String(flags.perspective) : undefined });
+    print(bs, '盲区清单（本入口没检的面）：\n' + bs.map((b) => '  · ' + b.what + ' — ' + b.why + '；动作：' + b.action).join('\n'));
+    break;
+  }
+  case 'blindmap': {
+    // #16 盲区地图（2026-10-12 窗口 9）：给一批查询词 ⇒ 盲区/薄弱/覆盖 分级（法定输出，不静默）。
+    const qs = rest.length ? rest : ['会话层', '量子计算'];
+    const m = blindspotMap(qs, {});
+    print(m, ['盲区地图：' + m.summary.note, ...m.blind.map((x) => `  [${x.level}] 「${x.query}」 命中 ${x.hits}（强 ${x.strong}）— ${x.reason}`)].join('\n'));
+    break;
+  }
+  case 'discipline': {
+    // #27 纪律单源渲染（2026-10-12 窗口 9）：默认出渲染产物；--check 校验给定文件是否漂移。
+    if (flags.check !== undefined && flags.check !== true) {
+      let text = '';
+      try { text = readFileSync(String(flags.check), 'utf8'); }
+      catch (e) { print(null, '读不到文件：' + String(flags.check) + '（' + e.message + '）'); code = 1; break; }
+      const v = verifyDiscipline(text);
+      print(v, v.ok ? '纪律产物与单源一致 ✓（' + v.version + '）' : '⚠ 漂移：' + v.reason + '\n' + (v.diffs || []).map((d) => '  行 ' + d.line + '：期望 «' + d.expected + '» 实得 «' + d.actual + '»').join('\n'));
+      if (!v.ok) code = 1;
+      break;
+    }
+    const md = renderDiscipline();
+    process.stdout.write(md + '\n');
+    break;
+  }
+  case 'generation': {
+    // #24 代际指纹（2026-10-12 窗口 8）：「跑的是不是盘上的代码」一眼可辨。
+    const g = generationInfo();
+    print(g, g.restart_required
+      ? '⚠ 代际不一致：code=' + g.code_generation + ' ≠ disk=' + g.disk_generation + ' ⇒ ' + g.note
+      : '代际一致：' + g.code_generation + '（' + g.note + '）');
+    break;
+  }
+  case 'recall': {
+    // #26 渐进式检索（2026-10-12 窗口 7）：宽 → 收窄分步；DEFER ≠ 失败。
+    const r = progressiveRecall(rest.join(' '), { since: flags.since, until: flags.until });
+    print(r, r.deferred
+      ? 'DEFER：' + r.note
+      : ['渐进式检索「' + r.query + '」' + (r.converged ? '（已收敛）' : '（仍偏宽）'),
+        ...r.steps.map((s, i) => `  ${i + 1}. 「${s.query}」 ×${s.tokens}词 ⇒ 命中 ${s.hits}（强 ${s.strong}）· ${s.stance ?? '—'}`),
+        '  ' + r.note].join('\n'));
+    break;
+  }
+  case 'calibration': {
+    // #15 来源态校准（2026-10-12 窗口 7）：从 output-audit/usage 线能拿到的最接近数据 = 引用命中率。
+    //   真正的 gap/ECE 需要「自报把握 × 实测对错」的样本；当前库**无此采样** ⇒ 如实 null（不冒充）。
+    const c = calibrationOf([], { minN: 10 });
+    print(c, '校准读数：' + (c.ok === null ? 'ok=null（' + c.note + '）' : 'ok=true · gap=' + c.gap + ' · ECE=' + c.ece));
+    break;
+  }
+  case 'rollback': {
+    const store = rest[0];
+    if (!store) { print(null, "用法：node akasha.mjs rollback <store> [--since YYYY-MM-DD] [--apply]（默认 dry：只出计划）"); code = 1; break; }
+    try {
+      const r = rollbackBatch(store, { since: typeof flags.since === 'string' ? flags.since : undefined, apply: flags.apply === true || flags.apply === 'true' });
+      const dry = !(flags.apply === true || flags.apply === 'true');
+      print(r, dry
+        ? (r.length ? '计划回滚 ' + r.length + ' 条（dry；加 --apply 执行）：\n' + r.map((x) => '  ' + x.id + ' → 还原自 ' + x.restores).join('\n') : '无可回滚项（该日期起没有新增修订）')
+        : (r.length ? '已回滚 ' + r.length + ' 条（追加反向修订）：\n' + r.map((x) => '  ' + x.id + '（rollback_of ' + x.rollback_of + '）').join('\n') : '无可回滚项（已幂等）'));
+    } catch (e) { print(null, String(e.message)); code = 1; }
     break;
   }
   case 'retire': {
@@ -444,6 +711,56 @@ switch (cmd) {
         : `已退役：${store} ${r.retired}（墓碑 ${r.tombstone}）`);
     break;
   }
+  case 'review': {
+    // I-10 记忆复审机制（2026-10-14）：pack ＝ 交给 fresh 子 agent 的输入包；log ＝ `review-cycle` 留痕；list ＝ 读留痕线。
+    const sub = rest[0];
+    if (sub === 'pack') {
+      const id = rest[1];
+      if (!id) { console.error('用法：review pack <id> [--json]'); code = 1; break; }
+      const r = reviewPack(id);
+      if (!r.found) { print(r, `（未找到：${r.note}）`); code = 1; break; }
+      if (flags.json) { print(r, JSON.stringify(r, null, 2)); break; }
+      const lines = [`复审输入包：${r.store}/${r.id}（当前版本 ${r.current}${r.chain && r.chain.versions > 1 ? `；链上第 ${r.chain.versions} 版` : ''}）`, '', '【条目全文】', String(r.record.claim ?? r.record.summary ?? '').slice(0, 1200)];
+      if (r.source) lines.push('', `【来源证据】${r.source.type ?? '—'} · ${String(r.source.ref ?? '（无 ref）').slice(0, 200)}`);
+      lines.push('', `【必要上下文】相关条目 ${r.related.length} 条${r.related.length ? '：' : '（无因果/链邻居）'}`);
+      for (const x of r.related) lines.push(`  - ${x.id}${x.store ? ` [${x.store}]` : ''}${x.missing ? '（缺失）' : '：' + String(x.line).slice(0, 120)}`);
+      lines.push('', '【审查协议】（fresh 子 agent·零上下文）');
+      for (const q of r.protocol.questions) lines.push('  · ' + q);
+      lines.push(`  输出：${r.protocol.output}`, `  落法：${r.protocol.landing}`);
+      print(r, lines.join('\n'));
+      break;
+    }
+    if (sub === 'log') {
+      const id = rest[1];
+      if (!id) { console.error('用法：review log <id> --verdict 维持|修正|升级 [--by self|subagent] [--note "…"]'); code = 1; break; }
+      const verdict = String(flags.verdict ?? '');
+      if (!['维持', '修正', '升级'].includes(verdict)) { console.error('--verdict 须为 维持/修正/升级（修正/升级的正文改动另走 revise；本命令只留痕＋维持时打复审戳）'); code = 1; break; }
+      const by = flags.by === 'subagent' ? 'subagent' : 'self';
+      let touched = null;
+      let store = null;
+      const s = show(id);
+      if (!s.record) { print(null, `（未找到：${s.note || ''}）`); code = 1; break; }
+      store = s.store;
+      if (verdict === '维持') {
+        const rec = revise(s.store, s.id, { last_reviewed: new Date().toISOString().slice(0, 10) });
+        touched = rec.id;
+      }
+      const entry = { store, id: s.id, verdict, by, note: typeof flags.note === 'string' ? flags.note : null, touched };
+      appendReviewLog(entry);
+      print(entry, `已留痕 review-cycle：${s.store}/${s.id} · ${verdict} · ${by}${touched ? ` → ${touched}` : ''}`);
+      break;
+    }
+    if (sub === 'list') {
+      const items = readReviewLog({ limit: Number(flags.limit) || 20, since: typeof flags.since === 'string' ? flags.since : undefined });
+      print(items, items.length
+        ? items.map(x => `${String(x.ts).slice(0, 16)}  ${x.verdict}  ${x.by}  ${x.id}${x.note ? ' · ' + x.note : ''}`).join('\n')
+        : '（复审线暂无记录；用 review log 留痕）');
+      break;
+    }
+    console.error('用法：review pack <id> [--json] | review log <id> --verdict 维持|修正|升级 [--by self|subagent] [--note …] | review list [--limit N] [--since D]');
+    code = 1;
+    break;
+  }
   case 'session': {
     const sub = rest[0];
     const storeFile = flags.store ? String(flags.store) : undefined;
@@ -454,7 +771,7 @@ switch (cmd) {
       '  node akasha.mjs session themes [--session ID] [--limit N]      # ★会话主题表（主题＝本会话窗口内新增的库条目 + tags 建议词）',
       '  node akasha.mjs session topics [--build] [--term X] [--session SID] [--since D] [--until D]   # ★话题簇（跨会话持久＋增量修缮＋双时态＋会话归属；--build 更新一代）',
       '  node akasha.mjs session clusters [--session ID] [--top N]      # ⚠实验件：词频/种子簇四轮迭代未达标，结果仅作词频参考，导航请用 themes',
-      '  node akasha.mjs session lookup <词> [--session ID] [--kind a,b] [--level nodes|segs] [--since D] [--until D] [--offset N] [--process] [--all] [--limit N] [--store F] [--json]',
+      '  node akasha.mjs session lookup <词> [--session ID] [--kind a,b] [--level nodes|segs] [--since D] [--until D] [--offset N] [--process] [--raw-process] [--all] [--limit N] [--store F] [--json]',
       '  node akasha.mjs session promote <segId> --to <store> [--data \'<json>\'] [--confirm-replay] [--apply] [--repair] [--store F] [--target F]',
       '    默认只预览；--apply 才写。--to 必填（拿不准就 --to orphan）。复现必须 --confirm-replay（段里没有成败，不能代核）。',
       '  node akasha.mjs session context [--session ID] [--budget N] [--store F]',
@@ -511,6 +828,8 @@ switch (cmd) {
         since: flags.since,
         until: flags.until,
         includeProcess: !!flags.process,
+        rawProcess: !!flags['raw-process'],   // I-11 体裁隔离 P0：反思通道（含过程段、不剥皮）
+        doseThreshold: Number.isFinite(Number(flags['dose-threshold'])) ? Number(flags['dose-threshold']) : undefined,   // I-12 P1-③：剂量闸（0=关闸）
         all: !!flags.all,
         offset: Number(flags.offset) || 0,
         limit: Number(flags.limit) || 10
@@ -520,7 +839,10 @@ switch (cmd) {
         ? hits.map((h) => (h.kind === 'node'
           ? `[node L${h.level}] ${h.id}（${h.score}）${(h.children ?? []).length} 孩子 · ${String(h.gist).slice(0, 160)}`
           : `[${h.kind}] ${h.id}（${h.score}）turn ${h.turn ?? '?'} · ${h.kind === 'action' ? '[动作·工具调用，非结论] ' : ''}${String(h.gist).slice(0, 160)}`))
-        : ['（无命中——默认不含过程段；需要时加 --process）'];
+        : ['（无命中——默认不含过程段；需要时加 --process（剥皮）或 --raw-process（反思通道，不剥皮））'];
+      if (d.withheld) lines.push('· ' + d.withheld.hint);
+      if (d.dose) lines.push(`· 剂量闸：符号负荷 ${d.dose.total} > 阈值 ${d.dose.threshold}${d.dose.strict ? '（长会话·收紧档）' : ''} ⇒ 后 ${d.dose.trimmed} 条已摘要（--dose-threshold N 调闸、--raw-process 不受限）`);
+      if (d.reflect) lines.push('· 反思通道：本通道不剥皮（过程段原文直出）');
       lines.push('[覆盖] 主题命中 ' + d.matched + ' 段 / 作用域内 ' + d.sessionTotal + ' 段 · 本页 ' + hits.length + ' 段'
         + (d.exhausted ? ' · 已到末尾（拿全）' : ' · 未拿全，续取 --offset ' + d.nextOffset));
       print(flags.json ? d : hits, lines.join('\n'));
@@ -648,7 +970,14 @@ switch (cmd) {
     }
     if (sub === 'tree') {
       const sid = flags.session ? String(flags.session) : undefined;
-      if (!sid) { print(null, '用法：session tree [--build] --session <id> [--store F]'); code = 1; break; }
+      if (!sid) { print(null, '用法：session tree [--build|--auto] --session <id> [--store F]'); code = 1; break; }
+      if (flags.auto) {
+        // 弧线树 v0.3 自动建树（2026-10-12）：签名未变即复用 + 节流；--force 跳过两道门。
+        const storeF = storeFile ?? SESSION_DEFAULTS.storeFile;
+        const r = autoBuildTree({ session: sid, storeFile: storeF, minIntervalMs: Number(flags.interval) || 600000, force: !!flags.force });
+        print(r, (r.built ? '已自动建树：' : '未建（' + r.reason + '）：') + 'treegen ' + (r.treegen ?? '—') + ' · 节点 ' + (r.nodes ?? '—') + ' · 段 ' + (r.segCount ?? '—') + (r.nextEligibleInMs ? '（' + Math.round(r.nextEligibleInMs / 1000) + 's 后可再建）' : ''));
+        break;
+      }
       if (flags.build) {
         const storeF = storeFile ?? SESSION_DEFAULTS.storeFile;
         const { treegen, nodes } = buildTree({ session: sid, storeFile: storeF, chunkTurns: Number(flags.turns) || 8, fanout: Number(flags.fanout) || 4 });
@@ -675,7 +1004,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|budget [--enable] [--phase-check 文本]|lookup <词> [--since D --until D] [--include-refuted] [--today D] [--load-balance] [--balance-log F]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]|sleep [--dry]|sleep --replay [--log F] [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>');
+    console.log('用法：node akasha.mjs <check|stats|budget [--enable] [--phase-check 文本]|lookup <词> [--since D --until D] [--include-refuted] [--today D] [--load-balance] [--balance-log F]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]|sleep [--dry]|sleep --replay [--log F] [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit [--due] [--today D]|diff [--since D] [--until D] [--store S]|conflict <id|主题词> [--top N]|review pack <id>|review log <id> --verdict 维持\|修正\|升级 [--by self\|subagent]|review list [--limit N]|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>（体裁隔离：P0 读侧剥皮（lookup/brief/show/**cross**）与过程段不回放、P1 剂量闸——`--reflect` / `--raw-process` 反思通道不受限；`--dose-threshold N` 调闸 / 0 关闸）');
     code = cmd ? 1 : 0;
 }
 process.exit(code);

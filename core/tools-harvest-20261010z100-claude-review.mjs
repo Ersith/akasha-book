@@ -1,5 +1,5 @@
 // akasha/tools/harvest-20261010z100-claude-review.mjs —— 外部评审（Claude）批：结论 + 我方处置 + 解冻闸
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => String(r.id).startsWith('canon-external-review-claude-20261010'))) { console.log('= 已记录'); process.exit(0); }

@@ -2,7 +2,7 @@
 // 规则（canon 2026-10-08 裁定）：frontier 只收**来源可靠、有学术或前沿背景**的论文文献；须 http(s) url + next_review。
 // 用法：node tools/frontier-import.mjs <草案.json…> [--topic <标签>] [--dry]
 import { readFileSync, existsSync } from 'node:fs';
-import { appendRecord, currentRecords, loadStore } from '../lib.mjs';
+import { appendRecord, currentRecords, loadStore } from './lib.mjs';
 
 const args = process.argv.slice(2);
 const dry = args.includes('--dry');

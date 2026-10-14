@@ -4,11 +4,11 @@
 // 用法：node tools/review-pack.mjs [--out <目录>] [--n 10]
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { currentRecords, loadStore, RECALL_TRAP_MAP, RECALL_STRUCTURAL_TOOLS } from '../lib.mjs';
+import { currentRecords, loadStore, RECALL_TRAP_MAP, RECALL_STRUCTURAL_TOOLS } from './lib.mjs';
 
 const args = process.argv.slice(2);
 const flag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
-const OUT = flag('--out', '<LOCAL_PATH>');
+const OUT = flag('--out', '<LOCAL_PATH>\\_ab\\review-pack');
 const N = Number(flag('--n', '10'));
 const HOOKS = '<AKASHA_DIR>\\logs\\hooks.jsonl';
 

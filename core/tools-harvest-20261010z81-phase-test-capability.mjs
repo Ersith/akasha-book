@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z81-phase-test-capability.mjs
 // 2026-10-10：宿主侧「奇偶残差实测」可行性探针结果（DeepSeek 平台）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-phase-test-capability'))) { console.log('已存在，跳过'); process.exit(0); }

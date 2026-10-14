@@ -1,6 +1,6 @@
 // 2026-10-07：盘点「三套记忆并联 + 社区插件更新窗口」的结论入库（幂等）。
 // 用法：node akasha\tools\harvest-20261007-coexist.mjs
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-akasha-memory-coexist-20261007',

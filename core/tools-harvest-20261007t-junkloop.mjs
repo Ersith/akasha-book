@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007t-junkloop.mjs
 // 2026-10-07 留痕：思考链标点空转循环（模型行为观察，用户当场指出）。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'orphan-thinking-junk-loop',

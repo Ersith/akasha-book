@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z62-kv-phase-memory-judgment.mjs
 // 2026-10-10：KV 相位灵敏对「三层记忆」的影响判定（依据 arXiv 2609.36322 + 本仓系统事实）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-kv-phase-memory-judgment'))) { console.log('已存在，跳过'); process.exit(0); }

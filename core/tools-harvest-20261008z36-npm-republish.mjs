@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z36-npm-republish.mjs
 // 2026-10-08 留痕：npm 重发三件（gate/hooks/session）+ 隐私双扫证据。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const oss = tips.find((r) => r.id.startsWith('canon-oss-package-20261007'));

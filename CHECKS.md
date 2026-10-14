@@ -180,7 +180,7 @@
 - **机制**：`core/lib.mjs` 新增 `rankFactors / applyRank / severityComplexityOf / valenceTip / RANK_DEFAULTS / RANK_TEMPLATES`：`rank = 词法分 × 可信度 × 严重度′ × 复杂度′`，模板按既有 `credibilityOf.cls`（protocol / snapshot / frontier / evergreen）；**协议类强制 sev/cpx=1**；**arousal 只当一次信号**（作严重度则复杂度=1，防双计）；**因子恒 ≤1（只降权）**；**孤案 rank=score**（零权重约定）；**strong 仍只看整词**；时间仍只做门限；**A1 负载均衡默认关且恒等**。brief：arousal 移出 base（`valenceTip` 只表负价），`emotionBoost` 保留 API。
 - **验证（我方独立）**：`git am` 干净（`d17798d`）；`all.diff` × `git am` **双路树哈希全等**（`88649846c28f783cf7c3892eb7665ec89747085e`）；核心 **124/124**（活树口径）/ **123/123**（OSS 口径，README 计数已同步 120→123）、会话 **22/22**（Node 24）、**15 passed / 0 failed / 7 skipped**（Node 20，跳过全为 zstd；本提交新增 `tza()` 跳过助手，补齐 `4ab8856` 两条 worker 用例的漏网）；gate / hooks / sleep 全绿；**同库只读实证**（活数据副本）：`strong` 集合与 base **完全一致**、6 个查询 4 个顺序不变、2 个仅同分并列被因子打破。
 - **落地与回滚**：活树已并（快照 `_rollback-20261010-rank\`：lib.mjs / test.mjs / SCHEMA.md / akasha-README.md / plugin-selftest.mjs）；**MCP 常驻进程需重启才吃到新排序**（CLI 与后续索引调用即时生效）。
-- **工程坑（归档）**：① 外援补丁来自 CRLF 工作树，落本仓 LF 活树时每个文件首个 hunk 即失败——需「路径映射 + **剥 CR**」后 `git apply`；② 非运行时 node（`_tools\node20`）在 `D:\dsh-temp` 下 `mkdtemp` 报 EPERM（沙箱按程序放行）——TEMP 指到工作区即通。
+- **工程坑（归档）**：① 外援补丁来自 CRLF 工作树，落本仓 LF 活树时每个文件首个 hunk 即失败——需「路径映射 + **剥 CR**」后 `git apply`；② 非运行时 node（`_tools\node20`）在 `<LOCAL_PATH>` 下 `mkdtemp` 报 EPERM（沙箱按程序放行）——TEMP 指到工作区即通。
 - **遗留**：A1 负载均衡启用时机；`arousal: 0`（显式平静）降权至 sev 0.5、而不写 arousal 为中性 1.0——语义按现状，留待观察。
 ## R24 · A1 检索负载均衡（默认关闭，PID 式）2026-10-10
 
@@ -232,3 +232,13 @@
 - **测试（防复发）**：selftest 新增**写盘工具覆盖清单**——11 条"写数据必被拒"用例覆盖 `edit/write/apply_patch/pwsh/bash/dsh_wsl×2/codex_exec×2/codex_thread_start/codex_thread_resume`，外加 3 条"只读必须放行"反向用例；**新增写盘工具时先加进清单，漏了就红**。
 - **变异回归（证明测试不是装饰）**：用修复前的 `index.js`（`git show <sha>^:plugins/akasha-gate/index.js`）跑同一批用例 ⇒ `dsh_wsl` 与 `codex_exec` **当场未拦**（红），修复后全绿。
 - **工具侧同步**：工作区扫描器 `tools/risk-scan.mjs` 增加 `RISK-GUARD-COVER` 规则（守卫文件必须提到 `WRITER_TOOLS` 清单里的每个工具），其自测用**修复前的 gate 文件**做回归——落实「手检发现而脚本没报 ⇒ 完善脚本」的常设纪律。
+
+## R30 · 全量同步轮（2026-10-14）：core + tools + 数据 7 库；公开前终扫与处置
+
+- **触发**：用户令「上传 main」（公开仓：先过隐私与我们自己的 API 专项）。本轮：`sync-core-to-oss.mjs`（主文件 9 + tools 304，310 项语法校验全过；**新增 `loop-detect.mjs` 入清单** + tools 扁平命名 import 改写）· `sync-data-to-oss.mjs`（7 库 2719 KB，门禁通过）· `oss-sync.mjs v2`（插件 35 文件 / 映射 25 处）。
+- **新工具**：`core/tools-oss-scrub-paths.mjs`（终扫残留清洗器；默认 dry、`--apply` 写回）——**今后每次同步后的固定最后一步**。
+- **首扫发现（53 文件命中）与处置**：① 本机路径族（含裸路径/转义变体）· ② `@local` scope · ③ 环回端口与裸端口令牌（1933 / 19387 / 9223 / 7897 / 9433）· ④ 用户名——清洗后独立终扫 **硬命中 0**。**根因修复**：`sync-core` 映射表补齐（转义/裸路径、`@local`、tools 扁平 import），防下次同步回灌。
+- **门禁误伤处置（第二例「判据被自己描述的对象误伤」；首例＝git 前缀）**：canon 条目 `canon-oss-data-sync-20261012` 正文引用占位邮箱 `a@b.com`（它在讲本门禁自检）⇒ 数据同步被拒。处置＝**副本替换**（`a@b.com` → `<EMAIL>`，计数入报告），**不放宽真邮箱判据**（自检扩至正/反/侧/侧2 四例全过）。
+- **OSS 套件三红的根因与修复**：① `test.mjs` import `./tools/checker-selftest.mjs`——仓内 tools 为扁平命名 ⇒ 映射改写（并顺修 `../lib.mjs` 等相对导入）；② `checker-selftest` 临时根硬编码本机 `_scratch` ⇒ 改 `os.tmpdir()`（可移植）；③ policy 夹具用本机路径、被清洗后与守卫失配 ⇒ 改**中性真路径** `C:/akasha/data/canon.jsonl`（守卫判据 `(^|/)akasha/data/*.jsonl$` 与盘符无关，正/反例同验）。**修后：OSS 套件 236/236（+1 skip＝无会话层数据）· check 730/730**。
+- **保留项（结构性，判定不入清洗）**：门禁/reaction 自检内的**示例邮箱与合成令牌**（`a@b.com` / `s3cr3t@example.com` / `sk-abcdefgh…` / `ghp_abcdefgh…`——皆夹具、非真凭据；与 R4「论文『用户』术语保留」同性质）。扫描器只报类别+文件，本行即人工判定记录。
+- **纪律固化**：① **每次同步后必跑** `tools-oss-scrub-paths.mjs` + 独立终扫（本章程自 R30 起为固定检查单）；② 门禁/清洗判据的每次收窄必须配「正/反/侧」自检并留痕；③ **零真凭据**是红线——示例允许，但必须集中、可辨识、可复核。

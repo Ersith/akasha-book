@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007z-session-tree.mjs
 // 2026-10-07 留痕：会话层 v0.2 抽象层——canon 新条 + usage/session-usage 两条修订（追加不改原文）。幂等。
-import { appendRecord, loadStore, revise, currentRecords } from '../lib.mjs';
+import { appendRecord, loadStore, revise, currentRecords } from './lib.mjs';
 
 const TREE_CANON = {
   id: 'canon-session-tree-v02-20261007',

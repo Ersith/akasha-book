@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z65-rank-merge.mjs
 // 2026-10-10：排序补齐（wave3）并入活树的交付记录 + 两条工程坑归档。幂等。
-import { loadStore, currentRecords, appendRecord, revise } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord, revise } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 
@@ -29,7 +29,7 @@ if (!canon.some((r) => r.id.startsWith('canon-patch-portability'))) {
     claim:
       '**跨环境补丁落地的两条坑（2026-10-10 实测定案）**。' +
       '**① CRLF × LF：外援补丁落到本仓活树时"每个文件首个 hunk 就失败"**——根因＝对方工作树是 **CRLF**（`git autocrlf=true` 的检出），补丁上下文行带 CR；本仓活树是 **LF**。判别法：比 CRLF 计数与「LF 归一后字节数」（本例 72309−1361=70948 ≈ 活树 70949，仅差 1 字节＝内容其实同源）。**正解三步**：a) 用本地克隆 `git diff <base>..HEAD` 重新导出补丁（仍可能带 CR，需 b）；b) 出**路径映射补丁**（`core/*`→`akasha/*`、`plugins/akasha-session/*`→`dsh-akasha-session/*`，README 类可跳过）；c) **剥掉补丁里的全部回车符**（把 CR 删掉、只留 LF）后 `git apply --check` → `git apply`（在活树的仓库上下文里用 `-p1`）。' +
-      '**② 外来 node 的 EPERM**：用非运行时 node（如 `_tools\\node20\\node.exe`）在 `D:\\dsh-temp` 下 `mkdtemp` 报 `EPERM: operation not permitted`，而同目录用运行时 node **正常**——属宿主沙箱的按程序 ACL 放行；**修法＝把 TEMP/TMP 指到工作区目录**（本例改为 `_scratch\\node20-tmp` 后 Node 20 自测 15/0/7SKIP 全通）。' +
+      '**② 外来 node 的 EPERM**：用非运行时 node（如 `_tools\\node20\\node.exe`）在 `<LOCAL_PATH>` 下 `mkdtemp` 报 `EPERM: operation not permitted`，而同目录用运行时 node **正常**——属宿主沙箱的按程序 ACL 放行；**修法＝把 TEMP/TMP 指到工作区目录**（本例改为 `_scratch\\node20-tmp` 后 Node 20 自测 15/0/7SKIP 全通）。' +
       '**顺带**：OSS 仓检出为 CRLF（`git add` 会提示 "LF will be replaced by CRLF"），活树为 LF——**跨仓比对文件前先归一化行尾**，否则会误判"不同源"。',
     source: { type: '复现', ref: '本机实测 2026-10-10（wave3 补丁落地全过程；node20 下载与 EPERM 复现）' },
     event_time: '2026-10-10',
@@ -43,7 +43,7 @@ if (!canon.some((r) => r.id.startsWith('canon-patch-portability'))) {
 const env = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-env-network-facts'));
 if (env && !env.claim.includes('外来 node')) {
   const n = revise('canon', env.id, {
-    claim: env.claim + ' **⑦ 外来 node 的 TEMP 限制（2026-10-10）**：非运行时 node（如 `_tools\\node20`）在 `D:\\dsh-temp` 下写目录报 EPERM（沙箱按程序放行），把 `TEMP/TMP` 指到工作区即可跑通。',
+    claim: env.claim + ' **⑦ 外来 node 的 TEMP 限制（2026-10-10）**：非运行时 node（如 `_tools\\node20`）在 `<LOCAL_PATH>` 下写目录报 EPERM（沙箱按程序放行），把 `TEMP/TMP` 指到工作区即可跑通。',
     last_reviewed: '2026-10-10',
   });
   console.log('已修订环境条目：' + env.id + ' → ' + n.id);

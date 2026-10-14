@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z49-verification-discipline.mjs
 // 2026-10-09 立：验证与证据纪律（ARTEX 移植；PROTOCOL §六）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 if (tips.some((r) => r.id.startsWith('canon-verification-discipline'))) { console.log('已存在，跳过'); process.exit(0); }

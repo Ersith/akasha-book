@@ -1,6 +1,14 @@
 # @akasha-book/hooks
 
-阿卡夏之书钩子 **v1.2** —— 把宿主的事件流落成 append-only 记录，为「结果计数器 / 失败回查 / 空闲脉冲 / 输出审计」供料。
+阿卡夏之书钩子 —— 把宿主的事件流落成 append-only 记录，为「结果计数器 / 失败回查 / 空闲脉冲 / 输出审计」供料。
+
+> **版本（单一真值）**：以本包 `package.json` 的 `version` 为准（2026-10-13 审计 P3 同族：此处曾写死 v1.2 而实际已到 1.2.4-h2）。当前装载版本用 `plugin_manager list_bundles` 查。
+
+- **v1.2.5-h1（2026-10-13，举一反三批）**：**修两处「工具/子命令表漏项 ⇒ 召回静默漏计」**（与 gate 的 SHELL_TOOLS 同族）——
+  ① `SHELL_TOOLS` 补 **`ops_bash`**：dsh-ops 落地后它是最常用 shell 入口，**gate 早就补了、hooks 漏了**（两处不同步）；
+  ② `CLI_RECALL` 从 9 条只读子命令扩到**全部只读面**（`check/stats/audit/metrics/frontier due|list/session lookup|context|tree|node|loopwatch|stats/sleep --plan/evidence`）——
+  此前查询走别的只读子命令时召回不计数，直接稀释 recall-miss 指标的分母。反向钉住：`revise`/`add`/`retire` 等写入子命令**不算**召回（自测 +9 条哨兵）。
+- **v1.2.4-h2 / h1（2026-10-11/12）**：A/B 开关（`abOff`）与工作窗口相关修订；观测线同前。
 
 - **v1.2（2026-10-07 复查修复）**：输出审计按 `attemptId` **连续累积**——官方 revision 逐帧递增（`nextRevision()` 每 emit 一次），修复前按 revision 重置 ⇒ 每 chunk 清空、审计恒空（output-audit/usage **0 条**实证）；id 跨帧切分现已可还原。自检夹具同步改为宿主真值（逐帧递增 revision + 跨帧切分）。
 
@@ -31,4 +39,4 @@ npm pack
 
 - 源仓库：https://github.com/Ersith/akasha-book
 - 本版本固定提交（pinned commit）：`5a55099586cfae4e7511ba433eaf202455d81c30`
-- 许可证：MIT
+- 许可证：MIT（见仓库根 LICENSE）

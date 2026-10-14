@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007z20-score-corrections.mjs
 // 2026-10-07 留痕：GPT 外部评估触发的两处计分复核更正（回放 A 8/20；树 A 15/20）。幂等。
-import { loadStore, revise, currentRecords } from '../lib.mjs';
+import { loadStore, revise, currentRecords } from './lib.mjs';
 
 const REPLAY_FIX =
   ' **复核更正（2026-10-07 晚，外部评估触发）**：A 卷总分为**逐题相加＝8/20**（2+2+1+1+2+0+0+0+0+0；此前报告与条文误记 9/20——纯算术录写错误，判分表本身一致）。B 18/20、失手题 9/10 vs 0/10、结论（会话层赢且互补非替代）**均不变**；报告已就地更正。';

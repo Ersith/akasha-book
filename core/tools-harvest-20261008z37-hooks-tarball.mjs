@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z37-hooks-tarball.mjs
 // 2026-10-08 留痕更正：hooks tarball 端点恢复（传播时差），三件拉回物齐。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const oss = tips.find((r) => r.id.startsWith('canon-oss-package-20261007'));

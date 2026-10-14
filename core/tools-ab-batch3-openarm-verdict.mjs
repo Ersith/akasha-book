@@ -1,12 +1,12 @@
 // ab-batch3-openarm-verdict.mjs —— §14 开臂结果（含污染披露）+ 修两处真缺陷 + canon
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = '<LOCAL_PATH>';
-const AB = '<LOCAL_PATH>';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const AB = '<LOCAL_PATH>\\_ab';
 
 // ① 真缺陷修复：sleep README 版本漂移（subagent 实测：README 写 1.5.1，package.json 是 1.5.5-h1）
-const readmes = [OSS + '\\plugins\\akasha-sleep\\README.md', '<AKASHA_DIR>/../plugins/akasha-sleep\\README.md'];
+const readmes = [OSS + '\\plugins\\akasha-sleep\\README.md', '<LOCAL_PATH>\\dsh-akasha-sleep\\README.md'];
 let fixedReadme = 0;
 for (const f of readmes) {
   if (!existsSync(f)) continue;
@@ -51,7 +51,7 @@ if (!t.includes('## 14. 开臂结果')) {
     '',
   ].join('\n');
   writeFileSync(P, t + block, 'utf8');
-  writeFileSync('<LOCAL_PATH>', t + block, 'utf8');
+  writeFileSync('<LOCAL_PATH>\\docs\\ab-task-battery.md', t + block, 'utf8');
   console.log('  [battery] §14 已追加（双份）');
 } else console.log('  [battery] already');
 

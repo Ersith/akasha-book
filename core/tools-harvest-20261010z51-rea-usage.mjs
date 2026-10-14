@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z51-rea-usage.mjs
 // 2026-10-10：REA（逆向分析 MCP/CLI）本地可用性实测口径入库。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 if (tips.some((r) => r.id.startsWith('canon-rea-usage'))) { console.log('已存在，跳过'); process.exit(0); }

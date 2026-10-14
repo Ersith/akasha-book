@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007z17-world-sim.mjs
 // 2026-10-07 留痕：world-sim 立项准备——frontier 基石 11 条 + canon 立项条目。幂等。
-import { loadStore, appendRecord } from '../lib.mjs';
+import { loadStore, appendRecord } from './lib.mjs';
 
 const FRONTIER = [
   ['front-objectfolder-20261007', 'ObjectFolder: A Dataset of Objects with Implicit Visual, Auditory, and Tactile Representations', 'https://ar5iv.labs.arxiv.org/html/2109.07991', 2021, '多感官对象数据', ['量感世界：多感官对象基石（视觉×听觉×触觉）', '基准物库选型参考']],

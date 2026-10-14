@@ -1,6 +1,12 @@
 # @akasha-book/sleep
 
-阿卡夏之书睡眠器 v1.5.5 —— **调度与注入**（蒸馏逻辑归核心库 `<AKASHA_DIR>/sleep.mjs`；手动触发 `node akasha.mjs sleep [--dry]` 与之共用同一水位线）。
+阿卡夏之书睡眠器 —— **调度与注入**（蒸馏逻辑归核心库 `<AKASHA_DIR>/sleep.mjs`；手动触发 `node akasha.mjs sleep [--dry]` 与之共用同一水位线）。
+
+> **版本（单一真值）**：以本包 `package.json` 的 `version` 为准；本 README **不再复述版本号**（2026-10-13 审计 P3：此处曾停在 v1.5.5 而实际已到 1.7.x-h 线）。当前装载版本用 `plugin_manager list_bundles` 查；装载态与源的逐字节一致性核查方法见 `akasha/MEMORY-TEST.md`（prompt-safety 双侧 `diff -q` 先例）。
+
+- **v1.8.0-h1（2026-10-13，空转补救）**：新增 **空转检测 + 续跑注入**——监听 `agent/assistant-stream`，**committed 且整轮正文为空**即判为「空转」（用户侧表现就是"卡住"）；落观测线 `idle-turn`，并 **`agent.inject` 一条续跑指令**（`idle-resume`）。**关键设计依据**（来源＝ARTEX 深读笔记的「Stop 钩子」）：这类失效**没有报错、没有异常、没有失败的调用**，所以**普通重试层够不着它**——必须挂在**回合结束**这一层才看得见；且**刻意不"原样重发"**上一轮输入（那只会复现同一种失效）。护栏：30 秒防抖（同一次失效期内不反复注入）、**未提交的回合（用户打断等）不算空转**。自测 +7 断言（有正文不注入 / 空转注入 / 防抖 / 未提交不算 / 观测线两条）。
+- **v1.7.2-h1（2026-10-13，举一反三 S4）**：**状态条（`akasha:stateful`）取 intent 改尾部窗口读**——原先每次渲染 `readFileSync` **整读 `session.jsonl`**（当时 21 MB）再 `.slice(-200)`；现只读**尾部 256 KB**，实测真库 **19.5 MB → 262 KB、57 ms → 0.9 ms**，gist 结果逐字相同。两个纯函数（`tailReadText` / `latestIntentGist`）提升为**顶层导出**（生产与自测同一份实现），自测新增回归：真库「尾读 vs 整读」gist 一致 + 单行无换行 / 注入段跳过 / 窗口起点切在行中三边界。
+  - 口径差异（如实）：旧口径按 **200 行**回看、新口径按 **256 KB** —— 记录变长/变密时两者覆盖并不等价（哪个更远取决于行密度）；本机实测真库两者取到同一条 gist ✓。
 
 - **v1.5.5（2026-10-07 复查修复）**：移除死代码 `source==='compact'` 早退（官方 `agent/created` 的 source 只有 startup/resume；压缩信号是 session 事件 `compaction/*`）；子代理守卫沿用官方 `header.origin/delegationDepth`（已核真实字段）。
 
@@ -33,4 +39,4 @@ npm pack
 
 - 源仓库：https://github.com/Ersith/akasha-book
 - 本版本固定提交（pinned commit）：`5a55099586cfae4e7511ba433eaf202455d81c30`
-- 许可证：MIT
+- 许可证：MIT（见仓库根 LICENSE）

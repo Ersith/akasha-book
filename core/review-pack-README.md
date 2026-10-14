@@ -15,4 +15,4 @@
 - 两臂用**同一批题、同一评审标准**；不得为提升指标挑选题目。
 
 ## 生成方式
-`node H:\Harness\akasha\tools\review-pack.mjs`（原料＝`akasha\logs\hooks.jsonl` 的历史失败记录；门控拒绝已排除）。
+`node <AKASHA_DIR>\tools\review-pack.mjs`（原料＝`akasha\logs\hooks.jsonl` 的历史失败记录；门控拒绝已排除）。

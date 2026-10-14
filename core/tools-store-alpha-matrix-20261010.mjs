@@ -3,8 +3,8 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const OSS = '<LOCAL_PATH>';
-const RUNS_DIR = '<LOCAL_PATH>';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const RUNS_DIR = '<LOCAL_PATH>\\_scratch\\store-e3';
 const PLUGINS = ['akasha-gate', 'akasha-hooks', 'akasha-session', 'akasha-sleep', 'mcp-akasha'];
 
 const runs = readdirSync(RUNS_DIR).filter((f) => f.startsWith('e3-run-')).sort();

@@ -1,7 +1,7 @@
 // 2026-10-08：scene_ref 场景 LoRA 主题的文献/教程基石（frontier 层）。
 // 全部「待验证」（新文献先待验证，+90 天复审）；URL 均取自当日检索结果，未验证可达性者已在 note 注明。
 // 幂等：已存在同 id 跳过。写入走 lib.appendRecord（中文不经命令行参数，见 canon-powershell-native-args-20261008）。
-import { appendRecord, loadStore, currentRecords, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, allIds } from './lib.mjs';
 
 const CHECK = '2026-10-08';
 const NEXT = '2027-01-06';   // 待验证 +90 天

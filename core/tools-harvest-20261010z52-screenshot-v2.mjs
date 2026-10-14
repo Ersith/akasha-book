@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z52-screenshot-v2.mjs
 // 2026-10-10：截图 v2（QQ 逆向 + 自绘 overlay）条目入库；并给称呼条目补"漂移对策"。幂等。
-import { loadStore, currentRecords, appendRecord, revise } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord, revise } from './lib.mjs';
 
 const canonTips = currentRecords(loadStore('canon').records);
 

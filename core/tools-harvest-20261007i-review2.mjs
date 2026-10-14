@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007i-review2.mjs
 // 2026-10-07 第六批留痕：复查第二轮记录——把「六项补齐后复查」的捕获并入 canon-akasha-review-round-20261007（追加 r2）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const cur = currentRecords(loadStore('canon').records).find(r => r.id.startsWith('canon-akasha-review-round-20261007'));
 const MARK = '**第二轮复查（六项补齐后，2026-10-07 晚）**';

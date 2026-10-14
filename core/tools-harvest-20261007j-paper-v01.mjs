@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007j-paper-v01.mjs
 // 2026-10-07 论文 v0.1 留痕。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-paper-v01-20261007',

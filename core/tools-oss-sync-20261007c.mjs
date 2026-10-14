@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SRC = 'H:\\Harness';
+const SRC = '<LOCAL_PATH>';
 const OSS = join(SRC, 'dist', 'akasha-oss');
 const report = [];
 const misses = [];
@@ -132,9 +132,9 @@ patch(join(OSS, 'plugins', 'akasha-sleep', 'README.md'), [['阿卡夏之书睡�
   // selftest：相对 core + tmpdir + 注入 akashaDir
   let st = read(join(SRC, 'dsh-akasha-session', 'selftest.mjs'));
   const stpairs = [
-    ["import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';\nimport { join } from 'node:path';\n\nconst SCRATCH = '<LOCAL_PATH>';",
+    ["import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';\nimport { join } from 'node:path';\n\nconst SCRATCH = '<LOCAL_PATH>\\\\_scratch';",
      "import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';\nimport { tmpdir } from 'node:os';\nimport { dirname, join } from 'node:path';\nimport { fileURLToPath } from 'node:url';\n\nconst CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');\nconst SCRATCH = join(tmpdir(), 'akasha-session-selftest');"],
-    ['// @local/akasha-session 自检', '// @akasha-book/session 自检']
+    ['// @akasha-book/akasha-session 自检', '// @akasha-book/session 自检']
   ];
   for (const [find, repl] of stpairs) {
     if (!st.includes(find)) { misses.push([dir + '/selftest.mjs', '锚点未命中：' + find.slice(0, 50).replace(/\n/g, '⏎')]); continue; }

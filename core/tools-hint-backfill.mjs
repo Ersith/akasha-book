@@ -2,7 +2,7 @@
 // 背景（2026-10-11 用户裁定）：反射要能随工程知识纠错与优化 ⇒ 反射文本必须由条目携带（改条目＝改反射），
 //   代码里的兜底表降级为"库不可读时"的过渡兼容。
 // 用法：node tools/hint-backfill.mjs [--dry]
-import { currentRecords, loadStore, revise } from '../lib.mjs';
+import { currentRecords, loadStore, revise } from './lib.mjs';
 
 const dry = process.argv.includes('--dry');
 

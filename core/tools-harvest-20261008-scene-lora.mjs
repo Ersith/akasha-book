@@ -2,7 +2,7 @@
 // 为什么要用脚本而不是 CLI --data：PowerShell 5.1 把含中文的参数按 ANSI 传给 node，
 // 中文会被截断 -> JSON.parse 报 Unterminated string。写入一律走 lib.appendRecord（与 CLI add 同一函数）。
 // 幂等：已存在同 id 跳过。
-import { appendRecord, loadStore, currentRecords, revise, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise, allIds } from './lib.mjs';
 
 const RECORDS = [
   {
@@ -24,7 +24,7 @@ const RECORDS = [
   {
     id: 'canon-lowdenoise-refine-loss-20261008',
     claim: '2026-10-08 实测（832x1216 / seed42 / 近景人像 / euler_ancestral 20 步）：mask 型精修通道在低 denoise 下只有损失没有收益——denoise 0.05 即改动 19.6% 像素（发丝与衣褶被抹平），而「只做 VAE 往返」仅改 2.1%，说明损失来自低 denoise 的 img2img 本身而非编解码；换非祖先采样器（euler 13.7%、dpmpp_2m 14.2%）只减轻约三成。规矩：该通道要么不开、要么 denoise>=0.3，0.05-0.20 是死区。另：低 denoise 场景不能用 Laplacian 清晰度判定（0.05 分数反而更高，是噪点造成的假象）。',
-    source: { type: '复现', ref: '<LOCAL_PATH> + lowdenoise-whatchanged.jpg' },
+    source: { type: '复现', ref: '<LOCAL_PATH>\\tmp\\scene-diag-20261006\\lowdenoise_test.ps1 + lowdenoise-whatchanged.jpg' },
     last_reviewed: '2026-10-08',
     event_time: '2026-10-08',
     tags: ['comfyui', 'detailer', 'denoise', 'evaluation'],
@@ -35,7 +35,7 @@ const PATCHES = [
   {
     id: 'canon-akasha-session-index-scope-20261008',
     patch: {
-      claim: '2026-10-08 核实：@local/akasha-session 的自动索引只覆盖插件落位之后新建的会话——akasha-session 于 2026-10-07 22:05 建档，本会话 59f3a538 创建于 2026-10-06 03:09（早于插件），从未被自动索引入库（session-meta.json 里无条目），手动 node akasha.mjs session index <id> 一次补齐 938 段（lastSeq 2229）。已入库的另外 5 个会话创建时间全部 >= 2026-10-07 02:39。=> 对早于插件的长会话，收尾时需手动补索引。',
+      claim: '2026-10-08 核实：@akasha-book/akasha-session 的自动索引只覆盖插件落位之后新建的会话——akasha-session 于 2026-10-07 22:05 建档，本会话 59f3a538 创建于 2026-10-06 03:09（早于插件），从未被自动索引入库（session-meta.json 里无条目），手动 node akasha.mjs session index <id> 一次补齐 938 段（lastSeq 2229）。已入库的另外 5 个会话创建时间全部 >= 2026-10-07 02:39。=> 对早于插件的长会话，收尾时需手动补索引。',
       last_reviewed: '2026-10-08',
     },
   },

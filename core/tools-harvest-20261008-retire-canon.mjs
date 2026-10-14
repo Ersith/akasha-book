@@ -1,5 +1,5 @@
 // 2026-10-08：把「退役/删除原语」本身记进 canon（自家能力不入库 → 下一个会话就检索不到）。
-import { appendRecord, loadStore, currentRecords, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, allIds } from './lib.mjs';
 
 const REC = {
   id: 'canon-akasha-retire-primitive-20261008',

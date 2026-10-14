@@ -8,7 +8,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const SRC = 'H:\\Harness';
+const SRC = '<LOCAL_PATH>';
 const OSS = join(SRC, 'dist', 'akasha-oss');
 const report = [];
 const misses = [];
@@ -29,7 +29,7 @@ function sanitize(text) {
     .replace(/~\/\.akasha[\\]{1,2}/g, '~/.akasha/')
     .replace(/H:[\\/]{1,4}Harness[\\/]{1,4}_scratch/g, '<scratch>')
     .replace(/H:[\\/]{1,4}Harness/g, '~')
-    // 包名映射（2026-10-08 wave1）：先具体后兜底——@local/akasha-gate → @akasha-book/gate
+    // 包名映射（2026-10-08 wave1）：先具体后兜底——@akasha-book/akasha-gate → @akasha-book/gate
     .replace(/@local\/akasha-(gate|hooks|sleep|session)/g, '@akasha-book/$1')
     .replace(/@local\/mcp-akasha/g, '@akasha-book/mcp')
     .replace(/@local\//g, '@akasha-book/')
@@ -110,7 +110,7 @@ for (const f of ['lib.mjs', 'akasha.mjs', 'mcp.mjs', 'sleep.mjs', 'SCHEMA.md', '
     "import { tmpdir } from 'node:os';\nimport { dirname, join } from 'node:path';\nimport { fileURLToPath } from 'node:url';");
   st = st.replace(/const CORE = '[^']*';/, "const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');");
   st = st.replace(/const SCRATCH = '[^']*';/, "const SCRATCH = join(tmpdir(), 'akasha-session-selftest');");
-  st = st.replace('// @local/akasha-session 自检', '// @akasha-book/session 自检');
+  st = st.replace('// @akasha-book/akasha-session 自检', '// @akasha-book/session 自检');
   st = st.replace(/mod\.apply\((ctx\d*), \{ log/g, 'mod.apply($1, { akashaDir: CORE, log');
   for (const [tag, cond] of [['CORE', /const CORE = join\(/], ['SCRATCH', /const SCRATCH = join\(tmpdir\(\)/], ['apply.inject', /mod\.apply\(ctx\d*, \{ akashaDir: CORE/], ['header', /@akasha-book\/session 自检/]]) {
     if (!cond.test(st)) misses.push(['plugins/akasha-session/selftest.test.mjs', '转换缺失：' + tag]);

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z56-rea-shim-capability.mjs
 // 2026-10-10：给 mcp-rea 条目补「完整可用性」口径（逃生舱参数透传 / --format 覆盖 / 三层限制）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 const rec = canon.find((r) => r.id.startsWith('canon-mcp-rea-shim'));

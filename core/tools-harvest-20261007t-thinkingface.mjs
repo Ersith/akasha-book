@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007t-thinkingface.mjs
 // 2026-10-07 留痕：标点空转的第一张「肖像」——用户发来「正在思考……」表情图（非投诉，系好奇）。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'mirror-thinking-face-20261007',

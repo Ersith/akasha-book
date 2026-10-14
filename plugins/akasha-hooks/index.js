@@ -17,10 +17,17 @@ const DEFAULT_AKASHA = ENV_AKASHA ?? join(homedir(), '.akasha');
 const DEFAULT_LOG = join(DEFAULT_AKASHA, 'logs', 'hooks.jsonl');
 const expandHome = (p) => (p === '~' ? homedir() : (p.startsWith('~/') || p.startsWith('~\\')) ? join(homedir(), p.slice(2)) : p);
 
-// B2（wave1）：shell 里经 akasha CLI 的只读查库也算「召回」——只记子命令名（不记命令原文，免泄露）。
+// B2（wave1）：shell 里经 akasha CLI 的只读查库也算「召回」——只记子命令名（命令原文不进日志）。
 // 2026-10-10 人读复查补 `dsh_wsl`：工具目录长了，这个集合没跟上 ⇒ WSL 里的查库不会被计入召回。
-const SHELL_TOOLS = new Set(['bash', 'pwsh', 'sh', 'shell', 'dsh_wsl']);
-const CLI_RECALL = /akasha\.mjs["']?\s+(lookup|brief|cross|kit|show|summary|mirror\s+match|session\s+lookup|frontier\s+due)\b/i;
+// 2026-10-13 举一反三（审计 P1 同族）：再补两处同类缺口——
+//   ① `ops_bash`：dsh-ops 落地后它是最常用的 shell 入口，gate 的 SHELL_TOOLS 早就补了它，**这里漏了**（两处不同步）；
+//   ② 子命令表扩到「全部只读面」：`check`（自查）、`stats`、`audit`、`metrics`、`frontier list`、`session <…>`、
+//      `sleep --plan`（只读计划）、`evidence`。此前只认 9 条 ⇒ 查询走别的只读子命令时召回**静默不计数**，
+//      直接稀释 recall-miss 指标的分母（那是「失败回查」的输入）。
+//   ③ 反向：写子命令（revise/add/retire/promote/orphan add/price --apply…）**不在**表内，命中不算召回。
+//   注：判定只看命令文本（含注释/heredoc 里的字面量），属**启发式观测**，不承诺防误报——量级小、且只喂软指标。
+const SHELL_TOOLS = new Set(['bash', 'pwsh', 'sh', 'shell', 'dsh_wsl', 'ops_bash']);
+const CLI_RECALL = /akasha\.mjs["']?\s+(lookup|brief|cross|kit|show|summary|check|stats|audit|metrics|frontier\s+(?:due|list)|mirror\s+match|session\s+(?:lookup|context|tree|node|loopwatch|stats)|sleep\s+--plan|evidence)\b/i;
 /** 工具调用若是 akasha CLI 查库子命令 → 归一名（'lookup' / 'mirror-match' / 'session-lookup' …）；否则 null。 */
 export function akashaCliOf(name, args) {
   try {

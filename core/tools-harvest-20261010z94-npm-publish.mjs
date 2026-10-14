@@ -1,12 +1,12 @@
 // akasha/tools/harvest-20261010z94-npm-publish.mjs —— npm 重发（4 成 1 待 2FA）
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-npm-publish-20261010'))) { console.log('= 已记录'); process.exit(0); }
 const r = appendRecord('canon', {
   id: 'canon-npm-publish-20261010',
   claim:
-    '**npm 重发（2026-10-10，用户裁定「没问题的话，npm 就发」）**：五包逐一 `npm publish --access public`（走本地代理 `http://127.0.0.1:7897`）。' +
+    '**npm 重发（2026-10-10，用户裁定「没问题的话，npm 就发」）**：五包逐一 `npm publish --access public`（走本地代理 `http://127.0.0.1:<PORT>`）。' +
     '**结果：4 成 1 待**——`@akasha-book/gate@1.2.4` ✓、`@akasha-book/hooks@1.2.3` ✓、`@akasha-book/sleep@1.5.3` ✓、`@akasha-book/mcp@1.1.1` ✓（`dist-tag latest` 均已指向新版）；' +
     '`@akasha-book/session@0.3.1` **被 npm 暂存（staged）待 2FA 确认**：重发报 `E409 Cannot publish over previously staged version "0.3.1"`，而 `npm stage list` 在本机 CLI 侧看不到该暂存件（需 2FA 新鲜授权或走网页确认）。' +
     '**两条踩坑（都已成经验）**：① **`npm view` 会骗人**：本地 packument 缓存让刚发布的版本仍读成旧版（`latest` 显示 1.2.1、`time.modified` 停在 10-08）——' +

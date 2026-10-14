@@ -1,6 +1,6 @@
 // One-shot probe: evaluate the akasha wake-note decision with live library data.
 const a = await import('file:///<AKASHA_DIR>/lib.mjs');
-const s = await import('file:///<AKASHA_DIR>/../plugins/akasha-sleep/lib/index.js');
+const s = await import('file:///<LOCAL_PATH>/dsh-akasha-sleep/lib/index.js');
 
 const k = a.kit();
 const verdict = {

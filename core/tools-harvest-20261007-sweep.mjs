@@ -1,6 +1,6 @@
 // 2026-10-07「举一反三」类扫的结论入库（幂等）。
 // 用法：node akasha\tools\harvest-20261007-sweep.mjs
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-akasha-sweep-20261007',

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z70-a1-id-gap.mjs
 // 2026-10-10：A1 的两条待修发现（id 口径不一致 + 自我层未被豁免）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-a1-id-convention-gap'))) { console.log('已存在，跳过'); process.exit(0); }

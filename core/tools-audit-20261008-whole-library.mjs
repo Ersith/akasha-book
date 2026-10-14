@@ -11,7 +11,7 @@
 //   9) 会话层：坏行 / meta 与数据自洽
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { ROOT, STORES, loadStore, currentRecords, retiredIds, allIds, validateRecord } from '../lib.mjs';
+import { ROOT, STORES, loadStore, currentRecords, retiredIds, allIds, validateRecord } from './lib.mjs';
 
 const PREFIX = { canon: 'canon-', mirror: 'mirror-', orphan: 'orphan-', pricing: 'price-', lexicon: 'lex-', frontier: ['front-', 'frontier-'] };
 const DATE_FIELDS = ['last_reviewed', 'last_checked', 'next_review', 'created', 'event_time'];

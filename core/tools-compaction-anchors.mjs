@@ -1,7 +1,7 @@
 // compaction-anchors.mjs —— 「约定级」压缩损失核对：抽若干**核心约定**，看它们在每次压缩的「窗口→摘要」里是否存活（只读）。
 // 与 compaction-loss.mjs 的分工：那个走"高频词统计"（粗、可能有话题集中混杂），本工具走**人工指定的具体约定**（细、可逐条核对）。
 // 用法：node tools/compaction-anchors.mjs [会话前缀]
-import { readSessionArchive, resolveSessionFile, SESSION_DEFAULTS } from '../session.mjs';
+import { readSessionArchive, resolveSessionFile, SESSION_DEFAULTS } from './session.mjs';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 

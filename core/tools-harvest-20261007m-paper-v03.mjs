@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007m-paper-v03.mjs
 // 2026-10-07 论文 v0.3 留痕：canon-paper-v01 → 下一次修订（补 v0.3 说明）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const cur = currentRecords(loadStore('canon').records).find(r => r.id.startsWith('canon-paper-v01-20261007'));
 if (!cur) { console.log('找不到 canon-paper 条'); }

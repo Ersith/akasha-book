@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');
+const CORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core');   // 2026-10-11 修：原为 '../..', 'core' ⇒ 解析成 H:\core（不存在）⇒ 12 条用例全挂的下游根因
 const SCRATCH = join(tmpdir(), 'akasha-session-selftest');
 mkdirSync(SCRATCH, { recursive: true });
 // 清残：失败路径可能留下的临时目录（成功路径自清）
@@ -28,11 +28,13 @@ function tz(name, fn) {
 // v0.4：worker 路径是异步的——给用例提供 async + 轮询等待能力。
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function ta(name, fn) {
+  await loadFresh();   // 每个用例前重载模块（清掉跨用例状态）
   try { await fn(); passed++; console.log('PASS', name); }
   catch (e) { failures.push([name, e]); console.log('FAIL', name, '—', e.message); }
 }
 /** 依赖 zstd 的异步用例：Node 20 等无 zstd 时 SKIP（与 tz 同口径；4ab8856 worker 用例曾漏掉）。 */
 async function tza(name, fn) {
+  // 注：走 ta ⇒ 自带 loadFresh 重载
   if (HAS_ZSTD) return ta(name, fn);
   skipped.push(name); console.log('SKIP', name, `— Node ${process.version} 无 zstd`);
 }
@@ -47,7 +49,11 @@ async function waitFor(pred, { timeoutMs = 20000, stepMs = 100 } = {}) {
 }
 
 let mod = null;
-try { mod = await import('./lib/index.js'); }
+// 2026-10-11 修：模块级状态会跨用例污染（worker 模式 / 节流时间戳 / workerFails）⇒ 每个用例前**重载模块**。
+//   证据：同一 fixture 单独跑（probe-session-index.mjs）完全正常 ⇒ 缺陷在测试隔离，不在插件。
+let __loadN = 0;
+const loadFresh = async () => { mod = await import('./lib/index.js?fresh=' + (++__loadN)); return mod; };
+try { await loadFresh(); }
 catch (e) { failures.push(['import lib/index.js', e]); console.log('FAIL import lib/index.js —', e.message); }
 
 function makeCtx() {
@@ -384,6 +390,28 @@ if (mod) {
     assert.ok(readLines(log).some((l) => l.kind === 'loop-watch-probe' && String(l.type).includes('chunk')), '探针应记录帧/chunk 类型');
     rmSync(dir, { recursive: true, force: true });
   });
+  t('循环观测：上下文长度代理 ctxChars（自上次压缩累计；压缩归零）——只记录不干预（2026-10-14 加）', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
+    const log = join(dir, 'hooks.jsonl');
+    const { ctx, handlers } = makeCtx();
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot: join(dir, 'sessions'), metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), loopWatch: true, watchMinChars: 10, watchCheckEvery: 20 });
+    const fire = (frame) => (handlers['agent/assistant-stream'] ?? []).forEach((fn) => fn({ agent: { id: 'ag7', session: { id: 'c7' } }, frame }));
+    fire({ type: 'start', attemptId: 'c7:1', turn: 1, step: 1 });
+    fire({ type: 'chunk', attemptId: 'c7:1', index: 0, chunk: { type: 'reasoning-delta', index: 0, text: 'abcd'.repeat(5) } }); // 20 字符
+    // 探针在「处理该帧之前」记录 ⇒ 首个探针 ctxChars=0；再喂一帧新类型，其探针应已含前帧累计
+    fire({ type: 'chunk', attemptId: 'c7:1', index: 0, chunk: { type: 'text-delta', index: 1, text: 'x'.repeat(5) } });         // +5 字符
+    const p1 = readLines(log).filter((l) => l.kind === 'loop-watch-probe');
+    assert.ok(p1.length >= 2, '应有至少两种类型的探针：' + JSON.stringify(readLines(log)).slice(0, 300));
+    assert.ok(p1.every((l) => typeof l.ctxChars === 'number'), '每条探针须带 ctxChars：' + JSON.stringify(p1));
+    assert.ok(p1[p1.length - 1].ctxChars >= 20, '后续探针应已累计前帧流字符（≥20）：' + JSON.stringify(p1[p1.length - 1]));
+    // 压缩完成 → 代理归零；随后未知类型帧的探针应从零起
+    (handlers['session/event'] ?? []).forEach((fn) => fn({ id: 'c7' }, { type: 'compaction/end', data: {} }));
+    fire({ type: 'chunk', attemptId: 'c7:2', index: 0, chunk: { type: 'unknown-delta', index: 2, text: 'y'.repeat(5) } });
+    const p2 = readLines(log).filter((l) => l.kind === 'loop-watch-probe');
+    const last = p2[p2.length - 1];
+    assert.ok(last.ctxChars <= 5.0001, '压缩后应从零重算（≤5）：' + JSON.stringify(last));
+    rmSync(dir, { recursive: true, force: true });
+  });
   t('循环观测：缓冲饱和（>20K）后仍继续检查（seen 单调计数）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
     const log = join(dir, 'hooks.jsonl');
@@ -420,8 +448,16 @@ if (mod) {
     assert.ok(all.some((l) => l.kind === 'session-worker' && l.event === 'spawn'), '应有 worker spawn 线');
     assert.ok(all.some((l) => l.kind === 'session-worker' && l.event === 'ready'), '应有 worker ready 线');
     assert.equal(all.filter((l) => l.kind === 'session-worker-error').length, 0, '不得有 worker 错误：' + JSON.stringify(all.filter((l) => l.kind === 'session-worker-error')));
-    const storeRows = readFileSync(join(dir, 'store.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean).length;
-    assert.equal(storeRows, 3, 'store 应有 3 行：' + storeRows);
+    const storeLines = readFileSync(join(dir, 'store.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+    // 口径修正（2026-10-13 审计）：v0.3 起索引成功后**自动建树**会追加 L1 node 行 ——
+    // 「store 恰好 3 行」是建树落地前的写法，之后稳定假红（实测 4 行 = 3 段 + 1 节点）。
+    // 改为断言**逻辑内容**：3 条 intent 段（本会话）+ 至多 1 个 treegen≥1 的 node。
+    const segRows = storeLines.filter((r) => r.session === 'wkr12345' && r.kind !== 'node');
+    assert.equal(segRows.length, 3, '应有 3 条 intent 段：' + JSON.stringify(segRows.map((r) => r.id)));
+    assert.ok(segRows.every((r) => r.kind === 'intent'), '段 kind 应为 intent');
+    const nodeRows = storeLines.filter((r) => r.kind === 'node');
+    assert.ok(nodeRows.length <= 1, '至多 1 个自动树节点：' + nodeRows.length);
+    if (nodeRows.length) assert.ok((Number(nodeRows[0].treegen) || 0) >= 1, 'node 应带 treegen：' + JSON.stringify(nodeRows[0]));
     for (const d of disposers) { try { d(); } catch { /* 静默 */ } }
     await waitFor(() => readLines(log).some((l) => l.kind === 'session-worker' && (l.event === 'bye' || l.event === 'exit')), { timeoutMs: 10000 });
     rmSync(dir, { recursive: true, force: true });

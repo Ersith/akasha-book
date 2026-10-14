@@ -4,10 +4,10 @@
 // 用法：node tools/review-pack-v3-material.mjs
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { currentRecords, loadStore } from '../lib.mjs';
+import { currentRecords, loadStore } from './lib.mjs';
 
-const V2RUN = '<LOCAL_PATH>';
-const OUT = '<LOCAL_PATH>';
+const V2RUN = '<LOCAL_PATH>\\_ab\\review-pack-v2run';
+const OUT = '<LOCAL_PATH>\\_ab\\review-pack-v3';
 const pack = JSON.parse(readFileSync(join(V2RUN, 'pack.json'), 'utf8'));
 const canon = currentRecords(loadStore('canon').records);
 const byId = new Map(canon.map((r) => [String(r.id), r]));

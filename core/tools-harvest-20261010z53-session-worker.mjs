@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z53-session-worker.mjs
 // 2026-10-10：会话层索引 worker 化（v0.4）入库。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-session-worker-v04'))) {

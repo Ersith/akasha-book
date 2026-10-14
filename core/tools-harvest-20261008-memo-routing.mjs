@@ -1,6 +1,6 @@
 // 2026-10-08：把「备忘分流约定」立成 canon —— 用户裁定：这类整理好的备忘应交给已安装的「全局备忘录」面板，
 // 而不是只落在项目内的 .md 文件里（"既然我们有就可以用"）。
-import { appendRecord, loadStore, allIds } from '../lib.mjs';
+import { appendRecord, loadStore, allIds } from './lib.mjs';
 
 const REC = {
   id: 'canon-memo-routing-20261008',

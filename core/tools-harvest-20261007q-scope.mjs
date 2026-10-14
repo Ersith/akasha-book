@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007q-scope.mjs
 // 2026-10-07 留痕：① canon-oss-package → 再修订（scope 已定）② orphan-muxr1cs2 → r1（复核结论）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 // ① canon oss 条
 {

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z41-social-learning-r1.mjs
 // 2026-10-09 留痕：社会学习 v1 修订 r1——坑只是部分；成功案例（达成目的）＝最大价值；学理由与恢复。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const rec = tips.find((r) => r.id.startsWith('canon-social-learning-v1'));

@@ -1,5 +1,5 @@
 // akasha/tools/harvest-20261010z99-dossier.mjs —— 卷宗指针入 canon
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const recs = currentRecords(loadStore('canon').records);
 const hit = recs.filter((r) => String(r.id).startsWith('canon-observation-ledger')).pop();

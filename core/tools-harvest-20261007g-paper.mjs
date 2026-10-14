@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007g-paper.mjs
 // 2026-10-07 留痕：canon 论文与企划补录产出记录。幂等：已有跳过。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-akasha-paper-20261007',

@@ -5,9 +5,9 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const ROOT = '<LOCAL_PATH>';
+const ROOT = '<LOCAL_PATH>\\_ab';
 const T2 = join(ROOT, 'tasks2');
-const OSS = '<LOCAL_PATH>';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
 
 // 三类：F=跨会话事实 · X=无提示陷阱 · I=不可逆
 const B = {
@@ -73,7 +73,7 @@ if (!doc.includes('## 8. 第二批题（待评审）')) {
     '',
   ].join('\n');
   writeFileSync(P, doc + block, 'utf8');
-  writeFileSync('<LOCAL_PATH>', doc + block, 'utf8');
+  writeFileSync('<LOCAL_PATH>\\docs\\ab-task-battery.md', doc + block, 'utf8');
   console.log('  [battery] §8 已追加（双份）');
 } else console.log('  [battery] already');
 console.log('  fixture：' + rows.length + ' 题 → ' + T2);

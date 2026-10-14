@@ -1,7 +1,7 @@
 // 首次真实入库（harvest 2026-10-06）：把当天验证过的操作事实（复现/官方）、镜像故事、情绪词、定价与孤案写入各库。
 // 幂等：已存在同 id 跳过；全部经 lib.appendRecord 校验写入（不直改 JSONL）。
 // 用法：node akasha\tools\harvest-20261006.mjs
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const D = '2026-10-06';
 
@@ -44,7 +44,7 @@ const canon = [
   {
     id: 'canon-node-tmpdir-env',
     claim: 'Windows 上 Node 的 os.tmpdir() 读 TEMP/TMP 环境变量（子进程继承）——可用它把某个进程树的临时文件整体改盘。',
-    source: { type: '官方', ref: 'Node.js Docs — os.tmpdir()；2026-10-06 实测：设 TEMP=D:\\dsh-temp 后 os.tmpdir() 返回 D:\\dsh-temp' },
+    source: { type: '官方', ref: 'Node.js Docs — os.tmpdir()；2026-10-06 实测：设 TEMP=<LOCAL_PATH> 后 os.tmpdir() 返回 <LOCAL_PATH>' },
     last_reviewed: D,
     tags: ['node', 'windows']
   }
@@ -77,7 +77,7 @@ const pricing = [
     behavior: '绕过校验直改 append-only 数据文件',
     valence: -1,
     severity_default: 4,
-    note: '门控拦截项（@local/akasha-gate）'
+    note: '门控拦截项（@akasha-book/akasha-gate）'
   },
   {
     id: 'price-silent-catch',

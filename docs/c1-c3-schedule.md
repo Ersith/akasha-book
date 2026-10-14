@@ -19,7 +19,7 @@
 
 **输出（一行，≤80 字）**：`[坑前提示] <T> 前先 <动作> —— 条目 <id>`（例：`[坑前提示] edit 前先 read 原文再改 —— canon-trap-edit-context-mismatch`）。
 
-**落点**：`@local/akasha-sleep` 的 context 行（order **135**，渲染路径已验证、失败安全）。备选：gate 的工具前置钩子（更强但更侵入，**v1 不用**）。
+**落点**：`@akasha-book/akasha-sleep` 的 context 行（order **135**，渲染路径已验证、失败安全）。备选：gate 的工具前置钩子（更强但更侵入，**v1 不用**）。
 
 **硬约束（外部评审要求：短·可关·防膨胀）**：
 - 开关：`preflightHints: false` 一键关闭 ⇒ 关闭后**零可见变化**；

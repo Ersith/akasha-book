@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z29-review-merge.mjs
 // 2026-10-08 留痕：外部评审合并批上线（OSS cddc9d6）→ oss-package 链 + usage 条机制变更注记。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 

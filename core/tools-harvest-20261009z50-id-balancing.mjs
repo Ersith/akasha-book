@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z50-id-balancing.mjs
 // 2026-10-09：frontier 入库——Qwen ID Balancing（arXiv:2609.39137，官方摘要直读核验）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const tips = currentRecords(loadStore('frontier').records);
 if (tips.some((r) => r.id.startsWith('front-qwen-id-balancing'))) { console.log('已存在，跳过'); process.exit(0); }

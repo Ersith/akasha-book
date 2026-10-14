@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007aa-spin-frontier.mjs
 // 2026-10-07 留痕：空转/循环前沿文献 + 工程先例 —— frontier 新增 7 条 + canon 1 条。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const FRONTIER = [
   {

@@ -1,5 +1,5 @@
 // harvest-20261010z92-gaterecheck.mjs —— 第三轮人读（gate 覆盖缺口 + hooks 陈旧）+ 常设纪律入 canon
-import { loadStore, currentRecords, appendRecord, revise } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord, revise } from './lib.mjs';
 
 // ① 常设纪律（用户裁定，跨会话有效）
 const canon = currentRecords(loadStore('canon').records);

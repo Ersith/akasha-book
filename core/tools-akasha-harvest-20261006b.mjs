@@ -1,7 +1,7 @@
 // 2026-10-06 收尾补库（原 tmp\akasha-harvest-20261006b.mjs 的**幂等版**）：五大事件在六库的缺口。
 // 幂等：已存在同 id 跳过（原版直 append，重跑会产生重复 id）；全部经 lib.appendRecord 校验写入（与 CLI add 同一函数）。
 // 用法：node akasha\tools\akasha-harvest-20261006b.mjs
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const batch = [
   ['canon', {
@@ -30,7 +30,7 @@ const batch = [
   }],
   ['canon', {
     id: 'canon-akasha-sleep-wake',
-    claim: '阿卡夏睡眠器（@local/akasha-sleep v1.2）有两张条子：①每回合 runtime context 摘要行（systemPrompt.context，name=akasha:sleep，order=130，含待办数）；②新会话唤醒条——监听 agent/created，经 agent.inject(createUserMessage(...)) 把起床包摘要递进 next-step inbox（不唤醒、不打断），仅当「无睡眠记录 / inbox 有待办 / 审计有警告」才发；子代理（origin=subagent 或 delegationDepth>0）与 compact 不打扰。触发：空闲去抖 6h + timer 1h 兜底；观测线：sleep-armed / sleep-done / sleep-skip / sleep-error / wake-note / wake-note-error。注入写法与官方 cordis-host-runner / user-approval 同款（agent.inject(createUserMessage({content, source:{kind}}))）。',
+    claim: '阿卡夏睡眠器（@akasha-book/akasha-sleep v1.2）有两张条子：①每回合 runtime context 摘要行（systemPrompt.context，name=akasha:sleep，order=130，含待办数）；②新会话唤醒条——监听 agent/created，经 agent.inject(createUserMessage(...)) 把起床包摘要递进 next-step inbox（不唤醒、不打断），仅当「无睡眠记录 / inbox 有待办 / 审计有警告」才发；子代理（origin=subagent 或 delegationDepth>0）与 compact 不打扰。触发：空闲去抖 6h + timer 1h 兜底；观测线：sleep-armed / sleep-done / sleep-skip / sleep-error / wake-note / wake-note-error。注入写法与官方 cordis-host-runner / user-approval 同款（agent.inject(createUserMessage({content, source:{kind}}))）。',
     source: {
       type: '复现',
       ref: 'dsh-akasha-sleep\\lib\\index.js（v1.2.0）+ README；宿主契约：@deepseek-ai/dsh-tool-cordis api-catalog（agent/created payload={agent,source,signal}）+ dsh-cordis-host-runner:2450 同款调用；selftest 全绿（2026-10-06）'

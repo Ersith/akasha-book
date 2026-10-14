@@ -1,9 +1,9 @@
 // akasha/tools/harvest-20261007z5-loop-watch-p0.mjs
 // 2026-10-07 留痕：循环观测 P0 上线 → canon（spin 链）+ usage r19 + session-usage r3。幂等。
-import { loadStore, revise, currentRecords } from '../lib.mjs';
+import { loadStore, revise, currentRecords } from './lib.mjs';
 
 const SPIN_APPENDIX =
-  '\n\n**P0 干跑上线（2026-10-07，受控解冻第十六次）**：三环架构之 P0 并入小阿卡夏（`@local/akasha-session` **v0.2.0**，restart-required）——**流环**（`assistant/chunk` 的 reasoning/text-delta 累积，480 字符节流 + 8K 尾窗；真值对官方 `dsh-llm` StreamChunk 核实）+ **turn 环**（`agent/turn-stopping`/`turn/end` 全文）+ 类型探针；命中只写 `loop-watch`/`loop-watch-probe` 观测线，**绝不干预**（干跑红线）。汇总 CLI：`node akasha.mjs session loopwatch`。检测器修正：**step 2→1**（奇周期循环盲区——turn 环自检首跑踩中）+ 尾优先收集；selftest **16/16**。基线 v2.1：f362b992 块重复 1（seq 1245，代码重述，良性）/ 变体 10+8 / 第三会话 6696bbf1 全零。P1（温和恢复：steer → cancel(keepInbox) → 降档）待 P0 数据 + 另裁定。';
+  '\n\n**P0 干跑上线（2026-10-07，受控解冻第十六次）**：三环架构之 P0 并入小阿卡夏（`@akasha-book/akasha-session` **v0.2.0**，restart-required）——**流环**（`assistant/chunk` 的 reasoning/text-delta 累积，480 字符节流 + 8K 尾窗；真值对官方 `dsh-llm` StreamChunk 核实）+ **turn 环**（`agent/turn-stopping`/`turn/end` 全文）+ 类型探针；命中只写 `loop-watch`/`loop-watch-probe` 观测线，**绝不干预**（干跑红线）。汇总 CLI：`node akasha.mjs session loopwatch`。检测器修正：**step 2→1**（奇周期循环盲区——turn 环自检首跑踩中）+ 尾优先收集；selftest **16/16**。基线 v2.1：f362b992 块重复 1（seq 1245，代码重述，良性）/ 变体 10+8 / 第三会话 6696bbf1 全零。P1（温和恢复：steer → cancel(keepInbox) → 降档）待 P0 数据 + 另裁定。';
 
 const USAGE_APPENDIX =
   '\n**㉓ 循环观测 P0（2026-10-07）**：`node akasha.mjs session loopwatch [--since D] [--json]`——小阿卡夏子功能；数据源自插件 v0.2 的 **dry 干跑**观测线（`loop-watch`/`loop-watch-probe`；只观测、绝不干预）。方法见 research\\loop-guard-synthesis-20261007.md；基线 research\\semantic-loop-baseline-20261007.md。';

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z47-artex-lessons.mjs
 // 2026-10-09：ARTEX 学习——启示条款回灌（简报三件套/拦截文案候选/验收绑实物/负结论写回）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const rec = tips.find((r) => r.id.startsWith('canon-artex-study'));

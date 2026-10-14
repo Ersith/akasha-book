@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007x-session-benchmark.mjs
 // 2026-10-07 留痕：会话层外部同构扫描——frontier 补录 5 条 + canon 评估条目。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const FRONTIER = [
   {

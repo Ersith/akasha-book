@@ -9,7 +9,7 @@
 
 | # | 耦合点 | 我们依赖的形状 | 检查（怎么发现上游变了） | 现状 |
 |---|---|---|---|---|
-| C1 | **用户消息形状**（sleep 唤醒条注入） | `createUserMessage(input)` = `deepFreeze(structuredClone({ ...input, role:'user', id: <uuid 字符串> }))`；字段集合 = `content / id / role / source` | `plugins/akasha-sleep/selftest.test.mjs` 的**契约测试**：本机能找到宿主包时（`AKASHA_DSH_MODULES`，默认 `D:\DSHHarness\resources\app\dsh\node_modules`），逐字段比对我们的构造与宿主 `createUserMessage` 的输出（键集合 / role / id 类型 / content / source / 冻结语义）。**键集合不一致即红。** | 对齐 DSH `0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`（三版 E3 全过） |
+| C1 | **用户消息形状**（sleep 唤醒条注入） | `createUserMessage(input)` = `deepFreeze(structuredClone({ ...input, role:'user', id: <uuid 字符串> }))`；字段集合 = `content / id / role / source` | `plugins/akasha-sleep/selftest.test.mjs` 的**契约测试**：本机能找到宿主包时（`AKASHA_DSH_MODULES`，默认 `<DSH_INSTALL>`），逐字段比对我们的构造与宿主 `createUserMessage` 的输出（键集合 / role / id 类型 / content / source / 冻结语义）。**键集合不一致即红。** | 对齐 DSH `0.2.0-rc.2`、`0.2.1-alpha.1`、`0.2.1-alpha.2`（三版 E3 全过） |
 | C2 | **工具定义形状**（mcp 桥注册） | `ctx.tools.register({ name, description, parameters, output:{schema, render}, execute, projectContent })`；公开名 `mcp__<server>__<tool>`（非法字符→`_`；改写或 >64 → 截断 + 12 位 sha256） | `plugins/mcp-akasha/selftest.test.mjs`：桩 ctx 断言六项形状 + 公开名规则；**端到端**用真实 MCP 服务器注册并真调一次 | 对齐同上三版 |
 | C3 | **插件装载契约** | `export const inject = [...]`、`apply(ctx, config)`（可为 async）、`ctx.tools.register` 返回 disposer、`ctx.effect`/`ctx.on('dispose')` 清理 | 每个插件的 `selftest.test.mjs` 用桩 ctx 跑 `apply()`；E3（一次性 Profile 装-启-卸）验证真装载 | 同上 |
 | C4 | **Profile 启动语义** | profile 由 shipped 模板创建（`--from-default-profile <模板>`）；`--dump-config` 可读组合；`plugin add/remove` 走官方 CLI | E3 跑器 `akasha/tools/store-e3-20261010.mjs`（三版 DSH 各跑一遍装-启-卸-组成还原） | 同上 |

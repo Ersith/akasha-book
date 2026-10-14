@@ -1,6 +1,7 @@
 {
   "name": "@akasha-book/hooks",
-  "version": "1.2.6",
+  "version": "1.2.4",
+  "private": true,
   "engines": {
     "node": ">=18"
   },
@@ -19,18 +20,21 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "publishConfig": {
-    "access": "public"
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.2.0-rc.2",
+    "@deepseek-ai/cordis": "^4.0.4"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Ersith/akasha-book.git",
-    "directory": "plugins/akasha-hooks"
+    "directory": "dsh-akasha-hooks"
   },
   "scripts": {
     "test": "node selftest.test.mjs",
     "check": "node --check lib/index.js"
   },
-  "private": true
+  "publishConfig": {
+    "access": "public"
+  }
 }

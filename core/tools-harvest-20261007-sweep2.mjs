@@ -1,6 +1,6 @@
 // 第二轮「举一反三」结论入库（2026-10-07，幂等）。
 // 用法：node akasha\tools\harvest-20261007-sweep2.mjs
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-akasha-sweep2-20261007',

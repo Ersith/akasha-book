@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261009z45-usage-self-note.mjs
 // 2026-10-09：用法条同步——注入面增 akasha:self（受控路径 allowProtocol；行为更新→同批同步用法）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const usage = tips.find((r) => r.id === 'canon-akasha-usage' || r.id.startsWith('canon-akasha-usage-r'));

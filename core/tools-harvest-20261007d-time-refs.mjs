@@ -1,7 +1,7 @@
 // akasha/tools/harvest-20261007d-time-refs.mjs
 // 2026-10-07 第三批留痕：① canon 双时态字段规格 ② canon 外部代码深读结论（Letta/ACE）
 // ③ canon-akasha-usage → r8：补 ⑮ 时间字段 / ⑯ 直读。幂等：已有跳过。
-import { appendRecord, loadStore, currentRecords, revise } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise } from './lib.mjs';
 
 let added = 0; let revised = 0; let skipped = 0;
 

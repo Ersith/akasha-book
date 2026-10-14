@@ -1,12 +1,19 @@
 // 阿卡夏之书（Akasha）v0 核心库。零依赖（仅 Node stdlib）。
 // 数据：data/*.jsonl（append-only）。规范见 SCHEMA.md / PROTOCOL.md。
-import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync, statSync, openSync, closeSync, writeSync, fsyncSync, renameSync, unlinkSync, constants } from 'node:fs';
+import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync, statSync, openSync, closeSync, writeSync, readSync, fsyncSync, renameSync, unlinkSync, constants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 export const ROOT = dirname(fileURLToPath(import.meta.url));
-export const DATA = join(ROOT, 'data');
+// 数据根（#36 相关）：`AKASHA_ROOT` 可覆盖（迁移/多库/坏根演练用）；默认 <repo>/data。
+export const DATA = process.env.AKASHA_ROOT ? String(process.env.AKASHA_ROOT) : join(ROOT, 'data');
+// 日志根（2026-10-13 补）：原先把 logs 写死成 <repo>/logs，于是 `AKASHA_ROOT` 只能改数据、改不了日志——
+// 跨进程对照（MCP 子进程 vs 本进程）就会「库同源、日志不同源」，出现难查的假红（P2 修复时实测）。
+// `AKASHA_LOGS` 可覆盖；默认 <repo>/logs（与既有行为一致）。
+export const LOGS_DIR = process.env.AKASHA_LOGS ? String(process.env.AKASHA_LOGS) : join(ROOT, 'logs');
+// I-08（2026-10-14）：孤儿＝**热缓冲**的溢出阈值——超过此数即由 audit 报 `orphan-backlog`（只报不裁；压缩流程见 PROTOCOL「孤儿热缓冲」）。
+export const ORPHAN_BACKLOG_DEFAULTS = 60;
 export const STORES = ['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier'];
 const SOURCE_TYPES = ['复现', '实验', '官方', '他人', '共识'];
 const SEVERITIES = ['高', '中', '低'];
@@ -31,16 +38,50 @@ const REDACT_RES = [
   [/\bgithub_pat_[A-Za-z0-9_]{10,}\b/g, '[redacted-gh]'],
   [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[redacted-slack]'],
   [/\b(Bearer\s+)[A-Za-z0-9._\-]{8,}/gi, '$1[redacted]'],
-  [/((?:api[_-]?key|token|secret|password|passwd|pwd)\s*[=:]\s*)(\S+)/gi, '$1[redacted]'],
+  // **全角 / 两宽绕过**（2026-10-11 补，#22 的另一半）：把分隔符写成全角（`＝` `：`）或键名写成全角（`ｔｏｋｅｎ`）
+  //   即可绕过只认 ASCII 的正则。修法＝**同一条规则内并列半角与全角形态** —— 全角词几乎不出现在正常正文里
+  //   ⇒ **不引入误伤**（合口径①）✓ 取舍：只列常见键名的全角形式，**不做"全角归一化"**（那会改动原文本）✓
+  // ⚠️ **值侧否定前瞻**（2026-10-11 手检补，真误伤实证）：值侧原本是 `\S+`（任意非空）⇒ 实测把探测输出里的
+  //   `GITHUB_TOKEN : False` 改成了 `GITHUB_TOKEN : [redacted]` ✗ —— **把「该 token 不存在」篡改成了「存在但被藏」**，
+  //   语义被毁 ✓ 修法＝排除**占位值**（False/True/None/null/n/a/(empty)/(none) 与短横占位）✓ 合口径①。
+  //   ⚠️ **值侧必须是窄字符集**（2026-10-11 手检实证的**根因**）：原本写 `\S+` ⇒ 它**假设"空白=边界"**，
+  //     而 JSON / 代码文本里**没有空白** ⇒ 实测在一条 session.jsonl 记录里**吞掉了半行**（含 JSON 结构符）
+  //     ⇒ **把派生索引改成坏行** ✗✗。修法＝只吃凭据字符（遇 ' " , } 即停）✓
+  //   ＋**纯短数字**（1–4 位）同样排除（2026-10-11 手检补）：实测 `token= 200` / `token=403` 是**状态码**，
+  //     遮掉会把"试错结果"篡改成"有令牌"✗ ⇒ 语义被毁。
+  [/((?:api[_-]?key|token|secret|password|passwd|pwd|ａｐｉ[＿_]?ｋｅｙ|ｔｏｋｅｎ|ｓｅｃｒｅｔ|ｐａｓｓｗｏｒｄ|ｐｗｄ)\s*[=:＝：]\s*)(?!False\b|True\b|None\b|null\b|n\/a\b|\(empty\)|\(none\)|\d{1,4}\b|-{1,3}\s*$)([A-Za-z0-9_\-./+:=]{6,})/gi, '$1[redacted]'],
   // 自家补充（2026-10-08）：npm / HuggingFace / GitLab 凭证前缀
   [/\bnpm_[A-Za-z0-9]{20,}\b/g, 'npm_[redacted]'],
   [/\bhf_[A-Za-z0-9]{20,}\b/g, 'hf_[redacted]'],
-  [/\bglpat-[A-Za-z0-9_\-]{16,}\b/g, '[redacted-glpat]']
+  [/\bglpat-[A-Za-z0-9_\-]{16,}\b/g, '[redacted-glpat]'],
+  // 自家补充（2026-10-11，吸收 #22；两条口径为 Claude/灵枢评审原话，保留）：
+  //   口径①「**宁可漏报也不误伤**」—— 只 redact **可识别**的凭据形态；识别不了就放过，不许"猜它像不像密码"。
+  //   口径②「**识别面宽为拦得住、受理面窄为说得准**」—— 模式可以多列，但**实际改写要窄**：只遮蔽凭据段本身，
+  //          scheme / host / path **一律保留**（报告与证据常需指明"是哪个站"，全遮蔽＝毁掉可用性）。
+  //   ⚠️ 顺序敏感：`user:pass@` 必须在 `user@` **之前**匹配 —— 否则后者先吃掉 user 段、留下 `:pass@` 露在外面。
+  [/\b([a-z][a-z0-9+.\-]*:\/\/)([^\/\s:@]{1,64}):([^\/\s@]{1,256})@/gi, '$1[redacted]:[redacted]@'],
+  // ⚠️ **`user@` 形态必须收窄**（2026-10-11 手检补，真误伤实证）：原写法把 `ssh://git@github.com` 的 `git@`
+  //   也遮了 ✗ —— 而 `git@github.com` / `oauth2@host` 是**公开无害**的标准写法，在真实历史里大量存在。
+  //   收窄判据：user 段**像令牌**才遮（已知前缀，或 ≥12 字符）⇒ 合口径①（宁可漏报也不误伤）✓
+  [/\b([a-z][a-z0-9+.\-]*:\/\/)((?:ghp_|github_pat_|xox[baprs]-|npm_|hf_|glpat-|sk-)[A-Za-z0-9_\-]{4,}|[^\/\s:@]{12,})@/gi, '$1[redacted]@'],
+  // Authorization 头的**非 Bearer** 形态（Bearer 已在上面第 6 条）
+  [/\b(Authorization\s*:\s*)(Basic|token|Token|ApiKey)\s+[A-Za-z0-9._\-+/=]{6,}/g, '$1$2 [redacted]'],
+  // **明确不做**（2026-10-11 裁定）：通用「长随机串」规则（如 [A-Za-z0-9_-]{32,}）—— 它与**我们自己的 id 形态**
+  //   冲突（`node-7fe8ec84-L2-2781-4441-eb9ff212` / `canon-…-20261011` 都会命中）⇒ **必然误伤** ⇒ 违反口径①。
+  //   此条即「独立令牌形态」的具体取舍：宁可漏报，不做泛化长串遮蔽 ✓
 ];
 export function redact(value) {
   let out = String(value ?? '');
   for (const [re, to] of REDACT_RES) out = out.replace(re, to);
   return out;
+}
+
+/** 递归脱敏（对象 / 数组 / 字符串）——只有字符串才过规则，结构原样保留。 */
+export function redactDeep(v) {
+  if (typeof v === 'string') return redact(v);
+  if (Array.isArray(v)) return v.map(redactDeep);
+  if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = redactDeep(v[k]); return o; }
+  return v;
 }
 
 /** 原子替换（先写临时文件再 rename）。 */
@@ -88,6 +129,72 @@ export function loadStore(name, file = storePath(name)) {
   return { name, ...parseJsonl(readFileSync(file, 'utf8')) };
 }
 
+/**
+ * 从文件**尾部**倒读 JSONL 行（2026-10-13 审计 P6：hooks.jsonl 线性增长面的读侧优化）。
+ * 设计口径（改过一版，这里写清楚为什么）：
+ *   · **永远分块倒扫**（不设"小文件整读"捷径）——整读与小文件捷径都让「读多少」与「窗口多大」脱钩，
+ *     日志一涨就退回整份解析；倒扫的成本只与「调用方实际需要的窗口」成正比。
+ *   · 字节级切行（不在块边界做字符串拼接）——UTF-8 里 `\n` 只出现在单字节位置，`buf[i]===10` 是精确判定。
+ *   · **窗口边界即停**（`stopWhen`）：本日志近似单调（时间正序追加），倒扫中首次遇到窗口外记录后，
+ *     再往前读到的只会更旧；继续读到行数/字节上限纯属浪费。注意：这假定日志**大致按时间追加**——
+ *     `ts` 缺失的行（不计入边界判定）与倒序写入的异常行仍会按 caps 读入，不静默改变语义（如实短读）。
+ *   lines —— 行数上限（安全垫；读够即停）
+ *   maxBytes —— 字节上限（硬闸；到顶即停，返回已读部分）
+ *   filter —— 逐行判定；返回 false 的行不进结果，但**仍计入**行数/字节预算（保证窗口完整）
+ *   stopWhen —— 收到记录后判定：true ⇒ 已越过窗口边界，立即停（不把更旧的历史读进来）
+ * 坏行静默跳过（与既有 usage 读取口径一致；需要坏行报错的场景继续走 loadStore / parseJsonl）。
+ */
+export function readJsonlLinesReverse(file, { lines = 2000, maxBytes = 8 * 1024 * 1024, filter = null, stopWhen = null } = {}) {
+  if (!existsSync(file)) return [];
+  let size = 0;
+  try { size = statSync(file).size; } catch { return []; }
+  if (!size) return [];
+  const want = Math.max(1, Number(lines) || 1);
+  const cap = Math.max(1024, Number(maxBytes) || 8 * 1024 * 1024);
+  const CHUNK = 64 * 1024;
+  const fd = openSync(file, 'r');
+  try {
+    // ── 单缓冲尾部读取（2026-10-13 重写：前一版按块切行，边界算术连翻四次车——丢行/重行/粘行。
+    //    这一版**不做跨块拼接**：从文件尾往前块读，接进同一条连续缓冲，**读完之后**才按 `\n` 切。──
+    let buf = Buffer.alloc(0);
+    let filled = 0;                                   // 已读字节数（位于 buf 尾部）
+    let pos = size;                                   // 下一个要读的右边界
+    while (pos > 0 && filled < cap) {
+      const take = Math.min(CHUNK, pos, cap - filled);
+      if (take <= 0) break;
+      const room = buf.length - filled;               // 现有空位（可能为负：缓冲区比已读数据还小）
+      if (room < take) {                              // 扩容（上限 cap）
+        const next = Buffer.alloc(Math.min(cap, Math.max(buf.length * 2, filled + take)));
+        buf.copy(next, next.length - filled);
+        buf = next;
+      }
+      const at = buf.length - filled - take;
+      const n = readSync(fd, buf, at, take, pos - take);
+      if (n <= 0) break;
+      pos -= n;
+      filled += n;
+    }
+    // 取「最后 want 条」：先切行、再解析、**解析不成的不计数**。
+    //   踩坑记录：先按行数切窗口、再解析，会把坏行算进 want ⇒ 请求 1 条却被坏行占掉（实测 got 0）。
+    //   正确顺序 = 从尾往前逐条 parse，凑够 want 条（或 filter 通过 want 条）即止。
+    const region = buf.subarray(buf.length - filled).toString('utf8');
+    const parts = region.split('\n');
+    const out = [];
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      const s = parts[i].trim();
+      if (!s) continue;
+      let rec = null;
+      try { rec = JSON.parse(s); } catch { continue; }       // 坏行/半行：跳过，且**不占** want 名额
+      if (filter && !filter(rec)) continue;                  // 被过滤的行同样不占名额（窗口完整性由读取端保证）
+      out.push(rec);
+      if (out.length >= want) break;
+      if (stopWhen && stopWhen(rec)) break;
+    }
+    out.reverse();
+    return out;
+  } finally { closeSync(fd); }
+}
+
 const isStr = v => typeof v === 'string' && v.trim() !== '';
 const isNum = v => typeof v === 'number' && Number.isFinite(v);
 
@@ -97,13 +204,29 @@ export function validateRecord(store, r) {
   if (!isStr(r.id)) e.push('缺少 id');
   if (r.event_time !== undefined && !isStr(r.event_time)) e.push('event_time 须为非空字符串（YYYY-MM-DD 或 ISO）');
   if (r.logged_at !== undefined && !isStr(r.logged_at)) e.push('logged_at 须为非空字符串（ISO）');
+  // revokes（2026-10-14 SCHEMA §P4 落地）：撤销记录指向被撤的墓碑 id。
+  if (r.revokes !== undefined && !isStr(r.revokes)) e.push('revokes 须为墓碑 id（非空字符串）');
   if (r.valence !== undefined && (!isNum(r.valence) || r.valence < -1 || r.valence > 1)) e.push('valence 须为 [-1,1] 内数字');
   if (r.arousal !== undefined && (!isNum(r.arousal) || r.arousal < 0 || r.arousal > 1)) e.push('arousal 须为 [0,1] 内数字');
+  // #37 perspective（2026-10-12 窗口 5）：视角字段可选，只许 world/experience（禁自动抽取，人工填）。
+  if (r.perspective !== undefined && !PERSPECTIVES.includes(r.perspective)) e.push('perspective 须为 ' + PERSPECTIVES.join('/') + '（可省略；缺省=不参与过滤）');
+  // I-09 因果注释（2026-10-14，**字段先行**）：可选 `caused_by` / `led_to` —— 轻量 id 引用（非空字符串数组）。
+  //   设计口径：写入时标「估计的因果父」（LLM 近似标注即可，不必完整因果推断）；**检索侧不改**（「为什么」类链遍历后置）。
+  for (const f of ['caused_by', 'led_to']) {
+    if (r[f] === undefined) continue;
+    if (!Array.isArray(r[f]) || !r[f].length || r[f].some((x) => !isStr(x) || !x.trim())) e.push(f + ' 须为非空字符串数组（id 引用；可省略）');
+  }
   if (store === 'canon') {
     if (!isStr(r.claim)) e.push('缺少 claim');
     if (!r.source || !SOURCE_TYPES.includes(r.source.type)) e.push('source.type 须为 ' + SOURCE_TYPES.join('/'));
     if (!r.source || !isStr(r.source.ref)) e.push('缺少 source.ref');
     if (!isStr(r.last_reviewed)) e.push('缺少 last_reviewed');
+    // #13 触发词路由的字段面（2026-10-12 窗口 2 补校验）：hint（≤80 字反射文本）+ triggers（触发词数组）+ hint_until（到期日）。
+    //   显示侧硬裁在 sleep 插件（trim80）；这里给**写入侧软上限**（>160 即拦，防存进去必被裁的长文本）。
+    if (r.hint !== undefined && (!isStr(r.hint) || !r.hint.trim())) e.push('hint 须为非空字符串（≤80 字；可省略）');
+    else if (isStr(r.hint) && r.hint.length > 160) e.push('hint 过长（' + r.hint.length + ' 字）：显示侧会按 80 字裁剪，请写到 80 字内');
+    if (r.triggers !== undefined && (!Array.isArray(r.triggers) || !r.triggers.length || r.triggers.some((t) => !isStr(t) || !t.trim()))) e.push('triggers 须为非空字符串数组（如 ["改文件","patch"]；可省略）');
+    if (r.hint_until !== undefined && (!isStr(r.hint_until) || !/^\d{4}-\d{2}-\d{2}/.test(r.hint_until))) e.push('hint_until 须为 YYYY-MM-DD（可省略）');
   }
   if (store === 'mirror') {
     for (const f of ['situation', 'behavior', 'outcome', 'social_reaction', 'emotion', 'story'])
@@ -115,6 +238,11 @@ export function validateRecord(store, r) {
     if (r.era !== undefined && !isStr(r.era)) e.push('era 须为非空字符串（可省略）');
     if (r.context !== undefined && !isStr(r.context)) e.push('context 须为非空字符串（可省略）');
     if (r.patterns !== undefined && (!Array.isArray(r.patterns) || r.patterns.some((x) => typeof x !== 'string'))) e.push('patterns 须为字符串数组（可省略）');
+    // #3 不适用条件（2026-10-12 窗口 2）：形状与算子合法性走 #9 校验器（非法即抛 ⇒ 转成校验错误）。
+    if (r.not_applicable !== undefined) {
+      try { validateCondition(r.not_applicable, 'not_applicable'); }
+      catch (err) { e.push('not_applicable 条件非法：' + err.message); }
+    }
   }
   if (store === 'orphan') {
     for (const f of ['summary', 'observed', 'hypothesis', 'would_confirm', 'would_refute'])
@@ -168,6 +296,16 @@ export function validateRecord(store, r) {
       if (p.replay !== undefined && !replaySource) e.push('promoted_from.replay 仅用于 canon 且 source.type=复现');
     }
   }
+  // #6 关系边（2026-10-12 窗口 1）：形状层校验（悬空检查在 checkRelations——须跨记录）。
+  if (r.relates_to !== undefined && (!Array.isArray(r.relates_to) || r.relates_to.some((x) => !isStr(x)) || r.relates_to.some((x) => !x.trim())))
+    e.push('relates_to 须为非空字符串数组（可省略）');
+  if (r.relations !== undefined) {
+    if (!Array.isArray(r.relations) || r.relations.some((x) => !x || typeof x !== 'object' || Array.isArray(x))) e.push('relations 须为对象数组（可省略）');
+    else for (const it of r.relations) {
+      if (!isStr(it.type) || !it.type.trim()) e.push('relations[].type 须为非空字符串（如 supports / contradicts / relates）');
+      if (!isStr(it.id) || !it.id.trim()) e.push('relations[].id 须为非空字符串（指向条目 id）');
+    }
+  }
   return e;
 }
 
@@ -189,6 +327,7 @@ export function checkAll(opts = {}) {
     if (dups.length) report.errors.push({ store: name, errors: ['重复 id：' + dups.join(', ')] });
     for (const e of checkSupersedes(name, records)) report.errors.push(e);
     for (const e of checkRetires(name, records)) report.errors.push(e);
+    for (const e of checkRelations(name, records)) report.errors.push(e);
     report.stores[name] = { total: records.length, ok, current: currentRecords(records).length, retired: retiredIds(records).size, loadErrors: errors.length };
   }
   // wave2 §1：升格跨库核对。没有 promoted_from 且会话文件不存在 → 不读。
@@ -218,11 +357,13 @@ export function checkPromotions(loaded, sessionFile) {
   const parsed = parseJsonl(readFileSync(sessionFile, 'utf8'));
   for (const err of parsed.errors) out.push({ store: 'session', code: 'bad-jsonl', ...err, errors: [err.error] });
   const segIds = new Set();
+  const summaryIds = new Set();   // #32：摘要/派生类 id —— 只许引叶、不许被引（promotion/topic/node）
   const marks = [];
   for (const r of parsed.records) {
     if (!r || typeof r !== 'object') continue;
-    if (r.kind === 'promotion') marks.push(r);
-    else if (isStr(r.id)) segIds.add(r.id);
+    if (r.kind === 'promotion') { marks.push(r); if (isStr(r.id)) summaryIds.add(r.id); continue; }
+    if (r.kind === 'node' || r.kind === 'topic') { if (isStr(r.id)) summaryIds.add(r.id); }
+    if (isStr(r.id)) segIds.add(r.id);
   }
   const markKey = new Set();
   for (const m of marks) {
@@ -234,6 +375,37 @@ export function checkPromotions(loaded, sessionFile) {
     const ids = new Set((loaded[to.store] ?? []).map((r) => r && r.id).filter(Boolean));
     if (!ids.has(to.id)) out.push({ store: 'session', id: m.id, code: 'promotion-dangling', errors: [`标记指向不存在的记录 ${to.store}/${to.id}`] });
     markKey.add(to.store + '\0' + to.id + '\0' + m.seg);
+  }
+  // #32 合成禁互引（2026-10-11 立；外部对照启发＝Hindsight 的 `exclude_mental_models`）：
+  //   摘要/派生类段落**不许在引用面里指向别的摘要** —— 防「错误主张在摘要之间循环放大」。
+  //   口径（实测标定过，勿改宽）：只查**引用类字段**；**不查结构字段**（`children` 是树的父子关系，合法）。
+  //     ← 第一版判定器就是漏了这条，把 12 处 L2→L1 的 children 误报成"互引" ✗
+  const CITE_FIELDS = ['based_on', 'cites', 'refs', 'source'];
+
+    // 引用完整性（2026-10-11 手检补）：摘要/派生段的**引用类字段**（based_on/cites/refs）里写的 id
+  //   必须**真实存在**（同文件内的段 id ∪ 六库记录 id）。此前没有这条 ⇒ 写错 id 无人发现 ✓
+  //   注意：只认**结构化字段**，不做文本扫描（文本里的 id 形态含大量截断产物，扫了就是假警 ✗ 见 PROTOCOL §七.7⑤）。
+  {
+    const known = new Set(segIds);
+    for (const name of STORES) for (const r of (loaded[name] ?? [])) if (r && isStr(r.id)) known.add(r.id);
+    for (const r of parsed.records) {
+      if (!r || typeof r !== 'object' || !summaryIds.has(String(r.id))) continue;
+      for (const f of CITE_FIELDS) {
+        const v = r[f];
+        const list = Array.isArray(v) ? v : (v && typeof v === 'object' && isStr(v.id) ? [v.id] : (isStr(v) ? [v] : []));
+        for (const id of list) if (isStr(id) && !known.has(id)) out.push({ store: 'session', id: r.id, code: 'cite-dangling', errors: ['引用指向不存在的记录（' + f + '）：' + id] });
+      }
+    }
+  }
+  for (const r of parsed.records) {
+    if (!r || typeof r !== 'object' || !summaryIds.has(String(r.id))) continue;
+    const face = CITE_FIELDS.map((f) => JSON.stringify(r[f] ?? '')).join(' ');
+    for (const sid of summaryIds) {
+      if (sid !== String(r.id) && face.includes(sid)) {
+        out.push({ store: 'session', id: r.id, code: 'summary-cites-summary', errors: ['摘要只许引叶段（不许引摘要/派生类）：' + sid] });
+        break;
+      }
+    }
   }
   const covered = (store, rec) => {
     const byId = new Map((loaded[store] ?? []).filter((r) => r && r.id).map((r) => [r.id, r]));
@@ -250,6 +422,9 @@ export function checkPromotions(loaded, sessionFile) {
     const from = rec.promoted_from;
     if (!from || !isStr(from.id) || !segIds.has(from.id)) {
       out.push({ store, id: rec.id, code: 'promotion-source-missing', errors: ['promoted_from 指向不存在的段：' + (from && from.id)] });
+    } else if (summaryIds.has(String(from.id))) {
+      // #32：堵住旧口径的洞 —— node/topic 的 id 也在 segIds 里，故"存在"不足以证明"是叶"。
+      out.push({ store, id: rec.id, code: 'promotion-source-not-leaf', errors: ['promoted_from 只许指向叶段（不许引摘要/派生类）：' + from.id] });
     }
     if (!covered(store, rec)) {
       out.push({ store, id: rec.id, code: 'promotion-unmarked', errors: ['有 promoted_from 但没有 promotion 标记：' + rec.id] });
@@ -272,13 +447,79 @@ const LOOKUP_FIELDS = {
 // 2 字词与纯 ASCII 词的行为与旧版一致。
 const CJK_RE = /[\u4e00-\u9fff]/;
 const TOKEN_SPLIT_RE = /[\s,，、|]+/;
+// #37 视角字段（2026-10-12 窗口 5）：world=别人说的（教材/常识）；experience=自己踩过的（亲历教训）。
+export const PERSPECTIVES = Object.freeze(['world', 'experience']);
+// ── 条件谓词化（2026-10-11 解冻后新增；外部对照启发：灵枢的「条件可判定」）──
+// 目的：把「生效条件 / 不适用条件」从散在代码里的 if，变成**跟着数据走的 JSON 条件**（可查、可审、可单测）。
+// 形态（极简，约 50 行；**不写编译器**——那 290 KB 换的是可编程性，我们要的是可审计性）：
+//   原子：{ field: 值 }                    ⇒ 相等
+//        { field: { eq|ne|gte|lte|in|contains: 值 } }
+//   组合：{ and: [条件…] } · { or: [条件…] } · { not: 条件 }
+// 纪律（与既有门控同口径）：**非法条件抛错，绝不静默放宽**；求值只读、无副作用；未知算符 = 非法。
+export const COND_ATOM_OPS = Object.freeze(['eq', 'ne', 'gte', 'lte', 'in', 'contains']);
+export const COND_LOGICAL_OPS = Object.freeze(['and', 'or', 'not']);
+
+/** 形状校验：不合法就抛（带路径），不返回真假。 */
+export function validateCondition(cond, path = '$') {
+  if (cond === null || typeof cond !== 'object' || Array.isArray(cond)) throw new Error(`条件非法（${path}）：须为对象`);
+  for (const [k, v] of Object.entries(cond)) {
+    if (COND_LOGICAL_OPS.includes(k)) {
+      if (k === 'not') { validateCondition(v, `${path}.not`); continue; }
+      if (!Array.isArray(v) || !v.length) throw new Error(`条件非法（${path}.${k}）：须为非空数组`);
+      v.forEach((c, i) => validateCondition(c, `${path}.${k}[${i}]`));
+      continue;
+    }
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      const ops = Object.keys(v);
+      if (!ops.length) throw new Error(`条件非法（${path}.${k}）：算子对象为空`);
+      for (const op of ops) {
+        if (!COND_ATOM_OPS.includes(op)) throw new Error(`条件非法（${path}.${k}）：未知算子「${op}」（可用：${COND_ATOM_OPS.join('/')}）`);
+        if (op === 'in' && !Array.isArray(v[op])) throw new Error(`条件非法（${path}.${k}.in）：须为数组`);
+      }
+    }
+  }
+  return true;
+}
+
+/** 求值（只读）。ctx 为可判定事实的平面对象（如 { turn, usedTools, failedRecently, date }）。 */
+export function evalCondition(cond, ctx = {}) {
+  validateCondition(cond);
+  const atom = (actual, op, expect) => {
+    switch (op) {
+      case 'eq': return actual === expect;
+      case 'ne': return actual !== expect;
+      case 'gte': return typeof actual === 'number' && typeof expect === 'number' && actual >= expect;
+      case 'lte': return typeof actual === 'number' && typeof expect === 'number' && actual <= expect;
+      case 'in': return Array.isArray(expect) && expect.includes(actual);
+      case 'contains':
+        return Array.isArray(actual) ? actual.includes(expect)
+          : (typeof actual === 'string' && typeof expect === 'string' && actual.includes(expect));
+      default: throw new Error(`未知算子「${op}」`);
+    }
+  };
+  for (const [k, v] of Object.entries(cond)) {
+    if (k === 'and') { if (!v.every((c) => evalCondition(c, ctx))) return false; continue; }
+    if (k === 'or') { if (!v.some((c) => evalCondition(c, ctx))) return false; continue; }
+    if (k === 'not') { if (evalCondition(v, ctx)) return false; continue; }
+    const actual = ctx[k];
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      for (const [op, expect] of Object.entries(v)) if (!atom(actual, op, expect)) return false;
+      continue;
+    }
+    if (!atom(actual, 'eq', v)) return false;
+  }
+  return true;
+}
+
 export function tokenize(q) {
   return String(q || '').toLowerCase().split(TOKEN_SPLIT_RE).filter(Boolean);
 }
-/** 计分零件（2026-10-07 复查）：whole＝整词命中次数（每次 ×1）；fb＝中文回退贡献（单 token 封顶 0.9，仅 ≥3 字 CJK 词）。 */
+/** 计分零件（2026-10-07 复查）：whole＝整词命中次数（每次 ×1）；fb＝中文回退贡献（单 token 封顶 0.9，仅 ≥3 字 CJK 词）。
+ *  ⚠ 2026-10-14 修复（K1 复检暴露）：**<2 字 token 不参整词**——单字功能词（的/了/是）按出现次数计分（如百字长文「的」×70）
+ *  会以噪声洪水淹没真命中（实测：「也吃桌面端 pnpm」命中目标孤案，尾加「的」后目标被「的」最多的条目挤出显示面）。 */
 export function matchParts(hayL, token) {
   const t = String(token || '').toLowerCase();
-  if (!t) return { whole: 0, fb: 0 };
+  if (t.length < 2) return { whole: 0, fb: 0 }; // 单字 token：噪声源（2026-10-14 守卫）
   let whole = 0;
   let idx = hayL.indexOf(t);
   while (idx !== -1) { whole += 1; idx = hayL.indexOf(t, idx + t.length); }
@@ -389,8 +630,12 @@ const PRIMARY_LINE = {
 
 // 对位比较：把同一主题词在六库里的命中**全部**摆在一起（按库分组、当前版本、主行不截断）。
 export function cross(query, opts = {}) {
+  const __t0 = Date.now();                          // I-02：对位耗时（只进侧线）
+  const __qRaw = String(query ?? '').trim();
   const q = String(query || '').trim().toLowerCase();
-  if (!q) return { query: '', groups: [], total: 0, hint: '请给一个主题词（如：重启 / 记忆 / 来源态）。' };
+  // 2026-10-13（举一反三·类③）：空查询此前**静默返回 0 命中**（与 `cross` 的「请给一个主题词」提示不一致——
+  //   同一类问题里，一个给提示、一个闷着）。补上 hint：0 命中 vs 空输入必须可区分。
+  if (!q) return { query: '', hits: [], groups: [], total: 0, hint: '请给一个主题词（如：重启 / 记忆 / 来源态）。' };
   const tokens = tokenize(q);
   const groups = [];
   const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
@@ -428,7 +673,14 @@ export function cross(query, opts = {}) {
     ? `同题多源：${multi.join('、')}——对位时若见矛盾：不合并；矛盾留档用「孤案」（orphan add），定论用「修订链」（revise）。`
     : null;
   // cross = 对位视图（并排对账），契约＝「主行不截断」⇒ **豁免**「每次查阅上限」（那是取料类的事，2026-10-11）
-  return { query: q, groups, total, hint };
+  // 体裁隔离 P0（2026-10-13 复查补齐）：cross 的主行＝**全文**（六库对位最重的文本面），同属读侧 ⇒ **默认剥皮**；
+  //   仅剥符号、**不截断**（契约不破）；反思通道 `--reflect` / MCP `reflect:true` 给原文；**不套剂量闸**（摘要会破「不截断」契约）。
+  if (opts.reflect !== true) {
+    for (const g of groups) for (const it of g.items) it.line = stripGenre(String(it.line ?? ''));
+  }
+  const __out = { query: q, groups, total, hint };
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'cross', query: __qRaw, hits: total, ms: Date.now() - __t0, ids: groups.flatMap((g) => g.items.map((it) => it.id)) }, opts);
+  return __out;
 }
 
 // —— 可信度（wave2 §3）——
@@ -553,7 +805,8 @@ export const KNOWLEDGE_LAYERS = Object.freeze([
     note: '宿主 skill / 工具说明' }),
   Object.freeze({ id: 'library', order: 3, label: '本地大图馆', host: false,
     stores: Object.freeze(['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier']),
-    note: '已核共识；原文不可变，注释/改口走 revise；frontier 经 due/recheck 排期刷新' }),
+    // 改口 2026-10-12（手检）：原「已核共识」对全层设了过高预期 ⇒ 级别看 tier（T1 已复现 / T2 自证·不升共识 / T4 他人·待补引）。
+    note: '本地库同步；级别看 tier：T1 已复现 / T2 自证·不升共识 / T4 他人·待补引；原文不可变，注释/改口走 revise；frontier 经 due/recheck 排期刷新' }),
   Object.freeze({ id: 'web', order: 4, label: '外网检索', host: true,
     rankBy: Object.freeze(['citation', 'credibility']),
     note: '宿主接入；按 citation×credibility 排序建议；回灌只许 append/annotate，不覆盖原文' })
@@ -643,14 +896,25 @@ export function clipByBudget(result, opts = {}) {
   const DEFAULT_CALL_CAP = 4096;
   const cap = Math.max(200, Math.floor(opts.maxTokens ?? DEFAULT_CALL_CAP));
   const usedOf = (item) => estimateTokens(String(item.snippet ?? item.gist ?? item.claim ?? item.title ?? item.line ?? ''));
-  let used = 0, trimmed = 0;
-  /** 通用：按 rank 顺序累计到上限；至少保留 1 条（避免"裁到空"反而更难用）。 */
+  let used = 0, trimmed = 0, oversize = 0, floorApplied = false;
+  /** 通用：按 rank 顺序装入；单条超预算**只跳自己**（后面更短的照收）；全超时**地板保底给第一条**（防「空结果 ≈ 库里没有」）。 */
   const trim = (list) => {
     const kept = [];
     for (const it of list) {
       const t = usedOf(it);
-      if (used + t > cap && kept.length) { trimmed++; continue; }
+      if (used + t > cap) {
+        if (t > cap) oversize++;                    // 单条自身超上限 ⇒ 自跳（不连带后面更短的）
+        trimmed++;
+        continue;
+      }
       used += t; kept.push(it);
+    }
+    if (kept.length === 0 && list.length > 0) {      // 地板：没有一条装得下 ⇒ 排名第一必须留下
+      const first = list[0];
+      kept.push(first);
+      used += usedOf(first);
+      floorApplied = true;
+      trimmed = Math.max(0, list.length - 1);        // 首条算留下，其余未显示
     }
     return kept;
   };
@@ -683,10 +947,11 @@ export function clipByBudget(result, opts = {}) {
   // ③ 可见性：每次返回都带一行人类可读的装载说明（不再有静默截断）
   const parts = ['本页 ' + after + ' 条 / 共 ' + total + ' 条', used + '/' + cap + ' tok'];
   if (skippedByOffset > 0) parts.push('已跳过前 ' + skippedByOffset + ' 条(offset)');
-  if (trimmedOut > 0) parts.push('因上限未显示 ' + trimmedOut + ' 条 → 续取 offset=' + nextOffset + '（或 --full）');
+  if (floorApplied) parts.push('地板保底：首条超上限仍保留（另 ' + Math.max(0, trimmedOut - 1) + ' 条未显示）→ 续取 offset=' + nextOffset + '（或 --full）');
+  else if (trimmedOut > 0) parts.push('因上限未显示 ' + trimmedOut + ' 条 → 续取 offset=' + nextOffset + '（或 --full）');
   else parts.push('无因上限丢弃');
   const hint = parts.join(' · ');
-  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, nextOffset, exhausted: trimmedOut === 0, hint };
+  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0, hint };
   return out;
 }
 
@@ -1087,6 +1352,61 @@ const hhiOf = (counts) => {
   if (!total) return 0;
   return vals.reduce((s, n) => s + (n / total) ** 2, 0);
 };
+/** 该 distinct 下 HHI 位移的**可达上限**（2026-10-13）：固定总数 N、n 个类别时，
+ *  HHI 上限 = 1（全挤在一类）；下限 = 1/n（均匀）。真实位移永远 ≤ 这个量级 ⇒ 用来给 slope 做**尺度归一**。 */
+const hhiMaxShiftOf = (distinct) => (distinct >= 2 ? 1 - 1 / distinct : 1);
+// ── 似然比 G 检验（两半窗同构性；2026-10-13）──
+// H0：两个半窗的类别分布相同（同构）。对每个类别按行边际做 2 格检验，逐类相加得总 G，df = 参与类别数 − 1。
+// 为什么用它替代固定阈值：① 它是**尺度无关**的（随样本量自动收紧）；② 类别稀疏时对 0 计数稳健（0 项不贡献）；
+// ③ 只判「有没有真结构变化」，方向交给 slope 的符号 ⇒ 「改善不抖」的原有承诺不受影响。
+const lgammaOf = (z) => {
+  const g = [76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+  let x = z; let y = z; let tmp = x + 5.5;
+  tmp -= (x + 0.5) * Math.log(tmp);
+  let ser = 1.000000000190015;
+  for (let j = 0; j < 6; j += 1) ser += g[j] / (y += 1);
+  return -tmp + Math.log(2.5066282746310005 * ser / x);
+};
+/** 卡方尾概率 P(X² > x²; df)（正则化不完全伽马；两段法，精度 ~1e-12）。 */
+export function chi2UpperTail(x2, df) {
+  const a = df / 2; const x = x2 / 2;
+  if (!(x2 > 0) || !(df > 0)) return 1;
+  const gln = lgammaOf(a);
+  if (x < a + 1) {
+    let ap = a; let sum = 1 / a; let del = sum;
+    for (let n = 1; n <= 200; n += 1) { ap += 1; del *= x / ap; sum += del; if (Math.abs(del) < Math.abs(sum) * 1e-12) break; }
+    return 1 - sum * Math.exp(-x + a * Math.log(x) - gln);
+  }
+  let b = x + 1 - a; let c = 1e308; let d = 1 / b; let h = d;
+  for (let i = 1; i <= 200; i += 1) {
+    const an = -i * (i - a);
+    b += 2; d = an * d + b; if (Math.abs(d) < 1e-300) d = 1e-300;
+    c = b + an / c; if (Math.abs(c) < 1e-300) c = 1e-300;
+    d = 1 / d; const del2 = d * c; h *= del2;
+    if (Math.abs(del2 - 1) < 1e-12) break;
+  }
+  return Math.exp(-x + a * Math.log(x) - gln) * h;
+}
+/** 两半窗同构性 G 检验 → { G, df, p }。0 计数不贡献；参与类别数 <2 ⇒ 无法判（df=1, p=1）。 */
+export function homogeneityG(oldCounts, newCounts) {
+  let nA = 0; let nB = 0;
+  for (const v of oldCounts.values()) nA += v;
+  for (const v of newCounts.values()) nB += v;
+  if (!nA || !nB) return { G: 0, df: 1, p: 1 };
+  const ids = new Set([...oldCounts.keys(), ...newCounts.keys()]);
+  let G = 0; let rows = 0;
+  for (const id of ids) {
+    const a = oldCounts.get(id) ?? 0; const b = newCounts.get(id) ?? 0;
+    const r = a + b;
+    const ea = r * nA / (nA + nB); const eb = r * nB / (nA + nB);
+    if (!(ea > 0) || !(eb > 0)) continue;
+    if (a > 0) G += 2 * a * Math.log(a / ea);
+    if (b > 0) G += 2 * b * Math.log(b / eb);
+    rows += 1;
+  }
+  const df = Math.max(1, rows - 1);
+  return { G, df, p: chi2UpperTail(G, df) };
+}
 
 /**
  * 修订链根 id：剥掉尾部 `-rN`（N 为正整数）。usage 日志与当前版 id 混用时，两侧都归一到根再计数/查表。
@@ -1157,26 +1477,46 @@ export function usageWindowFromRecords(records, opts = {}) {
   const quota = total / Math.max(1, distinct);
   const hhiOld = hhiOf(old);
   const hhiNew = hhiOf(neu);
+  const hhiMaxShift = hhiMaxShiftOf(distinct);
+  // ── 集中度变化的**显著性**（2026-10-13，算法数学批 B②）──
+  // 为什么不能只看 |slope|：HHI 是 1/n 量级的量，位移上限随 distinct 收缩（n=204 时"全部重复集中在一条"也只到 0.02），
+  //   而小样本又能轻松越过固定阈值（实测滑移扫描：最大 |slope|=0.222 出现在 total=6 的噪声样本）
+  //   ⇒ 固定阈值 slopeThresh=0.05 小样本被噪声越过、大样本不可达。
+  // 现算两件事：① 真实位移相对**该总体可达上限**的比例（自动随 distinct 缩放）；
+  //   ② 两半窗同构性的似然比 G 检验 p 值（df = 参与类别数−1）——只有**显著**且**方向为恶化**才该刹车。
+  const shifted = hhiNew - hhiOld;
+  const relShift = Number.isFinite(hhiMaxShift) && hhiMaxShift > 0 ? +(shifted / hhiMaxShift).toFixed(6) : 0;
+  const gh = homogeneityG(old, neu);
   return {
     byId, total, distinct, quota: +quota.toFixed(4),
     hhi: +hhiOf(byId).toFixed(6),
     hhiOld: +hhiOld.toFixed(6), hhiNew: +hhiNew.toFixed(6),
     slope: +(hhiNew - hhiOld).toFixed(6),
+    hhiMaxShift: +hhiMaxShift.toFixed(6),   // 该 distinct 下 HHI 位移的可达上限
+    relShift,                                // = slope / hhiMaxShift（缩放后的口径）
+    // 两半窗同构性：G 统计量 / 自由度 / 卡方尾概率（p 小 ⇒ 结构真的变了）
+    homogG: +gh.G.toFixed(4), homogDf: gh.df, homogP: gh.p,
+    significant: Number.isFinite(gh.p) ? gh.p < 0.05 : false,
     windowMs, missing: false
   };
 }
 
-/** 读 hooks 日志建窗口；文件缺失 → missing:true、空窗口（不假装有引用）。 */
+/** 读 hooks 日志建窗口；文件缺失 → missing:true、空窗口（不假装有引用）。
+ *  2026-10-13 审计 P6：改**尾部窗口读**（此前整文件读+解析；2.66MB/27k 行时 18.8ms，且随日志线性涨）。
+ *  窗口＝`windowMs`（缺省 7 天）：只取窗口内的记录即可产出同一窗口产物；无 ts 的行照样计入（与整读同）。
+ *  `full: true` 可回退整读（对照/诊断用，也是本函数单测的反例钩子）。 */
 export function usageWindowFromLog(logPath, opts = {}) {
   const file = logPath || join(ROOT, 'logs', 'hooks.jsonl');
   if (!existsSync(file)) {
     return { byId: new Map(), total: 0, distinct: 0, quota: 0, hhi: 0, hhiOld: 0, hhiNew: 0, slope: 0, windowMs: opts.windowMs ?? LOAD_BALANCE_DEFAULTS.windowMs, missing: true };
   }
-  const records = [];
-  for (const raw of readFileSync(file, 'utf8').split(/\r?\n/)) {
-    if (!raw.trim()) continue;
-    try { records.push(JSON.parse(raw)); } catch { /* 坏行跳过 */ }
-  }
+  const windowMs = opts.windowMs ?? LOAD_BALANCE_DEFAULTS.windowMs;
+  // 尾读上限：line=60000 / byte=32MB 是**安全垫**（当前 27k 行/2.7MB ⇒ 窗口内全取；
+  // 日志到 60k 行仍不丢窗口内记录）。真正决定「读多少」的是调用方给的 windowMs——
+  // 窗口过滤仍在 usageWindowFromRecords 里（不在这里重复），本函数只负责「别把整份历史都读进来」。
+  const records = opts.full
+    ? parseJsonl(readFileSync(file, 'utf8')).records
+    : readJsonlLinesReverse(file, { lines: Math.max(60000, Number(opts.maxLines) || 0), maxBytes: Number(opts.maxBytes) || 32 * 1024 * 1024 });
   return usageWindowFromRecords(records, opts);
 }
 
@@ -1246,11 +1586,22 @@ export function loadBalanceCorrection(id, opts = {}) {
     correction *= boost;
     reasons.push({ code: 'explore-zero-weak', boost });
   }
+  // ── D 项：集中度**恶化**刹车（2026-10-13 重写）──
+  // 旧版只看 slope > slopeThresh（固定 0.05）——实测该阈值：小样本被噪声越过（total=6 时 |slope|=0.22），
+  //   大样本不可达（distinct=204 时位移上限仅 ~0.02）⇒ 两头都错。
+  // 新版三闸齐开才刹车，且强度**随显著性**给：① 结构真的变了（同构性 G 检验 p<0.05，缺该字段则退回旧口径）
+  //   ② 方向是恶化（relShift>0，自动随 distinct 缩放）③ 位移够大（relShift ≥ kRel，缺省 = slopeThresh）。
   const slope = Number(win.slope) || 0;
-  if (slope > p.slopeThresh && error > 0) {
-    const brake = 1 / (1 + p.kD * ((slope - p.slopeThresh) / p.slopeThresh));
+  const relShift = Number.isFinite(win.relShift) ? win.relShift : null;      // 旧窗口对象没有 ⇒ null（按旧口径走）
+  const pv = Number.isFinite(win.homogP) ? win.homogP : null;
+  const significant = pv === null ? true : pv < 0.05;                        // 缺省 true = 不改变旧调用方语义
+  const kRel = Number.isFinite(p.kRel) ? p.kRel : p.slopeThresh;
+  const shiftEnough = relShift === null ? (slope > p.slopeThresh) : (relShift >= kRel);
+  if (significant && shiftEnough && (relShift === null ? slope > 0 : relShift > 0) && error > 0) {
+    const mag = relShift === null ? ((slope - p.slopeThresh) / p.slopeThresh) : (relShift / kRel - 1);
+    const brake = 1 / (1 + p.kD * Math.max(0, mag));
     correction *= brake;
-    reasons.push({ code: 'slope-brake', slope, thresh: p.slopeThresh, brake: +brake.toFixed(4) });
+    reasons.push({ code: 'slope-brake', slope, relShift, p: pv, kRel, brake: +brake.toFixed(4) });
   }
   correction = Math.max(p.minCorrection, Math.min(p.maxCorrection, correction));
   return {
@@ -1273,16 +1624,20 @@ export function applyRank(score, store, r, cred, opts = {}) {
   const f = rankFactors(store, r, cred, opts);
   const enabled = loadBalanceEnabled(opts);
   const base = { ...f, loadBalance: enabled, balance: { enabled: false, correction: 1 }, factorApplied: true };
+  // 排序层卫生（2026-10-13，算法数学批 B③）：factor 非有限（NaN/Inf）会让比较器行为未定义 ⇒ 兜回 1 并留痕。
+  if (!Number.isFinite(base.factor)) { base.factor = 1; base.factorSanitized = true; }
+  const lexical = Number(score);
   if (store === 'orphan' || opts.zeroWeight) {
-    return { rank: +Number(score).toFixed(4), ...base, factorApplied: false };
+    return { rank: Number.isFinite(lexical) ? +lexical.toFixed(4) : 0, ...base, factorApplied: false };
   }
-  let rank = Number(score) * f.factor;
+  let rank = lexical * base.factor;
   if (enabled) {
     const win = opts.usageWindow || resolveUsageWindow(opts);
     const bal = loadBalanceCorrection(r?.id, { window: win, strong: opts.strong === true, params: opts.balance, cls: f.cls || cred?.cls || null, record: r });
     rank *= bal.correction;
     base.balance = bal;
   }
+  if (!Number.isFinite(rank)) { rank = Number.isFinite(lexical) ? lexical : 0; base.rankSanitized = true; }  // 绝不把 NaN 排进榜
   return { rank: +rank.toFixed(4), ...base };
 }
 
@@ -1313,16 +1668,19 @@ export function credibilityTodos(opts = {}) {
   let usage = null;
   if (opts.usage instanceof Map) usage = opts.usage;
   else if (opts.log) {
-    let text = '';
-    try { text = readFileSync(opts.log, 'utf8'); } catch { text = ''; }
-    if (text) {
-      usage = new Map();
-      for (const raw of text.split(/\r?\n/)) {
-        if (!raw.trim()) continue;
-        let rec; try { rec = JSON.parse(raw); } catch { continue; }
-        if (rec && rec.kind === 'usage' && Array.isArray(rec.ids)) {
-          for (const id of rec.ids) usage.set(String(id), (usage.get(String(id)) ?? 0) + 1);
-        }
+    // 2026-10-13 审计 P6：尾部窗口读（与 usageWindowFromLog 同法，默认末 20000 行）。
+    // 只取 `kind:"usage"` 的行；`usageFull: true` 回退整读（对照/诊断用）。
+    const rows = opts.usageFull
+      ? parseJsonl(readFileSync(opts.log, 'utf8')).records
+      : readJsonlLinesReverse(opts.log, {
+        lines: Math.max(2000, Number(opts.usageMaxLines) || 20000),
+        maxBytes: Number(opts.usageMaxBytes) || 64 * 1024 * 1024,
+        filter: (r) => r && r.kind === 'usage' && Array.isArray(r.ids)
+      });
+    usage = new Map();
+    for (const rec of rows) {
+      if (rec && rec.kind === 'usage' && Array.isArray(rec.ids)) {
+        for (const id of rec.ids) usage.set(String(id), (usage.get(String(id)) ?? 0) + 1);
       }
     }
   }
@@ -1348,19 +1706,34 @@ export function credibilityTodos(opts = {}) {
 }
 
 export function lookupDetailed(query, opts = {}) {
+  // #11 参数结构化错误（2026-10-12 窗口 2）：类型错**报错**，绝不静默当空查询。
+  if (query !== undefined && query !== null && typeof query !== 'string') {
+    throw new Error('lookup query 类型非法：须为字符串（收到 ' + (Array.isArray(query) ? '数组' : typeof query) + '）');
+  }
+  const __t0 = Date.now();                          // I-02：查询耗时（只进侧线，不进结果）
+  const __qRaw = String(query ?? '').trim();
   const q = String(query || '').trim().toLowerCase();
-  const stats = { dated: 0, undated: 0, undatedSamples: [], excluded: 0, timeSource: { event_time: 0, logged_at: 0 } };
-  if (!q) return { hits: [], stats, knowledge: knowledgeRoute({ query: '', strongHits: 0, cites: [] }) };
+  // #12 写入侧漏记盘面（2026-10-12 窗口 2）：只记 kind/reason 计数，**不记内容**（被跳过的是什么，不进日志）。
+  const filtered = { refuted: 0, tagMismatch: 0, outOfRange: 0, noKeyword: 0, deduped: 0, belowThreshold: 0 };
+  const stats = { dated: 0, undated: 0, undatedSamples: [], excluded: 0, timeSource: { event_time: 0, logged_at: 0 }, filtered };
+  if (!q) return { hits: [], stats, hint: '请给一个主题词（如：重启 / 记忆 / 来源态）。', knowledge: knowledgeRoute({ query: '', strongHits: 0, cites: [] }) };
+  //   2026-10-13（举一反三·类③）：空查询与「查了但 0 命中」必须可区分——`cross`/`brief` 早有 hint，这里此前闷着。
   const tokens = tokenize(q);
   const hits = [];
   const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
+  const seenIds = new Set();
   for (const name of STORES) {
     const records = recordsOf(name, opts);
     const creds = credibilityMap(name, records, opts);
     for (const r of currentRecords(records)) {
       const cred = creds.get(r.id);
-      if (cred && cred.refuted && !opts.includeRefuted) continue;
-      if (opts.tag && !(r.tags || []).map(String).includes(String(opts.tag))) continue;   // ⑥ 按标签精确过滤（2026-10-11，lookup 主循环）
+      if (cred && cred.refuted && !opts.includeRefuted) { filtered.refuted += 1; continue; }
+      if (opts.tag && !(r.tags || []).map(String).includes(String(opts.tag))) { filtered.tagMismatch += 1; continue; }   // ⑥ 按标签精确过滤（2026-10-11，lookup 主循环）
+      // #37 视角过滤（2026-10-12 窗口 5）：只过滤命中面、不改加权（缺省条目不参与，视为"没标"）。
+      if (opts.perspective && r.perspective !== opts.perspective) { filtered.perspectiveMismatch = (filtered.perspectiveMismatch ?? 0) + 1; continue; }
+      if (isStr(r.id) && seenIds.has(r.id)) { filtered.deduped += 1; continue; }
+      if (!inRange(r, opts.since, opts.until) && tsOf(r)) { filtered.outOfRange += 1; continue; }   // #12 只数「有戳且超范围」；无戳走日期三分提示
+      if (isStr(r.id)) seenIds.add(r.id);
       const hay = (LOOKUP_FIELDS[name] || [])
         .map(f => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || '')))
         .join(' | ');
@@ -1378,6 +1751,8 @@ export function lookupDetailed(query, opts = {}) {
         else modeBoost = BOUND.test(tl) ? 1.25 : (SOLVE.test(tl) ? 0.9 : 1);
       }
       sc.score = +(sc.score * modeBoost).toFixed(4);
+      // #25 否定降权（2026-10-12 窗口 7；默认关）：**只进排序键、不动 score/命中面**（A5：修正不替代）。
+      sc.negFactor = opts.negationPenalty ? negationPenalty(hayL) : 1;
       if (false) { /* ② 残留已清（2026-10-11 复检）：不再把 mode 写回记录对象；加权只进分数 */ }
       const b = dateBucket(r, opts);
       if (b.bucket === 'out') { stats.excluded += 1; continue; }
@@ -1402,19 +1777,99 @@ export function lookupDetailed(query, opts = {}) {
       hits.push(hit);
     }
   }
-  const ranked = hits.sort((a, b) => b.rank - a.rank || b.score - a.score).slice(0, 20);
+  // #8 同分次序显式化（2026-10-12 窗口 3）：rank → 词法分 → **时间（新者优先）→ id 升序**。
+  //   前两级同分时不再依赖插入序（数组顺序=档案顺序，跨索引批次会漂移）；后两级保证任意两次结果全等。
+  const tieBreak = (a, b) => {
+    const ta = String(tsOf(a.r ?? {}) ?? ''), tb = String(tsOf(b.r ?? {}) ?? '');
+    if (ta !== tb) return ta < tb ? 1 : -1;
+    return String(a.id).localeCompare(String(b.id), 'en');
+  };
+  const ranked = hits.sort((a, b) => (b.rank * (b.negFactor ?? 1)) - (a.rank * (a.negFactor ?? 1)) || b.rank - a.rank || b.score - a.score || tieBreak(a, b)).slice(0, 20);
   const strongHits = ranked.filter((h) => h.strong).length;
   const cites = ranked.filter((h) => !h.strong && !h.zeroWeight).map((h) => ({
     store: h.store, id: h.id, tier: h.tier ?? null, displayTier: h.displayTier ?? null
   }));
   const orphanOnly = strongHits === 0 && cites.length === 0 && ranked.some((h) => h.zeroWeight);
   const knowledge = knowledgeRoute({ query: q, strongHits, cites, orphanOnly });
-  const __res = { hits: ranked, stats, knowledge };
-  return opts.contextBudget === false ? __res : clipByBudget(__res, { ...opts, offset: opts.offset });
+  // #30 citeAllowlist（2026-10-12 窗口 4）：把「本回合取回的 id」明示出来 —— 事前形状（事后靠 output-audit 抓假 id）。
+  //   软协议：本回合断言优先引用这份清单里的 id；清单外 = 无据（要么先查、要么明说不知道）。
+  const citeAllowlist = ranked.filter((h) => isStr(h.id)).map((h) => ({ id: h.id, store: h.store, tier: h.tier ?? null, strong: !!h.strong }));
+  // #35 lookup --trace（2026-10-12 窗口 5）：输出 schema 固化——逐条列出计分零件，可审、可复核。
+  const trace = ranked.map((h) => ({
+    id: h.id, store: h.store, score: h.score, rank: h.rank, strong: !!h.strong,
+    tier: h.tier ?? null, displayTier: h.displayTier ?? null, stale: !!h.stale,
+    severity: h.severity ?? null, complexity: h.complexity ?? null, factor: h.factor ?? null, factorApplied: h.factorApplied !== false,
+    balance: h.balance ?? { enabled: false, correction: 1 }, zeroWeight: !!h.zeroWeight
+  }));
+  const __res = { hits: ranked, stats, knowledge, citeAllowlist, trace, blindspots: blindspotsFor({ perspective: opts.perspective }) };
+  // I-12 P1-③ 剂量闸（2026-10-13）：符号负荷超阈 ⇒「后续条目」snippet 摘要化（保 id / 序位；反思通道与 doseThreshold:0 不受限）。
+  const __doseThreshold = Number.isInteger(opts.doseThreshold) ? opts.doseThreshold : GENRE_DOSE_DEFAULTS.threshold;
+  if (opts.reflect !== true && __doseThreshold > 0 && ranked.length) {
+    const dg = doseGate(ranked.map((h) => h.snippet), { threshold: __doseThreshold });
+    if (dg.cutoff !== null) {
+      for (let i = dg.cutoff; i < ranked.length; i += 1) ranked[i] = { ...ranked[i], snippet: doseSummary(ranked[i].snippet), dose: true };
+      __res.dose = { threshold: __doseThreshold, total: dg.total, from: dg.cutoff, trimmed: ranked.length - dg.cutoff };
+    }
+  }
+  const __out = opts.contextBudget === false ? __res : clipByBudget(__res, { ...opts, offset: opts.offset });
+  // I-02 查询侧线（append-only；失败静默，绝不影响返回值）
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'lookup', query: __qRaw, hits: ranked.length, ms: Date.now() - __t0, ids: ranked.map((h) => h.id) }, opts);
+  return __out;
 }
 
 export function lookup(query, opts = {}) {
   return lookupDetailed(query, opts).hits;
+}
+
+/** #7 多路召回 + RRF 融合（2026-10-12 窗口 3；只读、additive——lookup/brief 主路径默认不变）。
+ *  路：① 词法路（lookupDetailed，现有计分与四因子重排在**路内**生效）；② 引用路（#6 关系边的**反向索引**：谁引用了词法命中者）。
+ *  融合：RRF score = Σ 1/(k + rank_i)（k=60，标准常数）；**RRF 只定名字与次序，仍按现有四因子重排**（A5：修正不替代主语义）。
+ *  可审计：返回 `rrf:{lexical,citation,k}` 与每条 `rrfScore` / `paths`。
+ *  边界（如实）：会话层路未并入（跨库，需要时另开）；引用路只扩「两步内」的邻居。 */
+export function multiRecall(query, opts = {}) {
+  const __t0 = Date.now();                          // I-02：整路耗时（含词法路），只进侧线
+  const k = Number.isInteger(opts.rrfK) && opts.rrfK > 0 ? opts.rrfK : 60;
+  const base = lookupDetailed(query, { ...opts, contextBudget: false, __noQueryLog: true });   // 路内不裁剪；统一在最后走 clipByBudget；侧线由本层写（防嵌套双记）
+  const lexical = Array.isArray(base.hits) ? base.hits : [];
+  const byId = new Map(lexical.filter((h) => isStr(h.id)).map((h) => [h.id, h]));
+  // 引用路：读与词法同一批 records，建反向索引（target → sources），再把命中者的邻居带回。
+  const citHits = [];
+  const rrf = new Map();
+  lexical.forEach((h, i) => rrf.set(h.id, { item: h, score: 1 / (k + i + 1), paths: ['lexical'] }));
+  if (lexical.length) {
+    const pool = [];
+    for (const name of STORES) for (const r of currentRecords(recordsOf(name, opts))) {
+      if (!inRange(r, opts.since, opts.until)) continue;
+      const targets = [];
+      if (Array.isArray(r.relates_to)) targets.push(...r.relates_to);
+      if (Array.isArray(r.relations)) for (const it of r.relations) if (it && isStr(it.id)) targets.push(it.id);
+      if (targets.length && r.id && !byId.has(r.id)) pool.push({ rec: r, store: name, targets });
+    }
+    const wanted = new Set(lexical.map((h) => h.id));
+    const seen = new Set();
+    for (const p of pool) {
+      const hitIdx = p.targets.findIndex((t) => wanted.has(t));
+      if (hitIdx === -1 || seen.has(p.rec.id)) continue;
+      seen.add(p.rec.id);
+      const item = briefHit(p.store, p.rec, 0);
+      citHits.push(item);
+      const cur = rrf.get(item.id);
+      const inc = 1 / (k + citHits.length);
+      if (cur) { cur.score += inc; cur.paths.push('citation'); }
+      else rrf.set(item.id, { item, score: inc, paths: ['citation'] });
+    }
+  }
+  const fused = [...rrf.values()]
+    .map((v) => ({ ...v.item, rrfScore: +v.score.toFixed(6), paths: v.paths.slice() }))
+    .sort((a, b) => b.rrfScore - a.rrfScore
+      || (b.paths.length - a.paths.length)
+      || (b.rank ?? 0) - (a.rank ?? 0)
+      || (b.score ?? 0) - (a.score ?? 0)
+      || String(a.id).localeCompare(String(b.id), 'en'));
+  const out = { ...base, hits: fused, rrf: { lexical: lexical.length, citation: citHits.length, k }, citeAllowlist: [...base.citeAllowlist || [], ...fused.filter((h) => isStr(h.id)).map((h) => ({ id: h.id, store: h.store ?? null, tier: h.tier ?? null, strong: !!h.strong }))] };
+  const __out = opts.contextBudget === false ? out : clipByBudget(out, { ...opts, offset: opts.offset });
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'recall', query: String(query ?? '').trim(), hits: fused.length, ms: Date.now() - __t0, ids: fused.map((h) => h.id) }, opts);
+  return __out;
 }
 
 // 主题简报：把「先查再答」从逐条 lookup 升级为按主题跨六库取料（带来源态与基石映射）。
@@ -1432,8 +1887,14 @@ function briefHit(store, r, score) {
 }
 
 export function brief(query, opts = {}) {
+  // #11 参数结构化错误（2026-10-12 窗口 2）：主题类型错**报错**，不静默。
+  if (query !== undefined && query !== null && typeof query !== 'string') {
+    throw new Error('brief 主题类型非法：须为字符串（收到 ' + (Array.isArray(query) ? '数组' : typeof query) + '）');
+  }
+  const __t0 = Date.now();                          // I-02：简报耗时（只进侧线）
   const q = String(query || '').trim();
-  if (!q) return { query: q, tokens: [], groups: [], strongHits: 0, note: '空查询：给一个主题词（多个词用空格分隔）。', knowledge: knowledgeRoute({ query: '', strongHits: 0, cites: [] }) };
+  const filtered = { refuted: 0, tagMismatch: 0, outOfRange: 0, noKeyword: 0, deduped: 0, belowThreshold: 0 };
+  if (!q) return { query: q, tokens: [], groups: [], strongHits: 0, note: '空查询：给一个主题词（多个词用空格分隔）。', knowledge: knowledgeRoute({ query: '', strongHits: 0, cites: [] }), stats: { filtered } };
   const tokens = tokenize(q);
   const perStore = Number.isInteger(opts.perStore) && opts.perStore > 0 ? opts.perStore : 3;
   const groups = [];
@@ -1444,10 +1905,9 @@ export function brief(query, opts = {}) {
     const scored = [];
     for (const r of currentRecords(records)) {
       const cred = creds.get(r.id);
-      if (cred && cred.refuted && !opts.includeRefuted) continue;
-      if (!inRange(r, opts.since, opts.until)) continue;
-      if (opts.tag && !(r.tags || []).map(String).includes(String(opts.tag))) continue;   // ⑥ 按标签精确过滤
-      if (opts.tag && !(r.tags || []).map(String).includes(String(opts.tag))) continue;   // ⑥ 按标签精确过滤（2026-10-11）
+      if (cred && cred.refuted && !opts.includeRefuted) { filtered.refuted += 1; continue; }
+      if (!inRange(r, opts.since, opts.until) && tsOf(r)) { filtered.outOfRange += 1; continue; }   // #12 只数「有戳且超范围」；无戳走日期三分提示
+      if (opts.tag && !(r.tags || []).map(String).includes(String(opts.tag))) { filtered.tagMismatch += 1; continue; }   // ⑥ 按标签精确过滤（2026-10-11）
       const hay = (LOOKUP_FIELDS[name] || [])
         .map(f => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || '')))
         .join(' | ')
@@ -1489,6 +1949,22 @@ export function brief(query, opts = {}) {
       }) });
     }
   }
+  // I-12 P1-③ 剂量闸（2026-10-13）：按「主文本字段」计符号负荷，超阈 ⇒「后续条目」该字段摘要化（反思通道与 doseThreshold:0 不受限）。
+  const __doseThresholdB = Number.isInteger(opts.doseThreshold) ? opts.doseThreshold : GENRE_DOSE_DEFAULTS.threshold;
+  let __doseB = null;
+  if (opts.reflect !== true && __doseThresholdB > 0 && groups.length) {
+    const seq = [];
+    for (const g of groups) for (const h of g.hits) seq.push({ g, h });
+    const dg = doseGate(seq.map((x) => String(x.h[DOSE_TEXT_FIELD[x.g.store]] ?? '')), { threshold: __doseThresholdB });
+    if (dg.cutoff !== null) {
+      for (let i = dg.cutoff; i < seq.length; i += 1) {
+        const f = DOSE_TEXT_FIELD[seq[i].g.store];
+        seq[i].h[f] = doseSummary(seq[i].h[f]);
+        seq[i].h.dose = true;
+      }
+      __doseB = { threshold: __doseThresholdB, total: dg.total, from: dg.cutoff, trimmed: seq.length - dg.cutoff };
+    }
+  }
   const flat = [];
   for (const g of groups) for (const h of g.hits) flat.push({ ...h, store: g.store });
   const strongHits = flat.filter((h) => h.strong).length;
@@ -1499,8 +1975,30 @@ export function brief(query, opts = {}) {
   const orphanOnly = strongHits === 0 && cites.length === 0 && flat.some((h) => h.zeroWeight);
   const knowledge = knowledgeRoute({ query: q, strongHits, cites, orphanOnly });
   const note = knowledge.note;
-  const __bres = { query: q, tokens, groups, strongHits, note, knowledge };
-  return opts.contextBudget === false ? __bres : clipByBudget(__bres, opts);   // 取料类：每次查阅上限默认生效
+  const __bres = { query: q, tokens, groups, strongHits, note, knowledge, stats: { filtered }, ...( __doseB ? { dose: __doseB } : {}), citeAllowlist: flat.filter((h) => isStr(h.id)).map((h) => ({ id: h.id, store: h.store ?? null, tier: h.tier ?? null, strong: !!h.strong })),
+    // #31 检索梯（2026-10-12 窗口 5）：标明「停在哪一层、为何没下钻」——可解释性直接落地（只提示不拦截）。
+    ladder: (() => {
+      const orphanHits = flat.filter((h) => h.zeroWeight).length;
+      const layers = [
+        { layer: 'canon-strong', hit: flat.filter((h) => h.strong && h.store === 'canon').length, note: '库内强命中（整词）' },
+        { layer: 'canon-weak', hit: flat.filter((h) => !h.strong && h.store === 'canon').length, note: '库内弱命中（疑似相关，须 cites）' },
+        { layer: 'other-strong', hit: flat.filter((h) => h.strong && h.store !== 'canon').length, note: '其它库强命中' },
+        { layer: 'orphan', hit: orphanHits, note: '零权重孤案（只作线索，不作证据）' },
+        { layer: 'session', hit: 0, note: '会话层未并入本入口（跨库，需要时另开）' },
+        { layer: 'web', hit: 0, note: '外网检索：宿主未接（search 契约已备）' }
+      ];
+      const stop = layers.find((x) => x.hit > 0 && x.layer !== 'session' && x.layer !== 'web');
+      for (const x of layers) {
+        x.stopped = !!stop && x.layer === stop.layer;
+        x.why = x.stopped ? '命中足够，未继续下钻'
+          : (x.hit > 0 ? '有更靠上的层先命中（本轮被上层截停）'
+            : (x.layer === 'session' ? '未开（单入口设计：会话层检索另走 session lookup）' : (x.layer === 'web' ? '未开（宿主未接外网检索）' : '无命中')));
+      }
+      return layers;
+    })() };
+  const __out = opts.contextBudget === false ? __bres : clipByBudget(__bres, opts);   // 取料类：每次查阅上限默认生效
+  if (opts.__noQueryLog !== true) recordQuery({ cmd: 'brief', query: q, hits: groups.reduce((n, g) => n + g.total, 0), ms: Date.now() - __t0, ids: flat.map((h) => h.id) }, opts);
+  return __out;
 }
 
 // 全库摘要：六库计数 + 各库最近 N 条（主行）+ frontier 状态分布 + 审计概要 + 最近写入。
@@ -1653,7 +2151,7 @@ export function mirrorTuple(r) {
 /**
  * 镜像结构匹配（2026-10-07；wave4 补 evidence/era/context 过滤与回传）。
  * 五元组字段计分（situation 权重 ×2）+ patterns 可选加权；结构优先于字面故事名。
- * 过滤：mode/role（wave1）；evidence（story|own-log）；era/context（子串，大小写不敏感）。
+ * 过滤：mode/role（wave1）；evidence（story|own-log）；era/context（子串，大小写不敏感）；notApplicable（#3 不适用条件，2026-10-12 窗口 2——不传 = 不过滤）。
  */
 export function mirrorMatch(text, opts = {}) {
   const tokens = tokenize(text);
@@ -1684,8 +2182,10 @@ export function mirrorMatch(text, opts = {}) {
     return true;
   };
   const hits = [];
+  const naCtx = opts.notApplicable && typeof opts.notApplicable === 'object' ? opts.notApplicable : null;
   for (const r of currentRecords(loadStore('mirror', opts.file || storePath('mirror')).records)) {
     if (!keepRole(r) || !keepMeta(r)) continue;
+    if (naCtx && r.not_applicable !== undefined && evalCondition(r.not_applicable, naCtx)) continue;   // #3 不适用条件（非法条件由 validateCondition 抛错）
     const fields = MIRROR_TUPLE_FIELDS.map((f, i) => [f, f === 'situation' ? 2 : 1]);
     let score = 0;
     for (const [f, w] of fields) {
@@ -1708,6 +2208,16 @@ export function mirrorMatch(text, opts = {}) {
         patterns: Array.isArray(r.patterns) ? r.patterns.slice() : [],
         ...mirrorTuple(r)
       });
+    }
+  }
+  // 体裁隔离 P0（2026-10-13 复查补齐②）：mirror 五元组＋story/patterns ＝叙事正文（读侧最易回声的面之一）⇒ 默认剥皮；
+  //   反思通道 `opts.reflect` 给原文；只剥符号、不动结构与字段名。
+  if (opts.reflect !== true) {
+    for (const h of hits) {
+      for (const f of ['story', 'situation', 'behavior', 'outcome', 'social_reaction', 'emotion']) {
+        if (typeof h[f] === 'string' && h[f]) h[f] = stripGenre(h[f]);
+      }
+      if (Array.isArray(h.patterns)) h.patterns = h.patterns.map((p) => stripGenre(String(p)));
     }
   }
   return hits.sort((a, b) => b.score - a.score).slice(0, limit);
@@ -1864,7 +2374,96 @@ export function recallToolTraps(opts = {}) {
   return traps;
 }
 
+/** I-02 查询监控（2026-10-13，批次 1；C 线 B.1）：每次检索落一行 append-only 侧线（默认 logs/query-log.jsonl）。
+ *  纪律：**不碰主流程**——本函数任何失败都吞掉（只回执 ok:false），检索结果与耗时不受影响。
+ *  session：宿主当前不给子进程传会话号（bash 环境实测无 DSH_*）⇒ 记 `AKASHA_SESSION_ID` / `DSH_SESSION_ID`（有则写、无则 null）；
+ *  归因路径＝用 ts 对 `logs/hooks.jsonl` 的 tool / preflight 线（后验 join，不猜）。
+ *  genre_render＝该次结果是否经体裁渲染（I-11 落地前恒 false——有它才能以后分清「召回差」还是「剥皮过度」）。
+ *  关断：调用侧 `queryLog:false`；或环境变量 `AKASHA_QUERY_LOG=off`（自测 / 批量脚本用——防污染真日志）。 */
+export function queryLogPathOf(opts = {}) {
+  if (opts.queryLog === false) return null;
+  if (typeof opts.queryLog === 'string' && opts.queryLog) return opts.queryLog;
+  if (String(process.env.AKASHA_QUERY_LOG || '').toLowerCase() === 'off') return null;
+  return join(LOGS_DIR, 'query-log.jsonl');
+}
+
+/** **读侧**查询日志路径（2026-10-14 整体复检修）：与环境变量 `AKASHA_QUERY_LOG=off` **无关**——那个开关只管「要不要写」，
+ *  写侧关了不代表读侧应把已有数据读成 0（实测：metrics 的查询维度与 K3 的矛盾检测计数都被静默读空）。读侧只认 `opts.queryLog`。 */
+export function queryLogReadPathOf(opts = {}) {
+  if (opts.queryLog === false) return null;
+  if (typeof opts.queryLog === 'string' && opts.queryLog) return opts.queryLog;
+  return join(LOGS_DIR, 'query-log.jsonl');
+}
+
+export function recordQuery(entry = {}, opts = {}) {
+  try {
+    const file = queryLogPathOf(opts);
+    if (!file) return { ok: false, skipped: true };
+    const hits = Number(entry.hits) || 0;
+    const sid = process.env.AKASHA_SESSION_ID || process.env.DSH_SESSION_ID || null;
+    const rec = {
+      ts: new Date().toISOString(),
+      via: String(opts.via || entry.via || 'lib'),
+      cmd: String(entry.cmd || '?'),
+      query: redact(String(entry.query ?? '')).slice(0, 200),
+      hits, zero: hits === 0,
+      ms: Number.isFinite(entry.ms) ? Math.max(0, Math.round(entry.ms)) : null,
+      session: sid ? String(sid) : null,
+      genre_render: entry.genreRender === true,
+      ids: Array.isArray(entry.ids) ? entry.ids.filter(isStr).slice(0, 10) : []
+    };
+    appendFileSync(file, JSON.stringify(rec) + '\n');
+    return { ok: true, file, rec };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+}
+
 /** 结果计数器 v0（2026-10-07）：hook 线 + 修订链统计 → 可机检指标。 */
+/** K3 可复查/可修订·**实际使用计数**（2026-10-14，板条 K3）：复审线（review-log）＋ 退役墓碑 ＋ 近 7 天修订版 ＋
+ *  矛盾检测的实际调用（query-log 侧线，cmd=conflict；计数自 2026-10-13 侧线启用起——如实标注窗口）。
+ *  只读、只报数，不做任何裁决。数据面注入：`opts.files`（六库文件）/ `opts.reviewLog` / `opts.queryLog` / `opts.today`。 */
+export function revisabilityStats(opts = {}) {
+  const today = opts.today ? String(opts.today).slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const dayNum = (d) => { const t = Date.parse(String(d ?? '').slice(0, 10) + 'T00:00:00Z'); return Number.isFinite(t) ? Math.floor(t / 86400000) : null; };
+  const todayNum = dayNum(today);
+  let retired = 0; const retiredByStore = {};
+  let revised7d = 0; let lastRevisedAt = null;
+  for (const name of STORES) {
+    let recs = [];
+    try { recs = loadStore(name, opts.files?.[name]).records; } catch { recs = []; }
+    if (!recs.length) continue;
+    const n = retiredIds(recs).size;
+    if (n) { retiredByStore[name] = n; retired += n; }
+    for (const r of recs) {
+      if (!isStr(r.supersedes)) continue;
+      const at = r.logged_at ?? r.event_time ?? null;
+      if (at && (!lastRevisedAt || String(at) > String(lastRevisedAt))) lastRevisedAt = at;
+      const d = dayNum(at);
+      if (d !== null && todayNum !== null && todayNum - d >= 0 && todayNum - d <= 7) revised7d += 1;
+    }
+  }
+  const review = { total: 0, byVerdict: {}, lastAt: null, lastVerdict: null, lastId: null };
+  try {
+    const rows = readReviewLog({ limit: 100000, ...(opts.reviewLog ? { file: opts.reviewLog } : {}) });
+    review.total = rows.length;
+    for (const r of rows) { const v = String(r.verdict ?? '?'); review.byVerdict[v] = (review.byVerdict[v] ?? 0) + 1; }
+    if (rows.length) { const last = rows[rows.length - 1]; review.lastAt = last.ts ?? null; review.lastVerdict = last.verdict ?? null; review.lastId = last.id ?? null; }
+  } catch { /* 失败即空，只报数 */ }
+  const calls = { conflict: 0, firstAt: null, lastAt: null, windowNote: '计数自 2026-10-13 查询侧线启用起' };
+  const ql = queryLogReadPathOf(opts);   // 读侧路径（不受 AKASHA_QUERY_LOG=off 影响——2026-10-14 复检修）
+  if (ql) {
+    try {
+      for (const l of readFileSync(ql, 'utf8').split(/\r?\n/).filter(Boolean)) {
+        let j; try { j = JSON.parse(l); } catch { continue; }
+        if (String(j.cmd) !== 'conflict') continue;
+        calls.conflict += 1;
+        if (!calls.firstAt || String(j.ts) < calls.firstAt) calls.firstAt = j.ts;
+        if (!calls.lastAt || String(j.ts) > calls.lastAt) calls.lastAt = j.ts;
+      }
+    } catch { /* 空 */ }
+  }
+  return { today, retired, retiredByStore, revised7d, lastRevisedAt, review, calls };
+}
+
 export function metrics(opts = {}) {
   const logPath = opts.log || join(ROOT, 'logs', 'hooks.jsonl');
   const since = opts.since ? String(opts.since).slice(0, 10) : null;
@@ -1895,6 +2494,54 @@ export function metrics(opts = {}) {
       for (const id of rec.ids) usageById[id] = (usageById[id] ?? 0) + 1;
     }
   }
+  // I-02 查询维度（2026-10-13 批次 1）：读查询侧线（默认 logs/query-log.jsonl；`opts.queryLog` 可注入 / 关断）。
+  let qEntries = [];
+  try {
+    const qf = queryLogReadPathOf({ queryLog: opts.queryLog });   // 读侧路径（不受 AKASHA_QUERY_LOG=off 影响——2026-10-14 复检修）
+    if (qf) {
+      for (const raw of readFileSync(qf, 'utf8').split(/\r?\n/).filter(Boolean)) {
+        let rec; try { rec = JSON.parse(raw); } catch { continue; }
+        if (since && String(rec.ts || '').slice(0, 10) < since) continue;
+        qEntries.push(rec);
+      }
+    }
+  } catch { qEntries = []; }
+  const qByCmd = {}; const qTop = {}; const qHot = {};
+  let qZero = 0, msSum = 0, msN = 0, sessKnown = 0, refWith = 0, refHit = 0, qRetrieval = 0;
+  // 2026-10-14 复检举一反三：**检索面指标只统计检索类调用**——K3 起 `conflict`（及未来诊断类）也走 query-log，
+  //   若混入，零结果率/高频 top/引用率会被诊断调用污染（conflict 常在 hits=0 时记 zero:true）。byCmd 仍全量展示。
+  const RETRIEVAL_CMDS = new Set(['lookup', 'brief', 'cross', 'recall']);
+  let qProbe = 0;
+  for (const rec of qEntries) {
+    const cmdName = String(rec.cmd || '?'); qByCmd[cmdName] = (qByCmd[cmdName] ?? 0) + 1;
+    if (!RETRIEVAL_CMDS.has(cmdName)) continue;
+    // 2026-10-14 复检举一反三（第二处）：**机制探针（via:'probe'，睡眠器处境/指代检索）分流**——它们由宿主每回合自动跑、
+    //   查询词是原话/工具名，会把高频 top 灌成噪声（实测同一长句 ×20）。计入 probes，不进检索面指标；历史行无标记不可追溯（如实）。
+    if (String(rec.via || '') === 'probe') { qProbe += 1; continue; }
+    qRetrieval += 1;
+    if (rec.zero === true) qZero += 1;
+    if (Number.isFinite(rec.ms)) { msSum += rec.ms; msN += 1; }
+    const qk = String(rec.query || '').trim();
+    if (qk) qTop[qk] = (qTop[qk] ?? 0) + 1;
+    const ids = Array.isArray(rec.ids) ? rec.ids : [];
+    if (ids.length) { refWith += 1; if (ids.some((id) => usageById[id])) refHit += 1; }
+    for (const id of ids) qHot[id] = (qHot[id] ?? 0) + 1;
+    if (rec.session) sessKnown += 1;
+  }
+  const qMin = Number.isInteger(opts.querySampleMin) ? opts.querySampleMin : 5;
+  const queries = {
+    total: qEntries.length,
+    retrieval: qRetrieval,
+    probes: qProbe,
+    byCmd: qByCmd,
+    zero: qZero,
+    zeroRate: qRetrieval ? +(qZero / qRetrieval).toFixed(4) : null,
+    avgMs: msN ? Math.round(msSum / msN) : null,
+    topQueries: Object.entries(qTop).sort((a, b) => b[1] - a[1]).slice(0, 8),
+    hotIds: Object.entries(qHot).sort((a, b) => b[1] - a[1]).slice(0, 10),
+    referenced: { n: refHit, of: refWith, usageRefs: counters.usageRefs, minSample: qMin, rate: (refWith >= qMin && counters.usageRefs > 0) ? +(refHit / refWith).toFixed(4) : null, note: '近似：该次命中 id 是否出现在本窗口 usage 线（全域集合，不按时序先后）；样本 < ' + qMin + ' 或 usage 线为空 ⇒ null（不冒充）' },
+    sessionCoverage: { known: sessKnown, total: qRetrieval, note: '检索面口径（lookup/brief/cross/recall）；会话号缺失＝宿主未把 session 传给子进程（用 ts 对 hooks 工具线归因）' }
+  };
   let revisions = 0; let longest = 0; let longestId = null;
   for (const name of STORES) {
     const recs = loadStore(name).records;
@@ -1916,15 +2563,675 @@ export function metrics(opts = {}) {
       byTool: memoryByName
     },
     recall: recallSignals(kept, { toolTraps: recallToolTraps({ lib: { loadStore, currentRecords } }) }),
+    queries,
     topToolErrors: Object.entries(toolErrorsByName).sort((a, b) => b[1] - a[1]).slice(0, 5),
     topUsage: Object.entries(usageById).sort((a, b) => b[1] - a[1]).slice(0, 10),
-    revisions: { count: revisions, longest, longestId }
+    revisions: { count: revisions, longest, longestId },
+    revisability: revisabilityStats(opts)
   };
+}
+
+/** #28 外置 policy + #34 directive 级门控清单（2026-10-12 窗口 4）。
+ *  设计：**默认内嵌**（与 gate 现行为一致的硬拦面，外加 ops_* 补面）；`policy.json`（默认 `akasha/policy.json`，可用 `opts.file` 覆盖）
+ *  存在则**并集合并**（默认 ∪ 外置——外置只许更严，不许放宽默认）；**空策略 ⇒ 记 warnings，绝不假装合规**（灵枢金句照搬）。
+ *  只读：本模块只做「策略加载与匹配」，真正的拦截在 gate（消费同一份规则）。 */
+export const POLICY_DEFAULTS = Object.freeze({
+  writeTools: Object.freeze(['edit', 'write', 'apply_patch', 'ops_replace']),
+  shellTools: Object.freeze(['pwsh', 'bash', 'dsh_wsl', 'ops_bash']),
+  forbidden: Object.freeze([Object.freeze({
+    id: 'akasha-data-direct-write',
+    pattern: '(^|/)akasha/data/.+\\.jsonl$',
+    why: '数据只经校验写入（akasha CLI / MCP 工具）——直写会被门控拒绝'
+  })]),
+  required: Object.freeze([]),
+  directives: Object.freeze([
+    Object.freeze({ id: 'data-direct-write', level: 'gate', text: '禁直写 akasha\\data\\*.jsonl（gate 硬拦）' }),
+    Object.freeze({ id: 'irreversible-backup', level: 'soft', text: '不可逆操作前先备份（软提示：观察期沿用）' })
+  ])
+});
+
+/** 读 policy.json（缺文件/坏 JSON ⇒ 用默认并记 warnings）；外置与默认**并集**（只严不宽）。 */
+export function loadPolicy(opts = {}) {
+  const file = opts.file || join(ROOT, 'policy.json');
+  const warnings = [];
+  const merged = {
+    writeTools: [...POLICY_DEFAULTS.writeTools],
+    shellTools: [...POLICY_DEFAULTS.shellTools],
+    forbidden: POLICY_DEFAULTS.forbidden.map((f) => ({ ...f })),
+    required: [...POLICY_DEFAULTS.required],
+    directives: POLICY_DEFAULTS.directives.map((d) => ({ ...d })),
+    source: 'default',
+    warnings
+  };
+  let raw = null;
+  try { raw = JSON.parse(readFileSync(file, 'utf8')); }
+  catch (e) {
+    if (e && e.code !== 'ENOENT') warnings.push('policy 文件存在但不可用（' + e.message + '）⇒ 回退默认');
+    return merged;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { warnings.push('policy 形状非法（须为对象）⇒ 回退默认'); return merged; }
+  const addAll = (field, extra, uniq) => {
+    if (extra === undefined) return;
+    if (!Array.isArray(extra)) { warnings.push('policy.' + field + ' 须为数组'); return; }
+    for (const x of extra) { const key = uniq(x); if (key !== null && !merged[field].includes(key)) merged[field].push(key); }
+  };
+  addAll('writeTools', raw.writeTools, (x) => (typeof x === 'string' && x.trim() ? x.trim() : null));
+  addAll('shellTools', raw.shellTools, (x) => (typeof x === 'string' && x.trim() ? x.trim() : null));
+  if (raw.forbidden !== undefined) {
+    if (!Array.isArray(raw.forbidden)) warnings.push('policy.forbidden 须为数组');
+    else for (const f of raw.forbidden) {
+      if (!f || typeof f !== 'object' || !isStr(f.pattern)) { warnings.push('forbidden 条目缺 pattern（已跳过）'); continue; }
+      if (merged.forbidden.some((x) => x.id === f.id || x.pattern === f.pattern)) continue;
+      merged.forbidden.push({ id: isStr(f.id) ? f.id : ('external-' + merged.forbidden.length), pattern: String(f.pattern), why: isStr(f.why) ? f.why : '（外置规则）' });
+    }
+  }
+  if (Array.isArray(raw.required)) merged.required.push(...raw.required.filter((x) => typeof x === 'string'));
+  const noRules = merged.writeTools.length === 0 && merged.forbidden.length === 0;
+  if (noRules) merged.warnings.push('空策略：没有可用规则 ⇒ **不假装合规**（须显式处置）');
+  else if ((Array.isArray(raw.forbidden) && raw.forbidden.length === 0) || (Array.isArray(raw.writeTools) && raw.writeTools.length === 0)) {
+    merged.warnings.push('空策略面：外置某面为空（已用默认兜底，勿视为"无限制"）');
+  }
+  merged.source = 'default+file';
+  return merged;
+}
+
+export function isWriteTool(name, policy = null) {
+  const p = policy && Array.isArray(policy.writeTools) ? policy : loadPolicy();
+  return p.writeTools.includes(String(name));
+}
+
+/** 命中 forbidden（或未满足 required）⇒ 返回理由字符串；否则 null（不误伤）。
+ *  匹配前把目标里的 `\` 归一为 `/`（正则只需写正斜杠，避免双重转义地狱）；规则 pattern 同样归一。 */
+export function policyDeny(target, policy = null) {
+  const p = policy && Array.isArray(policy.forbidden) ? policy : loadPolicy();
+  const s = String(target ?? '').replace(/\\/g, '/');
+  for (const f of p.forbidden) {
+    let re = null;
+    try { re = new RegExp(String(f.pattern).replace(/\\\\/g, '/'), 'i'); } catch { continue; }
+    if (re.test(s)) return (f.why ? f.why + ' · ' : '') + 'rule:' + (f.id ?? f.pattern);
+  }
+  return null;
+}
+
+/** #33 show --expand（2026-10-12 窗口 5）：沿 `promoted_from` 回溯源头（只读）。
+ *  返回 { found, id, store, origin, chain, note }；**悬空如实**（会话文件缺失/段不存在都不编，只标 dangling）。 */
+export function expandRecord(store, id, opts = {}) {
+  if (!STORES.includes(store)) throw new Error('未知存储：' + store);
+  const file = (opts.files && opts.files[store]) || opts.file || storePath(store);
+  const records = loadStore(store, file).records;
+  const byId = new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
+  let tip = byId.get(String(id));
+  if (!tip) {                                         // 允许用旧版 id 命中链尾
+    const any = records.find((r) => String(r.id) === String(id));
+    if (!any) return { found: false, id: String(id), store, origin: null, chain: [], note: '未找到该 id（链上任意版本都没有）' };
+    tip = any;
+  }
+  for (;;) { const next = records.find((r) => isStr(r.supersedes) && r.supersedes === tip.id); if (!next) break; tip = next; }
+  const sessionFile = opts.sessionFile !== undefined ? opts.sessionFile : join(DATA, 'session.jsonl');
+  const segs = new Set();
+  try { for (const r of loadStore('session', sessionFile).records) if (isStr(r.id)) segs.add(r.id); } catch { /* 文件缺失 ⇒ 全部标 dangling */ }
+  const chain = [];
+  let cur = tip; const seen = new Set();
+  while (cur && isStr(cur.id) && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    if (cur.promoted_from && typeof cur.promoted_from === 'object') {
+      const p = cur.promoted_from;
+      chain.push({ from: cur.id, store: p.store ?? null, id: p.id ?? null, session: p.session ?? null, seq: Number.isInteger(p.seq) ? p.seq : null, at: p.at ?? null,
+        dangling: !(p.id && segs.has(String(p.id))) });
+    }
+    cur = isStr(cur.supersedes) ? byId.get(cur.supersedes) : null;
+  }
+  const origin = chain[0] ?? null;
+  return { found: true, id: tip.id, store, origin, chain,
+    note: origin
+      ? (origin.dangling ? '源段不在 session.jsonl（悬空，如实标注）——可用 ptr 回原档核对' : '源段在会话层；全保真＝用 ptr 回原档（session lookup / session node）')
+      : '无 promoted_from（本来就是原生条目，没有更深的源）' };
+}
+
+/** #36 fail-loud（2026-10-12 窗口 5）：数据根不健康 ⇒ **报错**，绝不静默"建空库装健康"（灵枢启示）。
+ *  判据：目录存在 + 至少一个库文件存在；否则抛（带路径与修复提示）。挂载在 CLI 入口（`akasha.mjs` 启动时调用）。 */
+export function assertDataRoot(dir = DATA) {
+  const d = String(dir);
+  if (!existsSync(d)) throw new Error('数据根不存在/不可用：' + d + '（拒绝静默建空库——请检查 AKASHA_ROOT 或先跑初始化器）');
+  let hasAny = false;
+  for (const s of STORES) if (existsSync(join(d, s + '.jsonl'))) { hasAny = true; break; }
+  if (!hasAny) throw new Error('数据根缺少库文件：' + d + '（目录在但没有任何 *库*.jsonl ⇒ 读出来是空库，拒绝当前装作健康；先跑初始化器或指定正确根）');
+  return true;
+}
+
+/** #2 负记忆两层（2026-10-12 窗口 6）：**被拒的写入**与**未决**独立留档（只记 kind/reason/短描述，不记正文）。
+ *  用途：让"这条路走不通"成为可查资产（失败回查的原料）；与六库分隔（`negative.jsonl`，不进 STORES、不参与检索排序）。 */
+export const NEGATIVE_KINDS = Object.freeze(['rejected-write', 'undecided']);
+export function recordRejected(rec, opts = {}) {
+  const kind = String(rec?.kind ?? '');
+  if (!NEGATIVE_KINDS.includes(kind)) throw new Error('negative.kind 须为 ' + NEGATIVE_KINDS.join('/'));
+  if (!isStr(rec?.reason)) throw new Error('negative.reason 必填（非空字符串）');
+  const file = opts.file || join(DATA, 'negative.jsonl');
+  const what = typeof rec.what === 'string' ? rec.what.slice(0, 200) : '';
+  const out = { id: 'neg-' + createHash('md5').update(kind + '|' + String(rec.reason) + '|' + what + '|' + Date.now()).digest('hex').slice(0, 8), ts: new Date().toISOString(), kind, reason: String(rec.reason), what, ref: isStr(rec.ref) ? rec.ref : '' };
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, JSON.stringify(out) + '\n', 'utf8');
+  return out;
+}
+export function listRejected(opts = {}) {
+  const file = opts.file || join(DATA, 'negative.jsonl');
+  let lines = [];
+  try { lines = readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean); } catch { return []; }
+  const out = [];
+  for (const l of lines) { try { const r = JSON.parse(l); if (!opts.kind || r.kind === opts.kind) out.push(r); } catch { /* 坏行跳过 */ } }
+  return out;
+}
+
+/** #4 BLINDSPOT 显式化（2026-10-12 窗口 6）：回答自带「这次没检的面」——不静默省略（对齐"确定不知道"的诚实口径）。 */
+export function blindspotsFor(opts = {}) {
+  const out = [];
+  out.push({ what: '会话层（session 层）', why: '本入口只查六库（单入口设计）', action: '要查会话细节用 session lookup / session node' });
+  out.push({ what: '外网检索', why: '宿主未接（search 契约已备、未实现）', action: '需要时按来源态「搜到」标注，勿当作库内证据' });
+  if (opts.perspective) out.push({ what: '未标 perspective 的条目', why: '本轮按 perspective=' + opts.perspective + ' 过滤，缺标条目不参与', action: '要全量看就别带 --perspective' });
+  return out;
+}
+
+/** #15 来源态校准（2026-10-12 窗口 7；外部对照启发：灵枢 metacognition）。
+ *  输入：`[{confidence: 0..1（自报把握）, correct: bool（实测对不对）}]`；输出：`{gap, ece, buckets, bucketsUsed, n, ok, note}`。
+ *  判据：**gap = 平均自报 − 实际正确率**（>0 = 过度自信）；`ECE = Σ(桶占比 × |桶内实际 − 桶内自信|)`。
+ *  纪律：样本 < minN ⇒ `gap/ece = null` 且 `ok = null`（**绝不冒充 PASS**）。只读、纯函数。 */
+export function calibrationOf(rows, opts = {}) {
+  const list = (Array.isArray(rows) ? rows : []).filter((r) => r && typeof r.confidence === 'number' && typeof r.correct === 'boolean');
+  const n = list.length;
+  const minN = Number.isInteger(opts.minN) ? opts.minN : 10;
+  const nb = Number.isInteger(opts.buckets) && opts.buckets > 0 ? opts.buckets : 5;
+  if (n < minN) return { n, minN, buckets: [], bucketsUsed: 0, gap: null, ece: null, ok: null, note: '样本不足（' + n + ' < ' + minN + '）⇒ 不报读数（不冒充 PASS）' };
+  const buckets = [];
+  for (let i = 0; i < nb; i += 1) buckets.push({ lo: +(i / nb).toFixed(4), hi: +((i + 1) / nb).toFixed(4), n: 0, sumConf: 0, sumCorrect: 0, expected: null, actual: null });
+  let meanConf = 0, correctN = 0;
+  for (const r of list) {
+    meanConf += r.confidence;
+    if (r.correct) correctN += 1;
+    const idx = Math.min(nb - 1, Math.max(0, Math.floor(r.confidence * nb)));
+    const b = buckets[idx];
+    b.n += 1; b.sumConf += r.confidence; b.sumCorrect += r.correct ? 1 : 0;
+  }
+  meanConf /= n;
+  const actual = correctN / n;
+  const gap = +(meanConf - actual).toFixed(4);
+  let ece = 0;
+  const used = [];
+  for (const b of buckets) {
+    if (!b.n) continue;
+    b.expected = +(b.sumConf / b.n).toFixed(4);
+    b.actual = +(b.sumCorrect / b.n).toFixed(4);
+    ece += (b.n / n) * Math.abs(b.actual - b.expected);
+    used.push(b);
+  }
+  return { n, minN, buckets: used, bucketsUsed: used.length, meanConf: +meanConf.toFixed(4), actual: +actual.toFixed(4), gap, ece: +ece.toFixed(4), ok: true, note: gap > 0.05 ? '过度自信（gap>0.05）' : (gap < -0.05 ? '欠自信' : '校准良好（|gap|≤0.05）') };
+}
+
+/** 强否定/反事实标记（#25；与「冲突检测」同一套显式撤回词，避免高频字误伤）。 */
+const NEGATION_MARKERS = ['作废', '失效', '不再成立', '已废弃', '已放弃', '已推翻', '已排除', '被拒', '拒绝采纳', '撤回', '取消采用', '不采用', '不可用'];
+/** #25 否定/反事实降权（2026-10-12 窗口 7）：条款含强否定 ⇒ 返回 <1 的系数（只进排序、不隐藏）。
+ *  **默认关**（`lookup --negation-penalty` 才开）：修正不替代（A5）。 */
+export function negationPenalty(text) {
+  const s = String(text ?? '');
+  const hits = NEGATION_MARKERS.filter((m) => s.includes(m));
+  if (!hits.length) return 1;
+  return +(0.75 ** Math.min(3, hits.length)).toFixed(4);   // 0.75 / 0.5625 / 0.4219，最多三档
+}
+
+/** #26 渐进式检索（2026-10-12 窗口 7；外部对照启发：灵枢 progressive.py）。
+ *  宽（原查询）→ 逐步收窄（词数递减 + 去停用词）⇒ 每步实际跑 lookup 并计数；空/无效查询 ⇒ `deferred:true`（**DEFER ≠ 失败**）。 */
+export function progressiveRecall(query, opts = {}) {
+  const raw = String(query ?? '').trim();
+  if (!raw) return { query: raw, steps: [], deferred: true, note: '空查询：DEFER（不是失败——给个主题词再跑）' };
+  const tokens = tokenize(raw);
+  if (!tokens.length) return { query: raw, steps: [], deferred: true, note: '无可检索词：DEFER（不是失败）' };
+  const variants = [tokens];
+  if (tokens.length >= 2) variants.push(tokens.slice(0, Math.ceil(tokens.length / 2)));
+  if (tokens.length >= 3) variants.push(tokens.slice(0, 2));
+  if (tokens.length >= 2) variants.push([tokens[0]]);
+  const steps = [];
+  const seen = new Set();
+  for (const v of variants) {
+    const q = v.join(' ');
+    if (seen.has(q)) continue;
+    seen.add(q);
+    const r = lookupDetailed(q, { ...opts, contextBudget: false, __noQueryLog: true });   // I-02：分步探测不逐条落侧线（那会把监控淹掉）
+    steps.push({ query: q, tokens: v.length, hits: r.hits.length, strong: r.hits.filter((h) => h.strong).length, stance: r.knowledge?.stance ?? null });
+  }
+  const last = steps[steps.length - 1];
+  const converged = steps.length === 1 || (last.hits > 0 && last.hits <= 5);
+  return { query: raw, steps, deferred: false, converged, note: converged ? '已收窄到可用面（' + last.hits + ' 条）' : '宽面仍偏大：可继续加条件或换词（DEFER 亦可）' };
+}
+
+/** #23 写入回执统一（2026-10-12 窗口 8；外部对照：灵枢把「受理」与「落盘」拆开）。
+ *  语义：任何写入类调用的回执 `{ok, committed, id, reason}`——**committed=false 不得口头说「已收入」**。
+ *  本函数只做**形状归一**（把已有返回值/异常统一成四元组），不改写路径本身。 */
+export function committedOf(result, opts = {}) {
+  if (result && typeof result === 'object' && 'committed' in result && 'ok' in result && 'reason' in result) return result;
+  const id = (result && typeof result === 'object' && (result.id ?? result.record?.id ?? null)) || opts.id || null;
+  return { ok: true, committed: true, id, reason: null };
+}
+
+/** #24 代际指纹（2026-10-12 窗口 8；外部对照：灵枢 cg(op=info)）。
+ *  `code_generation` = 本进程启动时核心三件的源指纹（模块加载即算）；
+ *  `disk_generation` = 当前盘上源指纹；不一致 ⇒ `stale_on_disk:true` + `restart_required:true`（提醒"跑的是旧代码"）。 */
+const CORE_FILES = ['lib.mjs', 'session.mjs', 'sleep.mjs'];
+function coreFingerprint(useMtime) {
+  const parts = [];
+  for (const f of CORE_FILES) {
+    const p = join(ROOT, f);
+    try {
+      if (useMtime) parts.push(f + ':' + Math.round(statSync(p).mtimeMs));
+      else parts.push(f + ':' + createHash('sha256').update(readFileSync(p)).digest('hex').slice(0, 12));
+    } catch { parts.push(f + ':missing'); }
+  }
+  return createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 16);
+}
+export const CODE_GENERATION = coreFingerprint(true);   // 模块加载时快照（进程内恒定）
+export function generationInfo() {
+  const disk = coreFingerprint(true);
+  const stale = disk !== CODE_GENERATION;
+  return {
+    code_generation: CODE_GENERATION,
+    disk_generation: disk,
+    stale_on_disk: stale,
+    restart_required: stale,
+    note: stale
+      ? '核心三件在本进程启动后有改动 ⇒ 跑的是旧代码；重启宿主/CLI 才能换代'
+      : '代码与盘上一致（无需重启）'
+  };
+}
+
+/** #16 盲区地图（2026-10-12 窗口 9）：给一批查询词，标出**零命中/弱命中**的（法定输出）。
+ *  分级：`blind`（无强命中）· `thin`（强命中 < minStrong 但有弱命中）· `covered`（强命中足）。
+ *  只读；每条带 `reason/action`（可执行），总给 `summary`（不静默）。 */
+export function blindspotMap(queries, opts = {}) {
+  const minStrong = Number.isInteger(opts.minStrong) ? opts.minStrong : 1;
+  const list = (Array.isArray(queries) ? queries : [queries]).map((q) => String(q ?? '').trim()).filter(Boolean);
+  const blind = [];
+  for (const q of list) {
+    const r = lookupDetailed(q, { ...opts, contextBudget: false, __noQueryLog: true });   // I-02：盲区地图是批量探测，不落侧线
+    const strong = r.hits.filter((h) => h.strong).length;
+    const weak = r.hits.length - strong;
+    let level = 'covered';
+    if (strong === 0) level = 'blind';
+    else if (strong < minStrong) level = 'thin';
+    blind.push({
+      query: q, level, hits: r.hits.length, strong, weak,
+      stance: r.knowledge?.stance ?? null,
+      reason: level === 'blind' ? '无强命中（整词未命中）：可能是库内确实没有，或词面不同（换词/别名再试）'
+        : (level === 'thin' ? '强命中不足（仅 ' + strong + ' 条）' : '有强命中'),
+      action: level === 'covered' ? '正常用（引用 citeAllowlist 内的 id）'
+        : '换用 progressiveRecall 分步收窄，或按「外网检索未接」标注来源态；确认是缺口就落 orphan'
+    });
+  }
+  const blindCount = blind.filter((x) => x.level === 'blind').length;
+  const thinCount = blind.filter((x) => x.level === 'thin').length;
+  return { blind, summary: { total: blind.length, blindCount, thinCount, covered: blind.length - blindCount - thinCount,
+    note: (blindCount + thinCount) ? ('有 ' + (blindCount + thinCount) + ' 条查询落在盲区/薄弱区——这是**法定输出**（不许静默省略）') : '全部查询有强命中' } };
+}
+
+/** #27 纪律单源渲染（2026-10-12 窗口 9；外部对照启发：灵枢单源纪律 + 渲染/校验双脚本）。
+ *  **单源**＝下面 `DISCIPLINE` 对象；`renderDiscipline()` 出 Markdown；`verifyDiscipline(text)` 校验产物是否漂移。 */
+export const DISCIPLINE = Object.freeze({
+  version: 'discipline/2026-10-12.1',
+  sections: Object.freeze([
+    Object.freeze({ id: 'source-state', title: '来源态', items: Object.freeze(['事实性断言尽量带来源态：学过 / 接触过 / 记得·库内 / 搜到', '未标注按「学过」（未核验）处理']) }),
+    Object.freeze({ id: 'ranking-nail', title: '排序钉子', items: Object.freeze(['无据的确定 ≪ 有据的不确定', '编造比承认不知道更糟']) }),
+    Object.freeze({ id: 'red-line', title: '红线', items: Object.freeze(['零编造（一票否决）']) }),
+    Object.freeze({ id: 'bounds', title: '库界', items: Object.freeze(['库无界·装载有界', '修订链：追加不改原文', '先注册判据再读数据·作者不自证']) }),
+    Object.freeze({ id: 'write-path', title: '写入', items: Object.freeze(['数据只经校验写入（akasha CLI / MCP）；直写 data 会被门控拒绝', '写入回执看 committed（未落盘不得口头「已收入」）']) })
+  ])
+});
+export function renderDiscipline() {
+  const out = ['# 阿卡夏·纪律（单源渲染 · ' + DISCIPLINE.version + '）', '', '> 本文件由 `renderDiscipline()` 从单源生成；**勿手改**——改纪律请改单源并用 `discipline --check` 校验。', ''];
+  for (const s of DISCIPLINE.sections) {
+    out.push('## ' + s.title);
+    for (const it of s.items) out.push('- ' + it);
+    out.push('');
+  }
+  return out.join('\n');
+}
+export function verifyDiscipline(text) {
+  const expect = renderDiscipline();
+  const norm = (s) => String(s ?? '').replace(/\r\n/g, '\n').trim();
+  if (norm(text) === norm(expect)) return { ok: true, version: DISCIPLINE.version, reason: null };
+  const a = norm(expect).split('\n');
+  const b = norm(text).split('\n');
+  const diffs = [];
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) if (a[i] !== b[i]) diffs.push({ line: i + 1, expected: a[i] ?? null, actual: b[i] ?? null });
+  return { ok: false, version: DISCIPLINE.version, diffs: diffs.slice(0, 10), reason: '产物与单源不一致（漂移）：' + diffs.length + ' 处差异' };
 }
 
 /** 到期复审只看当前版本（旧版 next_review 不报）。 */
 export function frontierDue(today = new Date().toISOString().slice(0, 10)) {
   return currentRecords(loadStore('frontier').records).filter((r) => r.next_review && r.next_review <= today);
+}
+
+/** I-01 复审到期清单原型（2026-10-13，批次 1；C 线 A.2）：把 `frontier due` 的机制泛化到全库。
+ *  口径＝「信任级 × 时龄」：核心（T1 复现 / T2 实验，及渲染进提示的条目）30 天；一般（T3–T5）90 天；其余兜底年审 365 天。
+ *  时龄锚 = last_reviewed → event_time → logged_at → created；无锚 ⇒ undated（如实三分，不静默）。
+ *  只读：不写库、不裁决——输出供**人工核**（原型阶段；闭环自动化 = I-10，冻结期后）。 */
+export const REVIEW_DEFAULTS = Object.freeze({
+  coreDays: 30, generalDays: 90, annualDays: 365,
+  stores: Object.freeze(['canon', 'mirror', 'orphan', 'pricing', 'lexicon'])
+});
+
+export function reviewDue(opts = {}) {
+  const policy = { ...REVIEW_DEFAULTS, ...(opts.policy || {}) };
+  const today = String(opts.today || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const dayOf = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
+  const stores = Array.isArray(opts.stores) && opts.stores.length ? opts.stores : policy.stores;
+  const items = []; const undated = [];
+  let scanned = 0;
+  for (const name of stores) {
+    if (!STORES.includes(name)) continue;
+    for (const r of currentRecords(recordsOf(name, opts))) {
+      if (!isStr(r.id)) continue;
+      scanned += 1;
+      // 渲染进提示的条目（用法条 / 自我层）＝最高看读强度 ⇒ 与核心同档（信任分级不豁免复审）。
+      const rendered = name === 'canon' && (isProtocolId(r.id) || (Array.isArray(r.tags) && r.tags.map(String).includes('自我')));
+      const tier = name === 'canon' && r.source ? (TIER_OF_SOURCE[r.source.type] ?? null) : null;
+      const intervalDays = rendered || tier === 'T1' || tier === 'T2' ? policy.coreDays : (tier ? policy.generalDays : policy.annualDays);
+      let anchor = null;
+      for (const k of ['last_reviewed', 'event_time', 'logged_at', 'created']) { const d = dayOf(r[k]); if (d) { anchor = { field: k, day: d }; break; } }
+      const row = {
+        store: name, id: r.id, tier, cls: rendered ? 'rendered' : (tier ? 'tier' : 'fallback'),
+        anchor: anchor ? anchor.field : null, anchorDay: anchor ? anchor.day : null, intervalDays
+      };
+      if (!anchor) { undated.push(row); continue; }
+      row.ageDays = Math.floor((Date.parse(today) - Date.parse(anchor.day)) / 86400000);
+      row.overdueDays = Math.max(0, row.ageDays - intervalDays);
+      if (row.ageDays > intervalDays) items.push(row);
+    }
+  }
+  items.sort((a, b) => (b.overdueDays - a.overdueDays) || a.store.localeCompare(b.store) || String(a.id).localeCompare(String(b.id)));
+  return {
+    today, policy, counts: { scanned, due: items.length, undated: undated.length },
+    items, undated: undated.slice(0, 20)
+  };
+}
+
+// ── 批次 1 诊断工具（2026-10-13）：I-03 记忆 diff + I-04 矛盾显现 ──
+
+/** 取日期前缀（YYYY-MM-DD）；非字符串/非日期 ⇒ null。 */
+function daySlice(v) {
+  return (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) ? v.slice(0, 10) : null;
+}
+
+/** 两版之间「改了什么」（字段级）。id / supersedes / logged_at 是修订机制本身的字段，不算内容变化。 */
+function diffFields(a, b) {
+  const out = [];
+  for (const k of new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])) {
+    if (k === 'id' || k === 'supersedes' || k === 'logged_at') continue;
+    if (JSON.stringify(a?.[k]) !== JSON.stringify(b?.[k])) out.push(k);
+  }
+  return out.sort();
+}
+
+/** I-03 记忆 diff（2026-10-13，批次 1；B 线 P1-①）：对比任意两时点，输出「库变了什么」。
+ *  轴＝logged_at（何时被写 / 被改）；缺戳回退 event_time（记 anchor）；两无 ⇒ 不入窗、计入 undated（如实三分，不静默）。
+ *  窗口按日、**含两端**（UTC）。分类：added（链根）/ revised（修订版，附与前一版的变化字段）/ retired（墓碑）。
+ *  只读——不改数据。 */
+export function memoryDiff(opts = {}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const since = String(opts.since || opts.from || today).slice(0, 10);
+  const until = String(opts.until || opts.to || since).slice(0, 10);
+  if (!(Date.parse(since) <= Date.parse(until))) throw new Error('diff 窗口非法：since > until（' + since + ' > ' + until + '）');
+  const stores = (Array.isArray(opts.stores) && opts.stores.length ? opts.stores : STORES).filter((n) => STORES.includes(n));
+  const lineOf = (name, r) => String(PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : '').slice(0, 84);
+  const out = {}; const totals = { added: 0, revised: 0, retired: 0, revoked: 0, undated: 0 };
+  for (const name of stores) {
+    const records = recordsOf(name, opts);
+    const byId = new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
+    const b = { added: [], revised: [], retired: [], revoked: [], undated: { count: 0, samples: [] } };
+    for (const r of records) {
+      if (!isStr(r.id)) continue;
+      const day = daySlice(r.logged_at) || daySlice(r.event_time);
+      const anchor = daySlice(r.logged_at) ? 'logged_at' : (daySlice(r.event_time) ? 'event_time' : null);
+      // 2026-10-14 整体复检修：**撤销记录（revokes）单列一类**——此前落进 'added'，复核时间线会把「撤销退役」误读成「新增条目」。
+      const kind = r.revokes !== undefined ? 'revoked' : (r.retires !== undefined ? 'retired' : (isStr(r.supersedes) ? 'revised' : 'added'));
+      if (!day) { b.undated.count += 1; if (b.undated.samples.length < 5) b.undated.samples.push({ id: r.id, kind }); continue; }
+      if (day < since || day > until) continue;
+      if (kind === 'retired') b.retired.push({ id: r.id, target: r.retires, day, anchor, reason: r.retired_reason ?? null });
+      else if (kind === 'revoked') b.revoked.push({ id: r.id, target: r.revokes, day, anchor, reason: r.revoked_reason ?? null });
+      else if (kind === 'revised') {
+        const prev = byId.get(r.supersedes);
+        b.revised.push({ id: r.id, supersedes: r.supersedes, day, anchor, changed: prev ? diffFields(r, prev) : null, line: lineOf(name, r) });
+      } else b.added.push({ id: r.id, day, anchor, line: lineOf(name, r) });
+    }
+    const byDay = (x, y) => (x.day === y.day ? String(x.id).localeCompare(String(y.id)) : (x.day < y.day ? -1 : 1));
+    b.added.sort(byDay); b.revised.sort(byDay); b.retired.sort(byDay); b.revoked.sort(byDay);
+    totals.added += b.added.length; totals.revised += b.revised.length; totals.retired += b.retired.length; totals.revoked += b.revoked.length; totals.undated += b.undated.count;
+    out[name] = b;
+  }
+  return { since, until, stores: out, totals };
+}
+
+/** I-04-a 修订链对比视图（2026-10-13，批次 1）：把一条链（含墓碑）按时序摆开，逐步标「这一步改了什么」。
+ *  入参可用任意版本 id **或**链根 id；跨库查找；找不到 ⇒ null。只读。 */
+export function chainView(id, opts = {}) {
+  if (!isStr(id)) return null;
+  const rootOf = (s) => String(s).replace(/-retired$/i, '').replace(/-r\d+[a-z]*$/i, '');   // 兼容 -rN 与 -rNsr 后缀
+  for (const name of STORES) {
+    const records = recordsOf(name, opts);
+    const byId = new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
+    const rec = byId.get(id) || records.find((r) => rootOf(r.id) === rootOf(id));
+    if (!rec) continue;
+    let root = rec; const seen = new Set();
+    while (root && isStr(root.supersedes) && byId.has(root.supersedes) && !seen.has(root.id)) { seen.add(root.id); root = byId.get(root.supersedes); }
+    const chain = []; let cur = root; const guard = new Set();
+    while (cur && !guard.has(cur.id)) {
+      guard.add(cur.id); chain.push(cur);
+      const tomb = records.find((r) => r.retires === cur.id);
+      if (tomb) { chain.push(tomb); break; }                                  // 墓碑进链、并终止
+      const next = records.find((r) => r.supersedes === cur.id);
+      if (!next) break;
+      cur = next;
+    }
+    const curSet = new Set(currentRecords(records).map((r) => r.id));
+    return {
+      store: name, root: root.id,
+      currentId: [...chain].reverse().find((r) => curSet.has(r.id))?.id ?? null,
+      retired: !chain.some((r) => curSet.has(r.id)),
+      versions: chain.map((r, i) => ({
+        id: r.id,
+        day: daySlice(r.logged_at) || daySlice(r.event_time),
+        tombstone: r.retires !== undefined ? r.retires : null,
+        changed: i > 0 ? diffFields(r, chain[i - 1]) : null,
+        line: String(PRIMARY_LINE[name] ? PRIMARY_LINE[name](r) : '').slice(0, 100)
+      })),
+      ids: chain.map((r) => r.id)
+    };
+  }
+  return null;
+}
+
+/** I-04-b 矛盾显现查询（2026-10-13，批次 1；B 线 P1-②）：给 id ⇒ 链视图 + 涉该链的冲突候选；给主题词 ⇒ 主题相关冲突清单。
+ *  复用 #18 detectConflicts（机械对照、只提示不裁决、同题多源不合并）：**先全库扫描、再按相关性过滤**（避免只在前 20 对里碰运气）。只读。 */
+export function conflictReport(input, opts = {}) {
+  const q = String(input ?? '').trim();
+  if (!q) return { query: '', kind: 'none', chain: null, pairs: [], matched: 0, note: '给一个 id 或主题词。' };
+  const chain = chainView(q, opts);
+  const toks = tokenize(q.toLowerCase());
+  const allRecs = {}; const matchIds = new Set();
+  for (const name of STORES) {
+    const rows = currentRecords(recordsOf(name, opts));
+    allRecs[name] = rows;
+    for (const r of rows) {
+      const hay = (LOOKUP_FIELDS[name] || []).map((f) => (Array.isArray(r[f]) ? r[f].join(' ') : (r[f] || ''))).join(' | ').toLowerCase();
+      if (scoreTokens(hay, toks).score > 0) matchIds.add(r.id);
+    }
+  }
+  const allPairs = detectConflicts(allRecs, { top: Number.isInteger(opts.scan) ? opts.scan : 200, max: opts.max });
+  const relevant = new Set([...matchIds, ...(chain ? chain.ids : [])]);
+  const pairs = allPairs.filter((p) => (p.a && relevant.has(p.a)) || (p.b && relevant.has(p.b))).slice(0, Number.isInteger(opts.top) ? opts.top : 20);
+  try { recordQuery({ cmd: 'conflict', query: q, hits: pairs.length }, opts); } catch { /* K3 计数失败不影响查询 */ }
+  return {
+    query: q, kind: chain ? 'id' : 'topic', chain, matched: matchIds.size, pairs,
+    note: pairs.length ? '只提示不裁决：作废侧与同题另一条并存，是否真冲突请人工裁定（修订链处置）。' : '无机械候选（0 候选 ≠ 无矛盾：词法级先行）。'
+  };
+}
+
+// ── 批次 2 · 体裁隔离 P0（2026-10-13；设计 = `research/genre-isolation-design-20261013.md` §7）──
+
+/** P0-② **符号骨架剥皮**（读侧渲染专用；单点实现，CLI / MCP 桥 / 会话层共用）：
+ *  「保信息、去模板」——`⇒`→`→`；`✓`→删除（规整空格）；`好。`→`。`（行首/句末吞并）。
+ *  **白名单机制**：只剥枚举内的完成态符号；**其余字符零改动**；**幂等**（重复运行结果一致）。
+ *  作用域＝**读侧渲染**：库内原文一字不动；**反思通道不调用本函数**（`--reflect` / `--raw-process` 给原文）。
+ *  依据：案发相变样本即符号（≈50 个 ⇒ / 36 个 ✓）；工业对应＝Letta 的显示格式防护同族（三线逆向）。 */
+export function stripGenre(text) {
+  let s = String(text ?? '');
+  if (!s) return s;
+  s = s.replace(/⇒/g, '→');
+  s = s.replace(/[ \t]*✓[ \t]*/g, ' ').replace(/ {2,}/g, ' ');
+  s = s.replace(/(^|。)好。/gm, '$1');
+  s = s.replace(/好。/g, '。');
+  s = s.replace(/[ \t]+$/gm, '');
+  return /^\s*$/.test(s) ? '' : s;
+}
+
+/** I-12 P1-③ **剂量闸**（2026-10-13，批次 2）：单次回读的「符号负荷」限幅——累计超阈 ⇒ 后续条目改摘要（保 id 与指针）。
+ *  「对齐侧音电平」：不看有没有标签，只看负荷；**反思通道**（reflect / raw-process）不受限；`doseThreshold: 0` 关闸。
+ *  工业对应＝OpenViking `trigger/clear_at_least`、MemGPT 双阈值（三线逆向）。 */
+export const GENRE_DOSE_DEFAULTS = Object.freeze({
+  threshold: 15,        // 常规阈值（被剥符号等效量：⇒ / ✓ / 好。 计数）
+  strictThreshold: 8,   // 任务门控「收紧档」（长会话等信号自动触发，2026-10-13 见 §4.2 P1-④）
+  summaryChars: 60,     // 超阈后「摘要」＝前 N 字 + …（保信息骨架、去正文样板）
+  longSessionSegs: 2000 // 长会话自判阈值（会话层用；可 options 覆写便于自测）。
+                        // 标定（2026-10-13 复查·举一反三）：真库 21 会话中 ≥3000 段仅 1 个，而**案发会话＝2179 段**
+                        // ⇒ 原 3000 会把已知风险类漏在外面；取 2000 覆盖案发会话＋两个更长的（3/21）。仍是经验值，随观测再校。
+});
+
+/** 符号负荷计数（与 stripGenre **同一白名单**：⇒ / ✓ / 好。）。 */
+export function skeletonCount(text) {
+  const s = String(text ?? '');
+  if (!s) return 0;
+  let n = 0;
+  for (const ch of s) if (ch === '⇒' || ch === '✓') n += 1;
+  n += (s.match(/好。/g) || []).length;
+  return n;
+}
+
+/** 剂量闸判定（纯函数）：按顺序累计负荷；返回首个越限位置（该条起＝「后续条目」）。
+ *  `cutoff=null` ⇒ 未越限；否则 `texts[cutoff..]` 应被摘要化。 */
+export function doseGate(texts, { threshold = GENRE_DOSE_DEFAULTS.threshold } = {}) {
+  const counts = (Array.isArray(texts) ? texts : []).map((t) => skeletonCount(t));
+  let run = 0; let cutoff = null;
+  for (let i = 0; i < counts.length; i += 1) {
+    run += counts[i];
+    if (run > threshold) { cutoff = i; break; }
+  }
+  return { counts, total: counts.reduce((a, b) => a + b, 0), cutoff, threshold };
+}
+
+/** 剂量闸的「摘要形式」：前 N 字 + …（不改语义、只做限幅）。 */
+export function doseSummary(text, opts = {}) {
+  const n = Number.isInteger(opts.summaryChars) && opts.summaryChars > 0 ? opts.summaryChars : GENRE_DOSE_DEFAULTS.summaryChars;
+  const s = String(text ?? '');
+  return s.length <= n ? s : s.slice(0, n) + '…';
+}
+
+/** 各库「主文本字段」（剂量闸计数与摘要的对象；与 brief 的展示面一致）。 */
+export const DOSE_TEXT_FIELD = Object.freeze({ canon: 'claim', mirror: 'situation', orphan: 'summary', pricing: 'behavior', lexicon: 'resolution', frontier: 'title' });
+
+/** #1 自治读数族（2026-10-12 窗口 3；外部对照启发：灵枢 metacognition）。
+ *  纪律（用户口径「只读·如实」）：**样本不足 ⇒ 值=null（ok:null），绝不冒充 PASS**；缺失项在 missing 里点名，不静默。
+ *  五读数：① 漏召率（失败前未查库占比）② 工具失败率 ③ 反驳率（verifier refute 占比）④ 同坑复发（同工具同错误码出现 ≥2 次的组数）⑤ 回滚弧（修订链中含 rollback_of 的链数）。
+ *  只读：由 metrics(store 面) + hooks 已解析行驱动，不改任何数据。 */
+export function autonomyReadings(opts = {}) {
+  const m = opts.metrics && typeof opts.metrics === 'object' ? opts.metrics : metrics(opts);
+  const minN = Number.isInteger(opts.minN) ? opts.minN : 5;
+  const safeRate = (num, den) => (den >= minN ? +(num / den).toFixed(4) : null);
+  const r = m.recall ?? {};
+  const c = m.counters ?? {};
+  // ③④：从 hooks 行现取（metrics 不保留逐行；此处只读重扫一遍）
+  //  夹具路径：显式给 opts.toolErrors（数组）⇒ 不扫真日志（结果可控、测试可复现）。
+  let refute = 0, revisionsTotal = 0, chainsWithRollback = 0, chainsTotal = 0;
+  const allToolErr = new Map();
+  const injectedErr = Array.isArray(opts.toolErrors) ? opts.toolErrors
+    : (opts.metrics && Array.isArray(opts.metrics.topToolErrors) ? opts.metrics.topToolErrors : null);
+  if (injectedErr) {
+    for (const [k, n] of injectedErr) allToolErr.set(String(k), Number(n) || 0);
+  } else {
+    try {
+      const lines = readFileSync(opts.log || join(ROOT, 'logs', 'hooks.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean);
+      for (const l of lines) {
+        let rec; try { rec = JSON.parse(l); } catch { continue; }
+        if (rec.kind === 'tool' && rec.ok === false) { const k = String(rec.tool ?? '?'); allToolErr.set(k, (allToolErr.get(k) ?? 0) + 1); }
+        if (typeof rec.kind === 'string' && rec.kind.startsWith('verifier')) { revisionsTotal += 1; if (String(rec.verdict ?? rec.result ?? '') === 'refute') refute += 1; }
+      }
+    } catch { /* 缺日志 ⇒ 读数照常给 null */ }
+  }
+  const pitGroups = (Array.isArray(m.topToolErrors) ? m.topToolErrors : []).filter(([, n]) => Number(n) >= 2);   // 同坑复发组（top5 视角）
+  const allPits = [...allToolErr.entries()].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]);              // 全扫视角（更准）
+  for (const s of STORES) {
+    try {
+      const recs = loadStore(s).records;
+      const byId = new Map(recs.filter((x) => isStr(x.id)).map((x) => [x.id, x]));
+      const seen = new Set();
+      for (const x of recs) {
+        if (!isStr(x.id) || !isStr(x.supersedes) || seen.has(x.id)) continue;
+        seen.add(x.id);
+        chainsTotal += 1;
+        let cur = x;
+        while (cur && isStr(cur.supersedes) && byId.has(cur.supersedes)) { if (cur.rollback_of !== undefined) { chainsWithRollback += 1; break; } cur = byId.get(cur.supersedes); }
+      }
+    } catch { /* 读不到就缺 */ }
+  }
+  const read = {
+    recallMissRate: { value: Number.isFinite(r.missRate) && Number(r.failureTurns ?? 0) >= minN ? r.missRate : safeRate(Number(r.misses ?? 0), Number(r.failureTurns ?? 0)), num: r.misses ?? 0, den: r.failureTurns ?? 0, note: '失败回合里「失败前未先查库」的占比（越低越好；来自 hooks 回查线）' },
+    toolFailureRate: { value: safeRate(Number(c.toolErrors ?? 0), Number(c.tools ?? 0)), num: c.toolErrors ?? 0, den: c.tools ?? 0, note: '工具调用失败率' },
+    refuteRate: { value: safeRate(refute, revisionsTotal), num: refute, den: revisionsTotal, note: 'verifier 判 refute 占比（数据源：logs/hooks.jsonl 的 verifier 行；当前线未铺 ⇒ null）' },
+    samePitRecurrence: { value: (pitGroups.length || allPits.length) ? new Set([...pitGroups.map(([k]) => k), ...allPits.map(([k]) => k)]).size : null, num: new Set([...pitGroups.map(([k]) => k), ...allPits.map(([k]) => k)]).size, den: allToolErr.size, note: '同坑复发：**全扫** hooks 后「同一工具错误出现 ≥2 次」的工具数（非只看 top5）；明细 top 见同返回 stats' },
+    rollbackChains: { value: safeRate(chainsWithRollback, chainsTotal), num: chainsWithRollback, den: chainsTotal, note: '含回滚版（rollback_of）的修订链占比' }
+  };
+  const missing = Object.entries(read).filter(([, v]) => v.value === null).map(([k]) => k);
+  return { at: new Date().toISOString(), minSample: minN, readings: read, missing, ok: missing.length ? null : true, note: missing.length ? '样本不足/' + missing.length + ' 项缺失 ⇒ ok=null（**不报 PASS**）' : '全读数可算' };
+}
+
+/** #19 回滚命令化（2026-10-12 窗口 3）：把「某日（或某前缀之后）追加的修订」整体回退。
+ *  纪律：**追加反向修订、绝不删原文**（append-only 不破）；回滚记录带 `rollback_of`（可事后辨认、且不会被二次回滚）。
+ *  语义：对每条候选（= 指定日期起的**修订版**，且已有前一版），追加一条 id 同前版的记录（内容=前一版）、`supersedes` 接在被打版之后。
+ *  返回计划/结果数组：dry（默认）只读；`apply:true` 才写。**幂等**：已回滚过即跳过（重跑无事可做）。 */
+export function rollbackBatch(store, opts = {}) {
+  if (!STORES.includes(store)) throw new Error('未知存储：' + store);
+  if (isProtocolId(opts.id) || isProtocolId(opts.since)) throw new Error('协议条不可批量回滚（用法条改写须人工 --allow-protocol）');
+  const file = opts.file || storePath(store);
+  const day = opts.since ? String(opts.since).slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const need = opts.apply === true;
+  return withFileLock(file, () => {
+    const records = loadStore(store, file).records;
+    const byId = new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
+    const rolledIds = new Set(records.filter((r) => r.rollback_of !== undefined).map((r) => r.rollback_of));
+    // 「已回滚」的判定看**后继**：谁把它 rollback_of 了；不能只看 id（回滚版 id ≠ 前版 id）。
+    const rolledBy = new Set();
+    for (const r of records) if (r.rollback_of !== undefined && isStr(r.supersedes)) rolledBy.add(r.supersedes);
+    const plan = [];
+    for (const r of records) {
+      if (!isStr(r.id) || !isStr(r.supersedes) || r.rollback_of !== undefined) continue;      // 只看「修订版」（且有前版）
+      const stamp = String(r.logged_at ?? '').slice(0, 10);
+      if (stamp < day) continue;
+      const prev = byId.get(r.supersedes);
+      if (!prev) continue;
+      if (rolledIds.has(r.id) || rolledBy.has(r.id)) continue;                                // 已回滚过 ⇒ 跳过（幂等）
+      plan.push({ store, id: r.id, restores: prev.id, claim: prev.claim ?? prev.summary ?? prev.behavior ?? prev.title ?? '' });
+    }
+    if (!need) return plan;
+    const done = [];
+    for (const p of plan) {
+      if (rolledIds.has(p.id)) continue;
+      const prev = byId.get(p.restores);
+      // id 必须新（重复 id 是硬错误）：内容=前版，id = **被打版自身 + r1**，再把回滚版的链尾撤到「被打版」之前。
+      const targetId = p.id + 'r1';
+      if (records.some((x) => x.id === targetId)) continue;                                   // 幂等（重跑时目标已存在 ⇒ 跳过）
+      const rec = { ...prev, id: targetId, supersedes: p.id, rollback_of: p.id };
+      delete rec.logged_at;                                                                    // 回滚=一次新写入 ⇒ 盖新戳
+      appendRecord(store, rec, { file, locked: true });
+      rolledIds.add(p.id);
+      done.push({ id: targetId, rollback_of: p.id, restores: p.restores, claim: p.claim });
+    }
+    return done;
+  });
 }
 
 export function price({ severity, irreversibility, cost, good }) {
@@ -2001,7 +3308,122 @@ export function pulse() {
   return { at: new Date().toISOString(), stores, newest };
 }
 
+/** 内置时钟（2026-10-14；用户令「给大肥鱼搞个内置时钟，工作时可主动查询时间，为自我行为提供时间依据与对照」）。
+ *  只读。返回 now（本地/UTC/星期/偏移/unix）+ refs（**时间对照锚**：最近写入 / 上次睡眠）+ at（把给定时点换算成距今）。
+ *  opts.now 可注入（测试）；opts.at＝字符串或数组；`YYYY-MM-DD` 按 **UTC 午夜**解析（如实口径，daysAgo 可能带小数）。 */
+export function nowSnapshot(opts = {}) {
+  const d = opts.now instanceof Date ? opts.now : new Date();
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  const off = -d.getTimezoneOffset();
+  const offStr = (off >= 0 ? '+' : '-') + pad(Math.floor(Math.abs(off) / 60)) + ':' + pad(Math.abs(off) % 60);
+  const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const age = (ms) => (Number.isFinite(ms) ? ageText(Math.max(0, ms)) : null);
+  const refs = { lastWrite: null, lastSleep: null };
+  try {
+    const p = pulse();
+    if (p && p.newest) refs.lastWrite = { store: p.newest.store, id: p.newest.id, age: p.newest.ageText ?? age(d.getTime() - p.newest.mtime) };
+  } catch { /* 容缺 */ }
+  try {
+    const st = JSON.parse(readFileSync(join(LOGS_DIR, 'sleep-state.json'), 'utf8'));
+    if (st && st.lastRunAt) refs.lastSleep = { at: String(st.lastRunAt).slice(0, 16) + 'Z', age: age(d.getTime() - Date.parse(st.lastRunAt)) };
+  } catch { /* 容缺 */ }
+  const list = Array.isArray(opts.at) ? opts.at : (opts.at ? [opts.at] : []);
+  const at = list.filter((x) => typeof x === 'string' && x.trim()).map((x) => {
+    const t = Date.parse(x.trim());
+    if (!Number.isFinite(t)) return { input: x, error: '无法解析（用 ISO 或 YYYY-MM-DD）' };
+    const delta = d.getTime() - t;
+    return { input: x, day: x.trim().slice(0, 10), age: age(delta), direction: delta >= 0 ? '过去' : '未来', daysAgo: +(delta / 86400000).toFixed(2) };
+  });
+  return {
+    now: {
+      local: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`,
+      weekday: WD[d.getDay()], tzOffset: offStr, utc: d.toISOString(), unix: Math.floor(d.getTime() / 1000)
+    },
+    refs, at
+  };
+}
+
 // 机械审计（抽样审计的可机检部分）：到期复审 / 陈旧复核 / 重复链接 / 孤案积压。
+// ── I-10 记忆复审机制（2026-10-14）：输入包 / 留痕线 / 读取 ─────────────────────
+export function reviewLogPathOf(opts = {}) {
+  return opts.file || join(LOGS_DIR, 'review-log.jsonl');
+}
+
+/** 追加一行 `review-cycle` 留痕（谁审的 / 审的哪条 / 结论）。加锁 + 单行 append；失败抛出（调用侧决定是否容错）。 */
+export function appendReviewLog(entry, opts = {}) {
+  const file = reviewLogPathOf(opts);
+  mkdirSync(dirname(file), { recursive: true });
+  const row = { ts: new Date().toISOString(), ...entry };
+  withFileLock(file, () => appendFileSync(file, JSON.stringify(row) + '\n', 'utf8'));
+  return { ok: true, file, row };
+}
+
+/** 读留痕线（默认最近 20 条；`since` 按日过滤——追加序即时间序，早于 since 即停）。 */
+export function readReviewLog(opts = {}) {
+  const file = reviewLogPathOf(opts);
+  let lines = [];
+  try { lines = readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean); } catch { return []; }
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 20;
+  const since = typeof opts.since === 'string' && opts.since ? opts.since.slice(0, 10) : null;
+  const out = [];
+  for (let i = lines.length - 1; i >= 0 && out.length < limit; i -= 1) {
+    let r; try { r = JSON.parse(lines[i]); } catch { continue; }
+    if (since && String(r.ts ?? '').slice(0, 10) < since) break;
+    out.push(r);
+  }
+  return out.reverse();
+}
+
+/** 复审输入包（只读）：条目全文 + 来源证据 + 必要上下文（因果 / 修订链邻居）+ 审查协议（交给 **fresh 子 agent**）。
+ *  设计＝《复审机制》A.2「输入三件」；子 agent 以**零上下文**派出（对照参照的价值所在），输出结构化审查报告。 */
+export function reviewPack(id, opts = {}) {
+  const s = show(String(id), opts);
+  if (!s || !s.record) return { found: false, id: String(id), note: (s && s.note) || '未找到' };
+  // 复审对象＝**当前版本**：show 契约不自动跳转 ⇒ 这里显式沿 supersedes 走到链尾（2026-10-14 复查补齐）。
+  let tip = s.record;
+  try {
+    const recs = loadStore(s.store).records;
+    for (;;) {
+      const next = recs.find((r) => r && r.supersedes === tip.id);
+      if (!next) break;
+      tip = next;
+    }
+  } catch { /* 读不出就退回所查版本 */ }
+  const rec = tip;
+  const rel = [];
+  for (const f of ['caused_by', 'led_to']) if (Array.isArray(rec[f])) rel.push(...rec[f]);
+  // 链信息（版本数）——单独给，不混进「相关条目」（自身历史 ≠ 外部上下文）。
+  let versions = 1;
+  try {
+    const recs = loadStore(s.store).records;
+    let cursor = rec;
+    while (cursor && isStr(cursor.supersedes)) { const prev = recs.find((r) => r && r.id === cursor.supersedes); if (!prev) break; versions += 1; cursor = prev; }
+  } catch { /* ignore */ }
+  const related = [];
+  for (const x of [...new Set(rel.map(String))]) {
+    const t = show(x, opts);
+    related.push(t && t.record
+      ? { id: t.id, store: t.store, line: String(t.record.claim ?? t.record.summary ?? t.record.situation ?? t.record.title ?? '').slice(0, 240) }
+      : { id: x, missing: true });
+  }
+  return {
+    found: true, id: s.id, current: rec.id, store: s.store, record: rec,
+    chain: { root: s.id, current: rec.id, versions },
+    source: rec.source ?? null,
+    related,
+    protocol: {
+      reviewer: 'fresh 子 agent（零上下文；独立视角不带主会话先见）',
+      questions: [
+        '事实性核对：对照来源证据（source.ref）与现状，结论是否仍成立？',
+        '方法审查：有没有更好的解法（升级建议）？',
+        '幻觉 / 失效 / 被推翻：有无证据表明它已过时或被替代？'
+      ],
+      output: '结构化审查报告：结论 / 疑点 / 升级建议 / 理由 / 建议动作（修正 | 升级 | 维持）',
+      landing: '主会话裁决 → 修订链追加（修正 / 升级 / 维持注记「YYYY-MM-DD 已复审」）→ `review log` 留痕'
+    }
+  };
+}
+
 export function audit(opts = {}) {
   const today = opts.today || new Date().toISOString().slice(0, 10);
   const days = (a, b) => Math.floor((Date.parse(b) - Date.parse(a)) / 86400000);
@@ -2027,6 +3449,34 @@ export function audit(opts = {}) {
   const orphans = currentRecords(loadStore('orphan').records);
   const aging = orphans.filter(r => r.created && days(r.created, today) > 90);
   if (aging.length) findings.push({ level: 'info', code: 'orphan-aging', detail: aging.map(r => r.id) });
+  // I-08 热缓冲溢出（2026-10-14）：孤儿＝热缓冲；超阈值即报（**只报不裁**；压缩流程见 PROTOCOL「孤儿热缓冲」）。
+  const backlogN = Number.isInteger(opts.orphanBacklogN) ? opts.orphanBacklogN : ORPHAN_BACKLOG_DEFAULTS;
+  if (orphans.length > backlogN) findings.push({ level: 'info', code: 'orphan-backlog', detail: orphans.map(r => r.id) });
+  // I-15 可信度衰减建议（2026-10-14；**建议而非自动**——长期无复现 / 无引用的条目 ⇒ 输出「降权 / 复核建议」）。
+  //   判据（三项全中才算，可注入便于自测）：① 时龄 ≥ decayDays（默认 90；锚＝last_reviewed → event_time，无锚跳过）；
+  //   ② 链上**无 verification**（replay/experiment/doc/incident 任一）；③ 使用窗口内**零引用**。
+  //   ⚠ 引用侧读不到（usage.missing）时**不假报零**：此项整体跳过（宁可不出建议，不可出假建议）。
+  const decayDays = Number.isInteger(opts.decayDays) ? opts.decayDays : 90;
+  if (decayDays > 0 && canon.length) {
+    let usageById = null;
+    try {
+      const uw = resolveUsageWindow(opts);
+      if (uw && uw.missing !== true && uw.byId instanceof Map) usageById = uw.byId;
+    } catch { usageById = null; }
+    if (usageById) {
+      const verifiedRoots = new Set();
+      for (const x of loadStore('canon').records) if (x && x.verification) verifiedRoots.add(rootIdOf(x.id) || x.id);
+      const decay = [];
+      for (const r of canon) {
+        const anchor = credDay(r.last_reviewed) || credDay(r.event_time);
+        if (!anchor || days(anchor, today) < decayDays) continue;
+        if (verifiedRoots.has(rootIdOf(r.id) || r.id)) continue;
+        if ((usageById.get(rootIdOf(r.id) || r.id) ?? 0) > 0) continue;
+        decay.push(r.id);
+      }
+      if (decay.length) findings.push({ level: 'info', code: 'credibility-decay', detail: decay });
+    }
+  }
 
   for (const name of STORES) {
     const { errors } = loadStore(name);
@@ -2035,7 +3485,14 @@ export function audit(opts = {}) {
     if (bad.length) findings.push({ level: 'warn', code: 'bad-jsonl', detail: bad.map((e) => `${name}:${e.line}:${e.error}`) });
   }
 
-  return { today, ok: findings.every(f => f.level !== 'warn'), findings, summary: stats() };
+  // I-01 复审到期清单原型（2026-10-13 批次 1）：信任级 × 时龄——**只报不裁决**（level: info，不动 ok）。
+  const review = reviewDue({ ...opts, today });
+  if (review.counts.due) findings.push({ level: 'info', code: 'review-due', detail: review.items.slice(0, 12).map((x) => `${x.store}/${x.id}（龄 ${x.ageDays}d > ${x.intervalDays}d）`) });
+
+  return {
+    today, ok: findings.every(f => f.level !== 'warn'), findings, summary: stats(),
+    review: { counts: review.counts, policy: review.policy, top: review.items.slice(0, 20), undated: review.undated }
+  };
 }
 
 // 起床包：开工前一次装配——睡眠摘要 + 待办（inbox）+ 当前审计 + 库况 + 提示。
@@ -2092,7 +3549,7 @@ export function kit(opts = {}) {
   };
 
   const hints = [];
-  if (!sleep) hints.push('睡眠从未运行：等待首个空闲（或 timer 兜底）触发，或检查 @local/akasha-sleep 是否激活。');
+  if (!sleep) hints.push('睡眠从未运行：等待首个空闲（或 timer 兜底）触发，或检查 @akasha-book/akasha-sleep 是否激活。');
   if (inbox.totalItems > 0) hints.push(`待办 ${inbox.totalItems} 条（logs\\inbox.jsonl）：按「失败回查 / 孤案候选 / 召回复盘（recall-miss）」处理或转正式条目。`);
   for (const f of review.findings) if (f.level === 'warn') hints.push(`审计警告：${f.code} ×${f.count}（akasha_audit / akasha_frontier_due 可查明细）。`);
   hints.push('开工姿势：相关主题先 brief；事实性断言带来源态（学过 / 接触过 / 记得·库内 / 搜到）。');
@@ -2145,10 +3602,20 @@ export function promoteInbox(opts = {}) {
     try { batch = JSON.parse(line); } catch { continue; }
     for (const item of batch.items ?? []) {
       if (item.kind !== 'orphan-candidate') continue;
-      const digest = createHash('md5').update(String(item.code ?? '?') + '|' + JSON.stringify(item.samples ?? item.note ?? '')).digest('hex').slice(0, 8);
+      // 2026-10-13（举一反三·类⑤）：去重键的**身份**必须能区分两条「都没证据」的候选。
+      // 旧键 = md5(code|JSON.stringify(samples ?? note ?? '')) —— 无 samples 无 note 时是 md5(code|"\"\"")，
+      //   于是**同 code 的多批会撞同一个 id**，第二条被当作「已存在」静默跳过（实测：count 5 与 7 的两批 → 只落 1 条）。
+      // 新键 = 归一 code + 证据指纹（有证据时用 samples/note，无用**整批内容**兜底 ⇒ 不同批次天然不同、重跑同批仍幂等）。
+      const evidence = Array.isArray(item.samples) && item.samples.length
+        ? JSON.stringify(item.samples)
+        : (typeof item.note === 'string' && item.note.trim() ? item.note.trim() : '');
+      const digestSeed = evidence || JSON.stringify({ c: item.count ?? 1, n: item.note ?? null, t: batch.ts ?? null });
+      const digest = createHash('md5').update(String(item.code ?? '?') + '|' + digestSeed).digest('hex').slice(0, 8);
       const id = `orphan-b${digest}`;
-      if (existing.has(id)) { skipped.push(id); continue; }
-      if (opts.dry) { wouldPromote.push(id); continue; }
+      if (existing.has(id)) { if (!skipped.includes(id)) skipped.push(id); continue; }   // 同族去重（2026-10-14）：已存在清单同样不得重复列
+      // I-08 复查补齐（2026-10-14）：**dry 列表去重**——同批同码、无证据的候选归一到同一 id（这是对的），
+      //   但列表曾把它们逐个列出（实测「将转正 17 条」里同 id 重复 6 次）⇒ 清单会骗人；`--apply` 侧本就幂等（existing.add）。
+      if (opts.dry) { if (!wouldPromote.includes(id)) wouldPromote.push(id); continue; }
       const rec = {
         id,
         summary: `[inbox候选] ${item.code ?? '?'} ×${item.count ?? 1}`,
@@ -2159,6 +3626,12 @@ export function promoteInbox(opts = {}) {
         severity: item.code === 'agent-error' ? '中' : '低',
         created: today
       };
+      // 诚实标注（类⑤ 同族）：**零证据**的候选落库时显式打标，别让后人把它当成真观测（真实空洞 ≠ 有证据的孤案）。
+      if (!evidence) {
+        rec.evidence = 'none';
+        rec.observed = '（无具体样本：仅计数聚合；原文见 logs/inbox.jsonl 对应批次）';
+        rec.severity = '低';
+      }
       appendRecord('orphan', rec, storeFile ? { file: storeFile } : {});
       existing.add(id);
       promoted.push(id);
@@ -2182,12 +3655,16 @@ export function promoteInbox(opts = {}) {
 // 于是 lookup / brief / summary / audit / stats 全部自动不再看见它（它们都走 currentRecords）。
 export function currentRecords(records) {
   const superseded = new Set(records.map((r) => r.supersedes).filter((v) => typeof v === 'string' && v !== ''));
-  const retired = new Set(records.map((r) => r.retires).filter((v) => typeof v === 'string' && v !== ''));
-  return records.filter((r) => !superseded.has(r.id) && !retired.has(r.id) && !isStr(r.retires));
+  // revokes（2026-10-14 实现 SCHEMA §P4）：撤销记录 `revokes: <墓碑 id>` —— 被撤销的墓碑不再算退役；
+  //   撤销记录本身是**元数据**（同墓碑），不进当前集。
+  const revoked = new Set(records.map((r) => r.revokes).filter((v) => typeof v === 'string' && v !== ''));
+  const retired = new Set(records.filter((r) => typeof r.retires === 'string' && r.retires !== '' && !revoked.has(r.id)).map((r) => r.retires));
+  return records.filter((r) => !superseded.has(r.id) && !retired.has(r.id) && !isStr(r.retires) && !isStr(r.revokes));
 }
 
 export function retiredIds(records) {
-  return new Set(records.map((r) => r.retires).filter((v) => typeof v === 'string' && v !== ''));
+  const revoked = new Set(records.map((r) => r.revokes).filter((v) => typeof v === 'string' && v !== ''));
+  return new Set(records.filter((r) => typeof r.retires === 'string' && r.retires !== '' && !revoked.has(r.id)).map((r) => r.retires));
 }
 
 // 历史 id 集合（含被 supersedes / 被退役 / 墓碑）：**幂等判重必须用它**。
@@ -2256,6 +3733,123 @@ export function checkRetires(store, records) {
     if (r.retires !== undefined && !ids.has(r.retires)) {
       errors.push({ store, id: r.id, errors: ['retires 指向不存在的 id：' + r.retires] });
     }
+    if (r.revokes !== undefined && !ids.has(r.revokes)) {
+      errors.push({ store, id: r.id, errors: ['revokes 指向不存在的 id：' + r.revokes] });
+    }
+  }
+  return errors;
+}
+
+/** #3 不适用条件过滤（2026-10-12 窗口 2；依赖 #9 条件谓词化）：只读、不改原数组。
+ *  - 无 `not_applicable` 字段的条目不受影响（旧数据零破坏）；
+ *  - ctx 为空/缺省 ⇒ 不过滤（缺上下文不等于"不适用"）；
+ *  - 命中 ⇒ 排除，并在 excluded 里留痕（id + reason，可审计）；非法条件由 validateCondition 抛错（绝不静默放宽）。 */
+export function filterNotApplicable(rows, ctx = null) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (ctx === null || typeof ctx !== 'object') return { matched: list.slice(), excluded: [] };
+  if (!Object.keys(ctx).length) return { matched: list.slice(), excluded: [] };
+  const matched = [];
+  const excluded = [];
+  for (const r of list) {
+    if (r && r.not_applicable !== undefined) {
+      if (evalCondition(r.not_applicable, ctx)) { excluded.push({ id: r.id ?? null, reason: 'not-applicable' }); continue; }
+    }
+    matched.push(r);
+  }
+  return { matched, excluded };
+}
+
+/** #18 冲突检测（2026-10-12 窗口 1）：同主题**机械对照**，只提示不裁决。
+ *  只读、不改写、不合并（同题多源不合并红线）；候选对上限以常数封顶，防大库爆量。 */
+/** 显式撤回/更正类标记（2026-10-12 真库校准：**不用**「不/无」等高频字——凡长文皆有，判据失效）。
+ *  语义方向固定：「一侧显式宣布某结论作废/不再成立」+「另一侧讲同一件事」⇒ 报候选。 */
+const CONFLICT_MARKERS = ['作废', '失效', '不再成立', '已废弃', '已放弃', '已推翻', '已排除', '被拒', '拒绝采纳', '撤回', '取消采用'];
+export function detectConflicts(storeRecords, opts = {}) {
+  const GENERIC = new Set(['同一', '主题', '相关', '内容', '记录', '问题', '进行', '使用', '可以', '需要', '当前', '已经', '不是', '没有']);
+  /** 对照用 token：词级（tokenize）+ **CJK 二字组**（中文无空格 ⇒ 词级撞不上；对齐检索侧 bigram 回退同一思路）。 */
+  const conflictTokens = (hay) => {
+    const out = new Set();
+    for (const t of tokenize(hay)) {
+      if (t.length >= 2 && !GENERIC.has(t)) out.add(t);
+      for (let i = 0; i + 2 <= t.length; i += 1) {
+        const g = t.slice(i, i + 2);
+        if (!CJK_RE.test(g)) continue;
+        if (/[。，、；：（）「」『』！？—…·]/.test(g)) continue;   // 去标点混入（真库校准：。结 / 度） 这类不算词）
+        if (g.length === 2 && !GENERIC.has(g)) out.add(g);
+      }
+    }
+    return out;
+  };
+  const markerHits = (t) => CONFLICT_MARKERS.filter((m) => t.includes(m)).sort();
+  const out = [];
+  const cap = Number.isInteger(opts.max) ? opts.max : 200;
+  const minOverlap = Number.isInteger(opts.minOverlap) ? opts.minOverlap : 3;
+  const minRatio = typeof opts.minRatio === 'number' ? opts.minRatio : 0.02;    // Jaccard 下限（真库校准：只有"真讲同一件事"才越过）
+  const rareCapAbs = Number.isInteger(opts.rareCapAbs) ? opts.rareCapAbs : 3;   // 稀有词绝对频率上限（比 5% 份额更严：真库 260 条时 5%≈13 太宽）
+  const topN = Number.isInteger(opts.top) ? opts.top : 20;
+  for (const [store, rows] of Object.entries(storeRecords ?? {})) {
+    const list = (Array.isArray(rows) ? rows : []).filter((r) => r && typeof r === 'object' && isStr(r.id)).slice(0, 5000); // 大库封顶（超上限不静默——见下 note）
+    const hays = list.map((r) => [r.claim, r.summary, r.title, r.gist, r.line, r.behavior, r.term].filter((x) => typeof x === 'string').join(' '));
+    const toks = hays.map((h) => conflictTokens(h));
+    // 稀有词过滤（2026-10-12 真库校准）：高频泛用词（文件/可用/解析…）不构成「同一件事」的证据。
+    const df = new Map();
+    for (const s of toks) for (const t of s) df.set(t, (df.get(t) || 0) + 1);
+    const keep = (t) => (df.get(t) || 0) <= rareCapAbs;
+    const byId = new Map(list.map((r) => [r.id, r]));
+    // 已被修订链显式处置的关系（B 是 A 的祖先或后代）不算候选——那是「已裁决」，不是「待裁决」。
+    const relatedByChain = (x, y) => {
+      let c = byId.get(x); const seen = new Set();
+      while (c && isStr(c.supersedes) && !seen.has(c.id)) { seen.add(c.id); if (c.supersedes === y) return true; c = byId.get(c.supersedes); }
+      return false;
+    };
+    // 语义方向：只从「显式撤回侧」出发（一侧宣布作废 + 另一侧讲同一件事 ⇒ 候选）。
+    const marked = [];
+    for (let i = 0; i < list.length; i += 1) { const m = markerHits(hays[i]); if (m.length) marked.push([i, m]); }
+    for (const [i, mi] of marked) {
+      for (let j = 0; j < list.length; j += 1) {
+        if (j === i) continue;
+        if (relatedByChain(list[i].id, list[j].id) || relatedByChain(list[j].id, list[i].id)) continue;
+        const keepI = [...toks[i]].filter(keep);
+        const common = keepI.filter((x) => toks[j].has(x) && keep(x));
+        if (common.length < minOverlap) continue;
+        const jRare = [...toks[j]].filter(keep).length;
+        const ratio = common.length / Math.max(1, keepI.length + jRare - common.length);   // Jaccard（稀有词面）
+        if (ratio < minRatio) continue;
+        out.push({ store, a: list[i].id, b: list[j].id, overlap: common.length, ratio: +ratio.toFixed(4), common: common.slice(0, 6), markers: { a: mi, b: markerHits(hays[j]) }, note: '只提示不裁决：作废侧与同题另一条并存，是否真冲突请人工裁定（修订链处置）' });
+      }
+    }
+    if (list.length >= 5000 && out.length < cap) out.push({ store, a: null, b: null, note: '已截断：本库超过 5000 条，本轮只对前 5000 条做候选对照（未静默）' });
+  }
+  out.sort((x, y) => (y.ratio - x.ratio) || (y.overlap - x.overlap));
+  const seenPair = new Set();   // A×B 与 B×A 只留一条（质量高者在前，见排序）
+  const uniq = [];
+  for (const p of out) {
+    const key = [p.a, p.b].sort().join('|');
+    if (seenPair.has(key)) continue;
+    seenPair.add(key); uniq.push(p);
+    if (uniq.length >= topN) break;
+  }
+  return uniq;
+}
+/**
+ * #6 关系边（2026-10-12 窗口 1）：关系目标悬空检查。
+ *  解析规则（两层，防「修订 id 误报」）：① 精确命中任何行 id；② 按修订 id 形状 `root-rN` 解析到根 id（记录里存在该根）。
+ *  只查**同库**（canon/orphan 等互引留待需要时再开跨库；孤儿引用在源库即错）。无该字段的记录零成本跳过。 */
+export function checkRelations(store, records) {
+  const ids = new Set(records.map((r) => r.id));
+  const roots = new Set(records.map((r) => String(r.id ?? '').replace(/-r\d+$/, '')));
+  const resolve = (t) => ids.has(t) || roots.has(String(t).replace(/-r\d+$/, ''));
+  const errors = [];
+  for (const r of records) {
+    const bad = [];
+    for (const t of (Array.isArray(r.relates_to) ? r.relates_to : [])) {
+      if (!resolve(t)) bad.push('relates_to 指向不存在的 id：' + t);
+    }
+    for (const it of (Array.isArray(r.relations) ? r.relations : [])) {
+      if (!it || typeof it !== 'object') continue;
+      if (isStr(it.id) && !resolve(it.id)) bad.push('relations[].id 指向不存在的 id：' + it.id);
+    }
+    if (bad.length) errors.push({ store, id: r.id, errors: bad });
   }
   return errors;
 }
@@ -2288,7 +3882,9 @@ function retireRecordUnlocked(store, id, opts, file) {
   }
   // 已退役的判定只对「软退役」短路（2026-10-08 二次修复：硬删必须继续走下去——
   // 否则对已退役条目执行 --hard 会静默返回 already、什么也不删，复活出来的重复行就清不掉）。
-  if (!hard && records.some((r) => r.retires === tip.id)) {
+  // 2026-10-14 复检：already 判定须**忽略已被撤销的墓碑**——否则 revoke 之后再退役会静默 no-op（revoke→再 apply 断开）。
+  const revokedSet = new Set(records.map((r) => r.revokes).filter((v) => typeof v === 'string' && v !== ''));
+  if (!hard && records.some((r) => r.retires === tip.id && !revokedSet.has(r.id))) {
     return { store, id: tip.id, retired: tip.id, already: true, hard: false };
   }
 
@@ -2317,11 +3913,39 @@ function retireRecordUnlocked(store, id, opts, file) {
     return { store, id: tip.id, retired: tip.id, hard: true, removed: removed.length, trash };
   }
 
-  const tomb = { ...tip, id: tip.id + '-retired', retires: tip.id, retired_at: new Date().toISOString() };
+  let tombId = tip.id + '-retired';
+  for (let n = 2; records.some((r) => r.id === tombId); n += 1) tombId = tip.id + '-retired-' + n;   // 复检：再退役（撤销之后）须落新墓碑、不撞 id
+  const tomb = { ...tip, id: tombId, retires: tip.id, retired_at: new Date().toISOString() };
   if (reason) tomb.retired_reason = reason;
   delete tomb.logged_at;   // 与 revise 一致：墓碑自成一版，盖自己的写入时间戳
   appendRecordUnlocked(store, tomb, file, {});   // 已在 retireRecord 的锁内（锁不可重入）
   return { store, id: tip.id, retired: tip.id, tombstone: tomb.id, hard: false, reason };
+}
+
+// 撤销退役（2026-10-14；SCHEMA §P4「revokes」语义落地）：**追加一条元数据记录** `{id: <墓碑>-revoked, revokes: <墓碑 id>}`——
+//   原文一字不动、墓碑保留（可追溯），`currentRecords`/`retiredIds` 视该墓碑为未退役 ⇒ 该链回到当前集。
+//   id 入参可以是「被退役的原 id」或「墓碑 id」；幂等：已撤销 ⇒ { already:true }；未退役 ⇒ note 说明。
+export function revokeRetire(store, id, opts = {}) {
+  if (!STORES.includes(store)) throw new Error('未知存储：' + store);
+  const file = opts.file || storePath(store);
+  return withFileLock(file, () => {
+    const records = loadStore(store, file).records;
+    const revoked = new Set(records.map((r) => r.revokes).filter((v) => typeof v === 'string' && v !== ''));
+    const target = String(id);
+    const tomb = records.find((r) => r.id === target && typeof r.retires === 'string')
+      // 复检修（2026-10-14）：按原 id 找墓碑时**优先未撤销的那枚**——双重退役（retire→revoke→retire）场景下，
+      //   首个墓碑可能早已被撤，直接 find 会命中旧墓碑而误报 already。
+      || records.find((r) => r.retires === target && !revoked.has(r.id))
+      || records.find((r) => r.retires === target);
+    if (!tomb) return { store, id: target, revoked: null, already: false, note: '找不到该 id 的墓碑（可能未退役）' };
+    if (revoked.has(tomb.id)) return { store, id: target, revoked: tomb.id, already: true };
+    const base = { ...tomb };
+    delete base.retires; delete base.retired_at; delete base.retired_reason; delete base.logged_at;
+    const rec = { ...base, id: tomb.id + '-revoked', revokes: tomb.id, revoked_at: new Date().toISOString() };
+    if (typeof opts.reason === 'string' && opts.reason.trim()) rec.revoked_reason = opts.reason.trim();
+    appendRecordUnlocked(store, rec, file, { allowResurrect: true });
+    return { store, id: target, revoked: tomb.id, record: rec.id };
+  });
 }
 
 function appendRecordUnlocked(store, obj, file, opts = {}) {
@@ -2334,11 +3958,22 @@ function appendRecordUnlocked(store, obj, file, opts = {}) {
       throw new Error(`id 已退役，拒绝复活：${record.id}（确需重加请传 { allowResurrect: true }，或改用一个新 id）`);
     }
     if (existing.some((r) => r.id === record.id)) throw new Error('重复 id：' + record.id);
+  } else {
+    // P4 立场（2026-10-14 实现）：**退役已被撤销**（存在 revokes 该墓碑）的 id，即便 allowResurrect 也拒绝再追加——
+    //   它已恢复为当前版本，再追加会造成重复 id；要改内容请走 revise。
+    const existing = loadStore(store, file).records;
+    const revoked = new Set(existing.map((r) => r.revokes).filter((v) => typeof v === 'string' && v !== ''));
+    if (existing.some((r) => r.retires === record.id && revoked.has(r.id))) {
+      throw new Error('该 id 的退役已被撤销、已恢复为当前版本，要改走 revise：' + record.id);
+    }
   }
   // 双时态（2026-10-07）：记录时间（logged_at）由写入路径统一盖戳——缺则盖、自带保留；
   // 事件时间（event_time）由作者写，不强制、不回填历史。
   if (record.logged_at === undefined) record.logged_at = new Date().toISOString();
-  for (const k of Object.keys(record)) if (typeof record[k] === 'string') record[k] = redact(record[k]);
+  // 写入侧**深度**脱敏（2026-10-11 手检补）：原本只洗**顶层字符串** ⇒ 嵌套对象与数组元素**漏洗** ✗
+  //   （实证：{ nested:{deep:'npm_…'} } / { arr:['npm_…'] } 都能原样落盘）⇒ 改为递归。
+  const deep = redactDeep(record);
+  for (const k of Object.keys(deep)) record[k] = deep[k];
   if (record.source && typeof record.source.ref === 'string') record.source = { ...record.source, ref: redact(record.source.ref) };
   const errs = validateRecord(store, record);
   if (errs.length) throw new Error('校验失败：' + errs.join('；'));

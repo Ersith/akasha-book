@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z71-a1-fix2-merged.mjs
 // 2026-10-10：A1 豁免 + root-id 修正并入活树；把缺陷条目 canon-a1-id-convention-gap 标为已修。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const gap = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-a1-id-convention-gap'));
 if (!gap) { console.log('未找到缺陷条目'); process.exit(0); }

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007t-session-usage.mjs
 // 2026-10-07 留痕：会话层用法条目（canon-session-layer-usage-20261007）+ 主用法总纲 ㉑ 会话层指针（修订链）。幂等。
-import { appendRecord, loadStore, revise } from '../lib.mjs';
+import { appendRecord, loadStore, revise } from './lib.mjs';
 
 const rec = {
   id: 'canon-session-layer-usage-20261007',

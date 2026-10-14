@@ -14,14 +14,14 @@
 ## 二、迁移步骤（实际执行）
 
 1. **装替代品**（先有新的，再拆旧的，避免"打不开"窗口）：
-   `winget install --id ONLYOFFICE.DesktopEditors` → **9.4.0.129**（官方 GitHub 包、winget 校验哈希、`C:\Program Files\ONLYOFFICE\DesktopEditors\`，1.24 GB）
+   `winget install --id ONLYOFFICE.DesktopEditors` → **9.4.0.129**（官方 GitHub 包、winget 校验哈希、`<LOCAL_PATH>`，1.24 GB）
 2. **切文件关联**（Windows 禁止程序代设，必须用户点）：
    - `.docx` / `.pdf` / `.doc` 直接可在设置页选到 → `ASC.Document.12` / `ASC.Pdf` / `ASC.Document.1`；
    - `.xlsx` / `.pptx` **搜不到 OnlyOffice** ⇒ 查明原因：**OnlyOffice 早已注册**（`ASC.Sheet.12` / `ASC.Show.12`，类型名「Office Open XML 电子表格/演示文稿」），**只是没被登记进这两个扩展名的候选清单**（那边只有 WPS 的 `ET.Xlsx.6` / `WPP.PPTX.6`）。
    - 修法：把 `ASC.Sheet.12` / `ASC.Show.12` 写进 `HKCU\…\FileExts\.{xlsx,pptx}\OpenWithProgids`（**写入前已 `reg export` 备份**到 `_rollback-20261011-fileassoc\`）⇒ 设置页立刻可选 ✓
 3. **建回滚点**（提权）：`tools/create-restore-point.ps1 -Create` ⇒ `[OK] restore point created: before-wps-uninstall-20261011` ✓
 4. **卸载 WPS**：跑它自带卸载器（`uninst.exe`，卸载向导），用户点完 → 卸载器**自己**清掉了两个更新任务与机器级目录 ✓
-5. **清僵尸 + 归档**：见下"教训"；最终 `tools/wps-post-uninstall.ps1 -Apply` 把残留**只搬不删**进 `H:\Harness\_rollback-20261011-025158-wps\`（`Local-Kingsoft` 205.4 MB + `Roaming-Kingsoft` 60 MB）
+5. **清僵尸 + 归档**：见下"教训"；最终 `tools/wps-post-uninstall.ps1 -Apply` 把残留**只搬不删**进 `<LOCAL_PATH>\_rollback-20261011-025158-wps\`（`Local-Kingsoft` 205.4 MB + `Roaming-Kingsoft` 60 MB）
 
 ## 三、验收（实测）
 

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z80-pending-memo.mjs
 // 2026-10-10：待办备忘录落盘 + 闭环对账结论入 canon（可发现性）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 if (canon.some((r) => r.id.startsWith('canon-pending-memo-20261010'))) { console.log('已存在，跳过'); process.exit(0); }

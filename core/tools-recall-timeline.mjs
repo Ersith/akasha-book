@@ -1,7 +1,7 @@
 // tools/recall-timeline.mjs —— 漏召率的时间分布（复用 lib 的窗口逻辑；只读）
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isRecallRecord, sessionKeyOf, RECALL_TOOLS, RECALL_CLI } from '../lib.mjs';
+import { isRecallRecord, sessionKeyOf, RECALL_TOOLS, RECALL_CLI } from './lib.mjs';
 
 const LOG = process.argv[2] ?? '<AKASHA_DIR>\\logs\\hooks.jsonl';
 const raw = readFileSync(LOG, 'utf8').split(/\r?\n/).filter(Boolean);

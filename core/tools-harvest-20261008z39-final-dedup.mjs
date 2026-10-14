@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z39-final-dedup.mjs
 // 2026-10-08 终修：把 oss 链尾重组为「底文 + 单份深夜说明 + 单条去重注记」。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const MARK_NIGHT = ' **更正（深夜）**';
 const MARK_DEDUP = ' **更正（去重）**';

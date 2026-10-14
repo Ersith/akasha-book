@@ -1,9 +1,9 @@
 // observe-record2.mjs —— 观察口径落档（引号已清；check 通过才跑）
 import { copyFileSync } from "node:fs";
-import { loadStore, currentRecords, appendRecord } from "../lib.mjs";
+import { loadStore, currentRecords, appendRecord } from "./lib.mjs";
 
-const OSS = "<LOCAL_PATH>";
-copyFileSync(OSS + "\\docs\\observation-metrics.md", "<LOCAL_PATH>");
+const OSS = "<LOCAL_PATH>\\dist\\akasha-oss";
+copyFileSync(OSS + "\\docs\\observation-metrics.md", "<LOCAL_PATH>\\docs\\observation-metrics.md");
 copyFileSync("<AKASHA_DIR>\\tools\\observe.mjs", OSS + "\\core\\tools-observe.mjs");
 console.log("  [sync] 文档双份 + 脚本副本进仓");
 

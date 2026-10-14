@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z61-rea-dll-limit.mjs
 // 2026-10-10：把「REA 的 Windows DLL 限制 + 绕过」补进 mcp-rea 条目尾部。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-mcp-rea-shim'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

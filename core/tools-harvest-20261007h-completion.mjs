@@ -1,7 +1,7 @@
 // akasha/tools/harvest-20261007h-completion.mjs
 // 2026-10-07 第五批留痕：① canon 六项补齐总条 ② canon 输出审计与使用计数 ③ usage → r11（⑳）。
 // 幂等：已有/已修订的跳过。
-import { appendRecord, loadStore, currentRecords, revise } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise } from './lib.mjs';
 
 let added = 0; let revised = 0; let skipped = 0;
 

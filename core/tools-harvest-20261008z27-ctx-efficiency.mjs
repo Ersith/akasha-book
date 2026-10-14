@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z27-ctx-efficiency.mjs
 // 2026-10-08 留痕：上下文效率对照观察（用户提出，当场取证）。幂等。
-import { loadStore, currentRecords, appendRecord } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 const ID = 'canon-ctx-efficiency-20261008';
 const existing = currentRecords(loadStore('canon').records).find((r) => r.id === ID || r.id.startsWith(ID + '-r'));

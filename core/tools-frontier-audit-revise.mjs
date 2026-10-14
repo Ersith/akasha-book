@@ -1,7 +1,7 @@
 // 前沿层文献核对·修订批（2026-10-07）：把首轮核对的结论落成修订链 + 两条审计入库（幂等）。
 // 幂等：修订以「核对标记」防重复；canon 以 id 存在性防重复。
 // 用法：node akasha\tools\frontier-audit-revise.mjs
-import { appendRecord, loadStore, currentRecords, revise } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise } from './lib.mjs';
 
 const MARK = '2026-10-07 核对';
 

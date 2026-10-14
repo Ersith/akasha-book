@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const SRC = 'H:\\Harness';
+const SRC = '<LOCAL_PATH>';
 const OSS = join(SRC, 'dist', 'akasha-oss');
 const report = [];
 const read = (p) => readFileSync(p, 'utf8');

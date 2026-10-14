@@ -1,7 +1,7 @@
 // akasha/tools/harvest-20261007p-pricing.mjs
 // 2026-10-07 定价粒度更正（用户裁定）：① 行为行 price-hubian（胡编＝羞耻）
 // ② canon-akasha-usage ⑦ 增粒度注记（→r13） ③ 立条 canon-pricing-granularity-20261007。幂等。
-import { appendRecord, loadStore, currentRecords, revise } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise } from './lib.mjs';
 
 const report = [];
 

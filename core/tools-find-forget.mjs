@@ -1,7 +1,7 @@
 // find-forget.mjs —— 在会话档案里检索「用户指出模型遗忘/提醒」的原话（只读）。
 // 目的（2026-10-11 用户："过去确实有一次你丢了记忆，我还指出来了……具体是不是 197-205 记不清了，得你找找看"）
 // 口径：扫 user/message 行，匹配「忘 / 记错 / 没记住 / 忘了 / 提醒 / 说过 / 不是说过」等；打印 turn/时间/原话片段。
-import { readSessionArchive, resolveSessionFile, SESSION_DEFAULTS } from '../session.mjs';
+import { readSessionArchive, resolveSessionFile, SESSION_DEFAULTS } from './session.mjs';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 

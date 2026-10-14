@@ -86,6 +86,16 @@ assert.ok(readFileSync(logC, 'utf8').includes('"kind":"activated"'), '降级时�
   // 2026-10-10 人读复查：工具目录长了（dsh_wsl 在跑），分类集合没跟上 → 漏计召回。此处钉住。
   assert.equal(akashaCliOf('dsh_wsl', { command: 'node core/akasha.mjs brief 某主题' }), 'brief', 'dsh_wsl 里的查库也须计入召回');
   assert.equal(akashaCliOf('dsh_wsl', { command: 'node akasha.mjs add --store canon --data {}' }), null, 'dsh_wsl 写子命令不算召回');
+  // 2026-10-13 举一反三（审计 P1 同族）：工具/子命令表漏项 = 召回静默漏计。
+  assert.equal(akashaCliOf('ops_bash', { command: 'node akasha/akasha.mjs lookup 词' }), 'lookup', 'ops_bash 是主用 shell 入口，必须计入召回');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs check' }), 'check', 'check（只读自查）算召回');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs stats' }), 'stats', 'stats 算召回');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs audit --today 2026-10-13' }), 'audit', 'audit 算召回');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs frontier list' }), 'frontier-list', 'frontier list 算召回');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs session tree --session abc' }), 'session-tree', 'session 只读子命令算召回');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs sleep --plan --today 2026-10-13' }), 'sleep---plan', 'sleep --plan（只读计划）算召回');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs revise canon x --data {}' }), null, 'revise（写入）不算召回');
+  assert.equal(akashaCliOf('bash', { command: 'node akasha.mjs retire canon x' }), null, 'retire（写入）不算召回');
   const hB = {};
   const logB = join(dir, 'hooks-b2.jsonl');
   apply({ on(name, fn) { (hB[name] = hB[name] || []).push(fn); return () => {}; } }, { log: logB, akashaDir: dir });

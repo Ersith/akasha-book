@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z89-sleep-parity.mjs
 // 2026-10-10：sleep「删动态加载是否降能力」的判定 + 契约测试 + 复检。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-dsh-store-remediation'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

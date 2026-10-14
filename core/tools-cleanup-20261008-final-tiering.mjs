@@ -1,7 +1,7 @@
 // 2026-10-08 收尾清理（一次性）：把 4 条非学术条目在 frontier 里的全部残迹删干净
 // （含被误重放的墓碑/重复行），目标终态：行数=136、当前集=123、退役 id=0、无重复 id。
 // ⚠️ 一次性脚本：正常重跑会 no-op（见 _oneShot 守卫），需要重放请设 AKASHA_ALLOW_REPLAY=1。
-import { retireRecord, loadStore, currentRecords, retiredIds } from '../lib.mjs';
+import { retireRecord, loadStore, currentRecords, retiredIds } from './lib.mjs';
 
 if (process.env.AKASHA_ALLOW_REPLAY !== '1') {
   console.log('一次性脚本：已收官，本次不改变任何数据（需要重放请设 AKASHA_ALLOW_REPLAY=1）。');

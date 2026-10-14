@@ -1,7 +1,7 @@
 // 2026-10-07 自举修复配套：把注入用法的「源真本金」落成 canon 记录 canon-akasha-usage。
 // gate v1.1.0 在渲染系统提示时读它的**当前版本**（revise 它 = 改注入内容；本脚本幂等）。
 // 用法：node akasha\tools\harvest-20261007-usage.mjs
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const USAGE = [
   '## 阿卡夏之书（外置大脑 · v0）',

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z68-a1-protocol-question.mjs
 // 2026-10-10：A1 的"协议/自我层条目也会被降权"设计观察（开启前需裁定）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-rank-a1-loadbalance'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

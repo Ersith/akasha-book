@@ -1,7 +1,7 @@
 // 2026-10-08 事故清理：4 条已退役条目在 09:10:28 被某脚本复活（重复 id 追加）。
 // 用库的硬删原语把「复活出来的那份」整行移出（移前自动备份到 data/_trash/<日期>-frontier.jsonl）。
 // 注意语义：byId 对重复 id 取最后一次出现 ⇒ tip 解析到「复活的那份」，而原链（base/-r1/墓碑）保持不变。
-import { retireRecord, loadStore, retiredIds, currentRecords } from '../lib.mjs';
+import { retireRecord, loadStore, retiredIds, currentRecords } from './lib.mjs';
 
 // 一次性脚本（2026-10-08 复查教训）：清理类脚本正常重跑必须 no-op。需要重放请设 AKASHA_ALLOW_REPLAY=1。
 if (process.env.AKASHA_ALLOW_REPLAY !== '1') {

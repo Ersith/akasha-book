@@ -7,7 +7,7 @@
    "ts": "2026-10-06T15:11:32.558Z",
    "tool": "edit",
    "session": null,
-   "message": "old_string was not found in \"H:\\Harness\\docs\\superpowers\\plans\\2026-10-06-akasha-v0.md\"",
+   "message": "old_string was not found in \"<LOCAL_PATH>\\docs\\superpowers\\plans\\2026-10-06-akasha-v0.md\"",
    "rubricRefs": [
     "canon-trap-edit-context-mismatch"
    ]
@@ -27,7 +27,7 @@
    "ts": "2026-10-06T20:21:50.044Z",
    "tool": "grep",
    "session": null,
-   "message": "grep search failed (exit 2): rg: H:\\Harness\\openviking-server\\data\\vectordb\\context\\store\\000119.log: 另一个程序正在使用此文件，进程无法访问。 (os error 32)\nrg: H:\\Harness\\openviking-server\\data\\vectordb\\context\\store\\MANIFEST-000106: 另一个程序正在使用此文件，进程无法访问。 (os error 32)\nrg: H:\\Harness\\openviking-server\\data\\vectordb\\context\\store\\LOCK: 另一个程序已锁定文件的一部分，进程无法访问。 (os error 33)\nrg: H:\\Harness\\_dshrs_checkout\\node_modules\\@d",
+   "message": "grep search failed (exit 2): rg: <LOCAL_PATH>\\openviking-server\\data\\vectordb\\context\\store\\000119.log: 另一个程序正在使用此文件，进程无法访问。 (os error 32)\nrg: <LOCAL_PATH>\\openviking-server\\data\\vectordb\\context\\store\\MANIFEST-000106: 另一个程序正在使用此文件，进程无法访问。 (os error 32)\nrg: <LOCAL_PATH>\\openviking-server\\data\\vectordb\\context\\store\\LOCK: 另一个程序已锁定文件的一部分，进程无法访问。 (os error 33)\nrg: <LOCAL_PATH>\\_dshrs_checkout\\node_modules\\@d",
    "rubricRefs": [
     "canon-trap-grep-exit2-path"
    ]
@@ -47,7 +47,7 @@
    "ts": "2026-10-07T09:20:32.158Z",
    "tool": "read",
    "session": null,
-   "message": "offset 30 is out of range for \"H:\\Harness\\docs\\superpowers\\plans\\2026-10-07-akasha-session-plugin.ledger.md\" (22 lines)",
+   "message": "offset 30 is out of range for \"<LOCAL_PATH>\\docs\\superpowers\\plans\\2026-10-07-akasha-session-plugin.ledger.md\" (22 lines)",
    "rubricRefs": [
     "canon-trap-read-offset-range"
    ]
@@ -77,7 +77,7 @@
    "ts": "2026-10-06T16:09:56.720Z",
    "tool": "edit",
    "session": null,
-   "message": "old_string was not found in \"H:\\Harness\\akasha\\README.md\"",
+   "message": "old_string was not found in \"<AKASHA_DIR>\\README.md\"",
    "rubricRefs": [
     "canon-trap-edit-context-mismatch"
    ]
@@ -87,7 +87,7 @@
    "ts": "2026-10-07T11:15:37.523Z",
    "tool": "grep",
    "session": null,
-   "message": "grep search failed (exit 2): rg: H:\\Harness\\official-home\\profiles\\desktop\\node_modules\\@deepseek-ai: IO error for operation on H:\\Harness\\official-home\\profiles\\desktop\\node_modules\\@deepseek-ai: 系统找不到指定的文件。 (os error 2)",
+   "message": "grep search failed (exit 2): rg: <LOCAL_PATH>\\official-home\\profiles\\desktop\\node_modules\\@deepseek-ai: IO error for operation on <LOCAL_PATH>\\official-home\\profiles\\desktop\\node_modules\\@deepseek-ai: 系统找不到指定的文件。 (os error 2)",
    "rubricRefs": [
     "canon-trap-grep-exit2-path"
    ]
@@ -97,7 +97,7 @@
    "ts": "2026-10-08T05:55:53.822Z",
    "tool": "read",
    "session": null,
-   "message": "offset 176 is out of range for \"H:\\Harness\\AGENTS.md\" (128 lines)",
+   "message": "offset 176 is out of range for \"<LOCAL_PATH>\\AGENTS.md\" (128 lines)",
    "rubricRefs": [
     "canon-trap-read-offset-range"
    ]

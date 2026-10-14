@@ -1,8 +1,8 @@
 // prevability-record5.mjs —— §14：4 条补料结果 + 反事实口径的诚实结论 + 事故记录
 import { readFileSync, writeFileSync } from 'node:fs';
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = '<LOCAL_PATH>';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
 const P = OSS + '\\docs\\recall-preventability-test-plan.md';
 const t = readFileSync(P, 'utf8');
 if (!t.includes('## 14.')) {
@@ -26,7 +26,7 @@ if (!t.includes('## 14.')) {
     '',
   ].join('\n');
   writeFileSync(P, t + block, 'utf8');
-  writeFileSync('<LOCAL_PATH>', t + block, 'utf8');
+  writeFileSync('<LOCAL_PATH>\\docs\\recall-preventability-test-plan.md', t + block, 'utf8');
   console.log('  [plan] §14 已追加（双份）');
 } else console.log('  [plan] already');
 

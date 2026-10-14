@@ -6,12 +6,12 @@
 // 用法：node tools/fidelity-check.mjs --pack <目录> [--rubric <pack.json 或 v2run/pack.json>]
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { currentRecords, loadStore } from '../lib.mjs';
+import { currentRecords, loadStore } from './lib.mjs';
 
 const args = process.argv.slice(2);
 const flag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const PACK = flag('--pack');
-const RUBRIC_SRC = flag('--rubric', '<LOCAL_PATH>');
+const RUBRIC_SRC = flag('--rubric', '<LOCAL_PATH>\\_ab\\review-pack-v2run\\pack.json');
 if (!PACK) { console.error('用法：--pack <目录>'); process.exit(2); }
 
 const canon = currentRecords(loadStore('canon').records);

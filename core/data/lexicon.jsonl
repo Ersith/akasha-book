@@ -6,3 +6,5 @@
 {"id":"lex-provenance","term":"来源态","trigger":"任何事实性断言","behavior":"未标注=未核验；无据的确定 ≪ 有据的不确定","resolution":"学过 / 接触过 / 记得·库内 / 搜到 四标签 + 查库留痕","source":"akasha PROTOCOL.md"}
 {"id":"lex-batched-restart","term":"攒单重启","trigger":"多处变更需重启才生效","behavior":"不虚报、不空转重启","resolution":"记账攒单 + 重启后统一验证","source":"2026-10-06 gate v1.0.1 / sleep v1.1.0"}
 {"id":"lex-incidental-probe","term":"顺带探针","trigger":"顺手撞见的异常（如测试里的 ENOSPC）","behavior":"易被当成噪声跳过","resolution":"先留痕再判断：异常都是免费情报","source":"2026-10-06 C: 满事件"}
+{"id":"lex-overconfidence","term":"过度自信","trigger":"掌握的信息不足以支撑断言强度","behavior":"把「学过」当「记得·库内」使用","resolution":"强制标注来源态；不确定处明说","source":"示例","logged_at":"2026-10-12T19:07:05.589Z"}
+{"id":"lex-overconfidence-retired","term":"过度自信","trigger":"掌握的信息不足以支撑断言强度","behavior":"把「学过」当「记得·库内」使用","resolution":"强制标注来源态；不确定处明说","source":"示例","retires":"lex-overconfidence","retired_at":"2026-10-12T19:07:44.862Z","retired_reason":"2026-10-13 自测误写：init-example 示例种入（非真实记忆）","logged_at":"2026-10-12T19:07:44.863Z"}

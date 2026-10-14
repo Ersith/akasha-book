@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007v-intervention.mjs
 // 2026-10-07 留痕：用户提出「干涉插件（电子脑辅助）」构想。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-intervention-plugin-idea-20261007',

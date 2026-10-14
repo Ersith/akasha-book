@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z31-wave2s1.mjs
 // 2026-10-08 留痕：外援 wave2 §1（段升格）双落地。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const oss = tips.find((r) => r.id.startsWith('canon-oss-package-20261007'));

@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z57-ghidra-provider.mjs
 // 2026-10-10：Ghidra 提供方落地（REA 原生分析解锁）+ 工具面扩到 20 + QQScreenshot.exe 首次真拆。幂等。
-import { loadStore, currentRecords, appendRecord, revise } from '../lib.mjs';
+import { loadStore, currentRecords, appendRecord, revise } from './lib.mjs';
 
 const canon = currentRecords(loadStore('canon').records);
 const has = (pfx) => canon.some((r) => r.id.startsWith(pfx));
@@ -11,7 +11,7 @@ if (!has('canon-rea-ghidra-provider')) {
     claim:
       '**REA 原生分析解锁：Ghidra 12.1.4 提供方落地（2026-10-10）**。' +
       '**REA 的确切要求**（读源码 `dist/ghidra/GhidraInstallationPolicy.js`）：`SUPPORTED_GHIDRA_VERSION="12.1.4"`（同线小版本兼容）、`SUPPORTED_GHIDRA_JAVA_MAJOR=21`、`GHIDRA_INSTALL_DIR` 必须绝对路径。' +
-      '**安装**：GitHub 官方发行 `ghidra_12.1.4_PUBLIC_20260921.zip`（543.3 MB，sha256 `ddac49f9…` 校验一致；经本机代理 127.0.0.1:7897 断点续传下载——直连被墙重置）→ 解压 `<LOCAL_PATH>`；JDK 21 复用本机已有 `D:\\ServerPackCreator\\jre`（含 javac，被 REA 判为 "accepted a 64-bit full JDK 21 or newer"）。' +
+      '**安装**：GitHub 官方发行 `ghidra_12.1.4_PUBLIC_20260921.zip`（543.3 MB，sha256 `ddac49f9…` 校验一致；经本机代理 127.0.0.1:<PORT> 断点续传下载——直连被墙重置）→ 解压 `<LOCAL_PATH>\\_tools\\ghidra\\ghidra_12.1.4_PUBLIC`；JDK 21 复用本机已有 `<LOCAL_PATH>`（含 javac，被 REA 判为 "accepted a 64-bit full JDK 21 or newer"）。' +
       '**验证**：`rea doctor` 全绿——ghidra / ghidra-platform / ghidra-architecture / ghidra-installation / ghidra-version(12.1.4) / ghidra-headless / ghidra-native_decompiler / ghidra-java / **ghidra-native_authority**（Windows Job Object + 私有 DACL + reparse-safe，本机 NTFS 通过）；provider `ghidra` configured=true **available=true**。' +
       '**环境注入设计**：宿主进程重启前已启动，用户级环境变量对它无效——所以把 `GHIDRA_INSTALL_DIR`/`JAVA_HOME` **写进薄壳 spawn 子进程的 env**（`dsh-mcp-rea/server.mjs` 的 PROVIDER_ENV），立即生效且不污染全局 JAVA_HOME；CLI 直用则临时导出同名变量。' +
       '**不可用（如实）**：Hopper（macOS 专有，REA 只有 Mac/Linux 适配）、IDA（商业授权 + 需上游 IDA MCP 注册 `REA_IDA_MCP_CONFIG`）——Windows 上这两条路本就关着。',

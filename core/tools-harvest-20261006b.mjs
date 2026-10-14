@@ -1,7 +1,7 @@
 // harvest B（2026-10-06 深夜）：把「插件静默失活」两课与一条孤案入库。
 // 幂等：已存在同 id 跳过；全部经 lib.appendRecord 校验写入。
 // 用法：node akasha\tools\harvest-20261006b.mjs
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const D = '2026-10-06';
 
@@ -9,7 +9,7 @@ const canon = [
   {
     id: 'canon-dsh-mixin-inject',
     claim: 'Cordis 混入服务（如 timer 的 ctx.interval / ctx.setTimeout）的属性访问需要 inject 声明；未 inject 时读取 ctx.<别名> 本身抛 cannot get property "X" without inject，apply 整段失败、插件静默失活（不落任何日志）。',
-    source: { type: '复现', ref: '2026-10-06 @local/akasha-sleep v1.1.0 事故：typeof ctx.setInterval 守卫亦无法拦截（访问即抛）；修复 = inject:[...,"timer"] + ctx.interval；诊断途径 = plugin_manager set_bundle 返回的 diagnostic，或重启后检查 *-armed 观测线' },
+    source: { type: '复现', ref: '2026-10-06 @akasha-book/akasha-sleep v1.1.0 事故：typeof ctx.setInterval 守卫亦无法拦截（访问即抛）；修复 = inject:[...,"timer"] + ctx.interval；诊断途径 = plugin_manager set_bundle 返回的 diagnostic，或重启后检查 *-armed 观测线' },
     last_reviewed: D,
     tags: ['dsh', '插件', 'cordis']
   },

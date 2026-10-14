@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z38-dedup-fix.mjs
 // 2026-10-08 去重更正：r16/r17 重复追加了同一段「tarball 恢复」说明 → r18 去重并留痕。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const APP_MARK = 'hooks tarball 端点已恢复';
 const tips = currentRecords(loadStore('canon').records);

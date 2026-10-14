@@ -1,9 +1,9 @@
 // ab-batch3-verdict.mjs —— §13 v3 判定 + 修 B10 夹具（v3 重建时把 data 丢了）+ canon
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = '<LOCAL_PATH>';
-const AB = '<LOCAL_PATH>';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const AB = '<LOCAL_PATH>\\_ab';
 
 // ① 修 B10：v3 重建时漏了 files ⇒ 目标文件不存在（预筛如实报了）
 const b10 = AB + '\\tasks2\\B10\\data';
@@ -39,7 +39,7 @@ if (!t.includes('## 13. v3 预筛判定')) {
     '',
   ].join('\n');
   writeFileSync(P, t + block, 'utf8');
-  writeFileSync('<LOCAL_PATH>', t + block, 'utf8');
+  writeFileSync('<LOCAL_PATH>\\docs\\ab-task-battery.md', t + block, 'utf8');
   console.log('  [battery] §13 已追加（双份）');
 } else console.log('  [battery] already');
 

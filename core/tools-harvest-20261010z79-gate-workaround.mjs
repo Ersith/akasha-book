@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261010z79-gate-workaround.mjs
 // 2026-10-10：门控拦截"含写词的读操作"的处置方式（失败回查闭环）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-patch-portability'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

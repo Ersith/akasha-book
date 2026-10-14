@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261007s-address.mjs
 // 2026-10-07 留痕：用户称呼偏好（Master）。幂等。
-import { appendRecord, loadStore } from '../lib.mjs';
+import { appendRecord, loadStore } from './lib.mjs';
 
 const rec = {
   id: 'canon-user-address-20261007',

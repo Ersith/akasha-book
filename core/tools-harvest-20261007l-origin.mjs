@@ -1,7 +1,7 @@
 // akasha/tools/harvest-20261007l-origin.mjs
 // 2026-10-07 源头补录：① canon-akasha-origin-20261006（源头事件链+入库缺口+路由修正）
 // ② mirror-creeper-panic（苦力怕现代寓言镜像）③ usage → r12（四源→五源路由）。幂等。
-import { appendRecord, loadStore, currentRecords, revise } from '../lib.mjs';
+import { appendRecord, loadStore, currentRecords, revise } from './lib.mjs';
 
 let added = 0; let revised = 0; let skipped = 0;
 

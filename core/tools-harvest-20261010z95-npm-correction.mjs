@@ -1,5 +1,5 @@
 // akasha/tools/harvest-20261010z95-npm-correction.mjs —— 更正：session 0.3.1 其实已 LIVE（此前误判"待 2FA"）
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const rec = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-npm-publish-20261010'));
 if (!rec) { console.log('未找到条目'); process.exit(0); }

@@ -1,5 +1,5 @@
 // oss-sync.mjs v2 —— 开源同步（**逐处映射**，替代 v1 的"整包覆盖 + 通配清洗"）。
-// v1 的教训（2026-10-11 实测）：活树 ≠ 仓可直覆 —— ① 包名不同（活树 @local/* ↔ 仓 @akasha-book/*）；
+// v1 的教训（2026-10-11 实测）：活树 ≠ 仓可直覆 —— ① 包名不同（活树 @akasha-book/* ↔ 仓 @akasha-book/*）；
 //   ② 命令/路径不同（活树写本机 node.exe 与绝对路径，仓写 'node' 与 <AKASHA_DIR>/…）；
 //   ③ 通配清洗会改坏**代码里的字符串字面量**（夹具路径被洗成 <LOCAL_PATH> ⇒ 测试直接崩）。
 // v2 口径：先映射再复制；只对**注释/文档**做路径清洗；代码里的路径按"逐处映射表"改写。
@@ -8,8 +8,8 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSy
 import { join, relative, extname } from 'node:path';
 
 const DRY = process.argv.includes('--dry');
-const SRC_ROOT = 'H:\\Harness';
-const REPO = '<LOCAL_PATH>';
+const SRC_ROOT = '<LOCAL_PATH>';
+const REPO = '<LOCAL_PATH>\\dist\\akasha-oss';
 const DST_ROOT = join(REPO, 'plugins');
 
 const PACKS = [
@@ -39,8 +39,8 @@ const CODE_MAP = [
   // join(dirname(...), '..', 'akasha') —— 断言/夹具里"核心目录"的构造（2026-10-11：仓内必须先映射，否则拷不到 core）
   [/join\(dirname\(fileURLToPath\(import\.meta\.url\)\), '\.\.', 'akasha'\)/g, "join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core')"],
   // 命令与路径（JS 双反斜杠形态 + YAML/文本单反斜杠形态）
-  [/F:\\\\h\\\\all\\\\Nodejs\\\\node\.exe/g, 'node'],
-  [/F:\\h\\all\\Nodejs\\node\.exe/g, 'node'],
+  [/<LOCAL_PATH>, 'node'],
+  [/<LOCAL_PATH>, 'node'],
   [/<AKASHA_DIR>/g, '<AKASHA_DIR>'],
   [/<AKASHA_DIR>/g, '<AKASHA_DIR>'],
   [/'<AKASHA_DIR>'/g, "'<AKASHA_DIR>'"],

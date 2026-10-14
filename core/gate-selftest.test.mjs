@@ -11,7 +11,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // 定位 akasha 核心库（含 lib.mjs）：支持多布局，避免"测试只认仓库树"这种假设。
 //   · 环境变量 AKASHA_CORE 优先；
 //   · 仓库布局：plugins/akasha-gate → ../../core；
-//   · 插件与 core 平级；本机开发树：插件与 akasha 包同级（H:\Harness\{dsh-akasha-gate, akasha}）。
+//   · 插件与 core 平级；本机开发树：插件与 akasha 包同级（<LOCAL_PATH>\{dsh-akasha-gate, akasha}）。
 const CORE_CANDIDATES = [
   process.env.AKASHA_CORE,
   join(HERE, '..', '..', 'core'),

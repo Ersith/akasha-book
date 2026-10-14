@@ -3,7 +3,7 @@
 //   node tools/canon-io.mjs add    payload.json            # payload: {id, claim, source?, tags?, event_time?}
 //   node tools/canon-io.mjs append payload.json            # payload: {id, text}（把 text 追加到该条目当前版本 claim 末尾）
 import { readFileSync } from "node:fs";
-import { loadStore, currentRecords, appendRecord, revise } from "../lib.mjs";
+import { loadStore, currentRecords, appendRecord, revise } from "./lib.mjs";
 
 const [mode, file] = process.argv.slice(2);
 if (!mode || !file) { console.log("用法：node tools/canon-io.mjs <add|append> <payload.json>"); process.exit(2); }

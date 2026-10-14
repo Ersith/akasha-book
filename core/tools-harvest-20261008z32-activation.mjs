@@ -1,6 +1,6 @@
 // akasha/tools/harvest-20261008z32-activation.mjs
 // 2026-10-08 留痕：插件换装（wave1/§1 运行时激活批）。幂等。
-import { loadStore, currentRecords, revise } from '../lib.mjs';
+import { loadStore, currentRecords, revise } from './lib.mjs';
 
 const tips = currentRecords(loadStore('canon').records);
 const oss = tips.find((r) => r.id.startsWith('canon-oss-package-20261007'));
