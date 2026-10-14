@@ -243,3 +243,9 @@
 - **保留项（结构性，判定不入清洗）**：门禁/reaction 自检内的**示例邮箱与合成令牌**（`a@b.com` / `s3cr3t@example.com` / `sk-abcdefgh…` / `ghp_abcdefgh…`——皆夹具、非真凭据；与 R4「论文『用户』术语保留」同性质）。扫描器只报类别+文件，本行即人工判定记录。
 - **纪律固化**：① **每次同步后必跑** `tools-oss-scrub-paths.mjs` + 独立终扫（本章程自 R30 起为固定检查单）；② 门禁/清洗判据的每次收窄必须配「正/反/侧」自检并留痕；③ **零真凭据**是红线——示例允许，但必须集中、可辨识、可复核。
 - **紧跟修正（自查误伤与更正，如实留痕）**：裸端口规则首版用**形状式**广谱（`19\d\d|19\d{3}|92\d\d|78\d\d|94\d\d`）⇒ **误伤论文正文**（arXiv 编号 `2504.19413` 与年份 1972/1998 被替成 `<PORT>`）⇒ 当场 `git checkout` 回滚论文 + 改**拼接构造的精确列表**（源码不出现裸数字、不误伤年份/编号、扫描器亦不误报）。**教训（配纪律②）**：清洗/检测规则**必须精确到字段**，禁止形状式广谱——广谱规则的下一个受害者永远是你没注意到的合法内容。
+
+## R31 · research/ 策展同步（2026-10-14 起）
+
+- **背景**：`research/` 不在任何自动同步器的范围（sync-core 管 core+tools、oss-sync 管 plugins、sync-data 管 core/data），此前只有 10-10/10-11 评审轮留下的 `weight-internalization-pid.md`（A2/A1 设计与实现三连提交，作者为本地草稿占位 `akasha-review (local draft) <review@localhost.invalid>`）。
+- **本轮策展**：`read-pollution-2x2-spec-20261014.md`（读旧文污染 2×2 预注册实验，含阴性结果与 v2 修正）· `sleep-merge-rules-draft-20261014.md` · `stale-ranking-discount-decision-20261014.md`——经清洗器 + 独立终扫（硬命中 0）后入库。
+- **纪律**：`research/` 一律**手工策展 + 清洗后入库**（只放与阿卡夏设计/实验直接相关、且可公开的文档）；新文档入库前先跑 `tools-oss-scrub-paths.mjs` 与独立终扫。
