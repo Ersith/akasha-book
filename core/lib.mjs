@@ -933,9 +933,8 @@ export function clipByBudget(result, opts = {}) {
       const it = list[i];
       const t = usedOf(it);
       if (used + t + reserve > cap) {
-        if (t > cap) oversize++;                    // 单条自身超上限 ⇒ 自跳（不连带后面更短的）
-        trimmed++;
-        continue;
+        if (t > cap - reserve) { oversize++; trimmed++; continue; }   // 单条连整页都放不下（除保底）⇒ 跳过不卡页（分页也永远取不到它，--full 可取）
+        break;   // 装得下但本页剩余不足 ⇒ **停**（留到续取页）——原先 continue 会让后续页的游标越过它 ⇒ 永久丢失（GPT 复核 R7：A、C 出、B 消失）
       }
       used += t; kept.push(it); lastKeptIdx = i + 1;
     }
@@ -1002,8 +1001,13 @@ export function clipByBudget(result, opts = {}) {
   else if (trimmedOut > 0) parts.push('因上限未显示 ' + trimmedOut + ' 条 → 续取 offset=' + nextOffset + '（或 --full）');
   else parts.push('无因上限丢弃');
   const hint = parts.join(' · ');
-  // F08：外围文本（查询词 / 提示行）也上账——whole-response 口径尽量贴近。
-  used += estimateTokens(String(out.query ?? '') + String(hint ?? ''));
+  // F08-r2（GPT 复核 R8）：**账实对齐整响应**——写 budget 前，以「除 budget 自身外整响应」序列化为准（一次 stringify）。
+  //   此前只累计「条目 + query/hint」：外层 stats/report/其余字段未计 ⇒ 大报告场景偏差 ~850 tok（她复算 9178 vs 账面 8328）。
+  {
+    const probe = { ...out };
+    delete probe.budget;
+    used = estimateTokens(JSON.stringify(probe));
+  }
   out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint };
   return out;
 }
@@ -3452,6 +3456,16 @@ export function rollbackBatch(store, opts = {}) {
     const rolledBy = new Set();
     for (const r of records) if (r.rollback_of !== undefined && isStr(r.supersedes)) rolledBy.add(r.supersedes);
     const plan = [];
+    // R6（GPT 复核二轮 · 2026-10-14）：**退役链不可经 rollback 复活**——链上（根或任意版本）被墓碑 `retires` 时，
+    //   恢复必须走**明确的恢复操作**（revokeRetire / sleep --revoke）；否则 rollback 会把记录以新版本悄悄带回当前集，
+    //   而墓碑仍挂着 ⇒ current 与 retires 打架（复现：revise→retire→rollback ⇒ current 出现 `…-r1r1`）。
+    const tombstoned = new Set();
+    for (const t of records) {
+      if (!isStr(t.retires)) continue;
+      tombstoned.add(t.retires);
+      const r0 = byId.get(t.retires);
+      if (r0) { let c = r0; while (c.supersedes && byId.has(c.supersedes)) c = byId.get(c.supersedes); tombstoned.add(c.id); }
+    }
     // F03（2026-10-14 外部审查 · GPT）：**按链聚合**——同一条链在窗口内多次修订时，只从**当前链尾**追加
     //   **一次**恢复（内容 = 「窗口内第一个修订」的前一版）。原实现逐修订各补一条 ⇒ 一条链出现两个
     //   「当前版本」（分叉，且 check 无感）⇒ 后续召回可能拿到冲突版本。
@@ -3474,6 +3488,10 @@ export function rollbackBatch(store, opts = {}) {
       const restore = ch[firstIdx - 1];
       if (isProtocolId(rootId) || isProtocolId(tip.id) || isProtocolId(restore.id)) {             // F01：协议链回滚须人工 --allow-protocol
         plan.push({ store, id: tip.id, restores: restore.id, refused: 'protocol' });
+        continue;
+      }
+      if (tombstoned.has(rootId) || ch.some((v) => tombstoned.has(v.id))) {                       // R6：退役链拒绝回滚（走 revoke 明确恢复）
+        plan.push({ store, id: tip.id, restores: restore.id, refused: 'retired' });
         continue;
       }
       plan.push({ store, id: tip.id, restores: restore.id, claim: restore.claim ?? restore.summary ?? restore.behavior ?? restore.title ?? '' });

@@ -4668,6 +4668,7 @@ t('默认档零差：不传 depth 的 lookup/brief/cross/show 与 main 逐字节
     "    const o = {};",
     "    for (const k of Object.keys(v)) {",
     "      if (ADD.has(k)) continue;",
+    "      if (k === 'budget') continue;   // 2026-10-14（GPT 复核 R8 后）：budget 是**自述账面**（数值随预算算法演进——R8 修复正改了它）——不属「默认档内容零差」；其语义由 F08 测试与本块下方的「预算须启用」断言守。",
     "      if (extra && extra.has(k)) continue;",
     "      o[k] = strip(v[k], extra);",
     "    }",
@@ -4687,6 +4688,8 @@ t('默认档零差：不传 depth 的 lookup/brief/cross/show 与 main 逐字节
     "const probe = cur.lookupDetailed('零差夹具词', optsOff);",
     "if (probe.depth !== 'full') throw new Error('lookup depth ' + probe.depth);",
     "if (!probe.hits[0] || !probe.hits[0].agePrefix) throw new Error('lookup 应带年龄前缀');",
+    "const probed = cur.lookupDetailed('零差夹具词', opts);",
+    "if (!probed.budget || probed.budget.capTokens !== 4096) throw new Error('默认预算须启用（budget 账面已单列，不被零差对比覆盖）');",
     "eq('lookup off', strip(probe), strip(main.lookupDetailed('零差夹具词', optsOff)));",
     "eq('lookup budget', strip(cur.lookupDetailed('零差夹具词', opts)), strip(main.lookupDetailed('零差夹具词', opts)));",
     "eq('brief off', strip(cur.brief('零差夹具词', optsOff)), strip(main.brief('零差夹具词', optsOff)));",
@@ -4859,6 +4862,39 @@ t('MCP 读返回默认紧凑 JSON，pretty 才缩进（能红）', () => {
   assert.equal(parsed.truncated, false);
   assert.ok(Array.isArray(parsed.citeAllowlist) && parsed.citeAllowlist.some((x) => x.id === 'canon-akasha-usage-r10'));
   assert.equal(JSON.parse(lines[2].result.content[0].text).depth, 'full');
+});
+
+t('GPT 复核二轮批（R7 分页不漏 / R8 账实对齐 / R6 退役链拒回滚）', () => {
+  const mk = (id, text) => ({ id, score: 1, snippet: text });
+  // R7：B 独页可装、首页剩余不足 ⇒ 页 1 应**停**（而非跳过），续取页能拿到 B——两页并集不漏
+  const A = mk('hit-A', '甲'.repeat(10)); const Cm = mk('hit-C', '丙'.repeat(10));
+  let B = null;
+  for (let len = 60; len <= 400; len += 2) { const cand = mk('hit-B', '乙'.repeat(len)); const t = lib.estimateTokens(JSON.stringify(cand)); if (t > 115 && t <= 125) { B = cand; break; } }
+  assert.ok(B, '夹具：须找到「独页可装、首页剩余不足」的 B 尺寸');
+  const r1 = lib.clipByBudget({ hits: [A, B, Cm], stats: {} }, { maxTokens: 200 });
+  const r2 = lib.clipByBudget({ hits: [A, B, Cm], stats: {} }, { maxTokens: 200, offset: r1.budget.nextOffset });
+  const u = new Set([...r1.hits.map((h) => h.id), ...r2.hits.map((h) => h.id)]);
+  assert.ok(u.has('hit-B'), 'R7：停住的条目必须能续取到：' + JSON.stringify({ p1: r1.hits.map((h) => h.id), next: r1.budget.nextOffset, p2: r2.hits.map((h) => h.id) }));
+  // R8：used 以「除 budget 自身外整响应」为准（残差只允许 budget 本体 ≤ 200）
+  const r8 = lib.clipByBudget({ hits: [mk('x', '甲'.repeat(50))], stats: { b: 'x'.repeat(300) }, report: { note: 'y'.repeat(400) }, query: '账实' }, { maxTokens: 4096 });
+  const whole = lib.estimateTokens(JSON.stringify(r8));
+  assert.ok(whole - r8.budget.usedTokens <= 200, 'R8：残差只允许 budget 自身：' + (whole - r8.budget.usedTokens));
+  // R6：revise→retire→rollback ⇒ refused:'retired'；不得把退役链带回当前集
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-r6t-'));
+  const f = join(dir, 'canon.jsonl');
+  const today = new Date().toISOString().slice(0, 10);
+  const row = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
+  writeFileSync(f, row('canon-r6t-a', 'R6t 甲') + '\n' + row('canon-r6t-b', 'R6t 乙') + '\n');
+  lib.revise('canon', 'canon-r6t-b', { claim: 'R6t 乙 v2' }, { file: f });
+  lib.retireRecord('canon', 'canon-r6t-b', { reason: 'r6t', file: f });
+  const planR6 = lib.rollbackBatch('canon', { file: f, since: today });
+  const appR6 = lib.rollbackBatch('canon', { file: f, since: today, apply: true });
+  const cur = lib.currentRecords(lib.loadStore('canon', f).records).map((x) => x.id);
+  assert.ok(PlanCheck(planR6), 'R6：计划须带 refused:retired：' + JSON.stringify(planR6));
+  assert.equal(appR6.length, 0, 'R6：不得写恢复版本');
+  assert.ok(!cur.some((id) => String(id).startsWith('canon-r6t-b')), 'R6：退役链不得回当前集：' + JSON.stringify(cur));
+  rmSync(dir, { recursive: true, force: true });
+  function PlanCheck(p) { return Array.isArray(p) && p.some((x) => x && x.refused === 'retired'); }
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
