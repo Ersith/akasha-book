@@ -1040,7 +1040,9 @@ export function clipByBudget(result, opts = {}) {
     delete probe.budget;
     used = estimateTokens(JSON.stringify(probe));
   }
-  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint, metaTokens: metaTok, overCap: used > cap };
+  // R09-r3 复检补：**hint 说真话**——元数据使总账超限时如实追加（否则「155/200」看起来没超，与 overCap:true 打架）。
+  const hintOut = used > cap ? hint + ' · ⚠ 元数据 ' + metaTok + ' tok 使总账 ' + used + '/' + cap + ' 超限（条目已按剩余额度收缩；不复读假绿）' : hint;
+  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint: hintOut, metaTokens: metaTok, overCap: used > cap };
   return out;
 }
 

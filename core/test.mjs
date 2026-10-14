@@ -4867,11 +4867,22 @@ t('MCP 读返回默认紧凑 JSON，pretty 才缩进（能红）', () => {
 
 t('GPT 复核二轮批（R7 分页不漏 / R8 账实对齐 / R6 退役链拒回滚）', () => {
   const mk = (id, text) => ({ id, score: 1, snippet: text });
-  // R7：B 独页可装、首页剩余不足 ⇒ 页 1 应**停**（而非跳过），续取页能拿到 B——两页并集不漏
   const A = mk('hit-A', '甲'.repeat(10)); const Cm = mk('hit-C', '丙'.repeat(10));
+  // R7：条件驱动（R09-r3 后 reserve=真实元数据口径 ⇒ 固定数值窗口失效）：页 1 装不下 B（且非「超大自跳」），B 独页可装
   let B = null;
-  for (let len = 60; len <= 400; len += 2) { const cand = mk('hit-B', '乙'.repeat(len)); const t = lib.estimateTokens(JSON.stringify(cand)); if (t > 115 && t <= 125) { B = cand; break; } }
+  for (let len = 40; len <= 600; len += 2) {
+    const cand = mk('hit-B', '乙'.repeat(len));
+    const p1 = lib.clipByBudget({ hits: [A, cand, Cm], stats: {} }, { maxTokens: 200 });
+    const stopped = !p1.hits.some((h) => h.id === 'hit-B') && p1.hits.some((h) => h.id === 'hit-A') && !(p1.hits[0] && p1.hits[0].oversizeOmitted);
+    if (!stopped) continue;
+    const solo = lib.clipByBudget({ hits: [cand], stats: {} }, { maxTokens: 200 });
+    if (solo.hits.some((h) => h.id === 'hit-B') && !solo.budget.floorApplied) { B = cand; break; }
+  }
   assert.ok(B, '夹具：须找到「独页可装、首页剩余不足」的 B 尺寸');
+  // R01：语义决定性字段负例（同主文本但语义相反不得并）
+  assert.equal(sleepMod.mergeEligiblePair('mirror', { source: { type: '复现' }, outcome: '成功' }, { source: { type: '复现' }, outcome: '失败' }).ok, false, 'R01：mirror outcome 相反不得并');
+  assert.equal(sleepMod.mergeEligiblePair('pricing', { behavior: 'x', valence: 1, severity_default: 1 }, { behavior: 'x', valence: 1, severity_default: 5 }).ok, false, 'R01：pricing severity_default 不同不得并');
+  assert.equal(sleepMod.mergeEligiblePair('lexicon', { word: 'w', behavior: 'x' }, { word: 'w', behavior: 'y' }).ok, false, 'R01：lexicon behavior 不同不得并');
   const r1 = lib.clipByBudget({ hits: [A, B, Cm], stats: {} }, { maxTokens: 200 });
   const r2 = lib.clipByBudget({ hits: [A, B, Cm], stats: {} }, { maxTokens: 200, offset: r1.budget.nextOffset });
   const u = new Set([...r1.hits.map((h) => h.id), ...r2.hits.map((h) => h.id)]);
