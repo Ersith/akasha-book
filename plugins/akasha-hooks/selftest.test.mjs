@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { apply } from './index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// 兼容双布局（2026-10-15 DS 合入修）：oss 仓库 = <repo>/plugins/<pkg> ⇒ <repo>/core；工作源 = H:/Harness/dsh-* ⇒ H:/Harness/akasha。
+// 兼容双布局（2026-10-15 DS 合入修）：oss 仓库 = <repo>/plugins/<pkg> ⇒ <repo>/core；工作源 = <LOCAL_PATH> ⇒ <LOCAL_PATH>
 const CORE = existsSync(join(here, '..', '..', 'core', 'lib.mjs')) ? join(here, '..', '..', 'core') : join(here, '..', 'akasha');
 const scratchRoot = join(tmpdir(), 'akasha-hooks-selftest');
 mkdirSync(scratchRoot, { recursive: true });

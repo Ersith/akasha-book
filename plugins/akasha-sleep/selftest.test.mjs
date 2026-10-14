@@ -11,7 +11,7 @@ import { apply, buildWakeNote, isWakeNoteworthy } from './lib/index.js';
 
 // 活树布局：插件在 <LOCAL_PATH> <AKASHA_DIR>/（仓布局则是 ../../core）
 const here = dirname(fileURLToPath(import.meta.url));
-// 兼容双布局（2026-10-15 DS 合入修）：oss 仓库 = <repo>/plugins/<pkg> ⇒ <repo>/core；工作源 = H:/Harness/dsh-* ⇒ H:/Harness/akasha。
+// 兼容双布局（2026-10-15 DS 合入修）：oss 仓库 = <repo>/plugins/<pkg> ⇒ <repo>/core；工作源 = <LOCAL_PATH> ⇒ <LOCAL_PATH>
 const CORE = existsSync(join(here, '..', '..', 'core', 'lib.mjs')) ? join(here, '..', '..', 'core') : join(here, '..', 'akasha');
 const { buildTodos, distillHooks, renderContextLine, renderPulseLine, renderRecallLine, shouldSleep } = await import(pathToFileURL(join(CORE, 'sleep.mjs')).href);
 /** 把核心（sleep.mjs + lib.mjs）拷进桩目录——插件通过 akashaDir 动态加载它们。 */
