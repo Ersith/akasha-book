@@ -4377,6 +4377,113 @@ t('内置时钟：nowSnapshot 字段/对照锚/at 换算（注入时刻）+ 脉�
   try { assert.ok(!sleepMod.renderPulseLine(p, { now: D }).startsWith('['), 'AKASHA_CLOCK=off 须关断'); } finally { if (prev === undefined) delete process.env.AKASHA_CLOCK; else process.env.AKASHA_CLOCK = prev; }
 });
 
+t('GPT 审查修复批 A（F01 状态字段守卫/F03 回滚链聚合/F14 退役不复活/F15 硬删闭包/F02 引号与按键脱敏）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-gptfix-'));
+  const file = join(dir, 'canon.jsonl');
+  const today = new Date().toISOString().slice(0, 10);
+  const rec = (id, extra = {}) => ({ id, claim: 'x ' + id, source: { type: '复现', ref: 'r' }, last_reviewed: today, ...extra });
+  const writeAll = (arr) => writeFileSync(file, arr.map((x) => JSON.stringify(x)).join('\n') + '\n');
+  // F01：普通 patch 夹带状态字段 ⇒ 拒
+  writeAll([rec('canon-g01'), rec('canon-g01-r1', { supersedes: 'canon-g01' })]);
+  assert.throws(() => lib.revise('canon', 'canon-g01-r1', { retires: 'canon-akasha-usage' }, { file }), /状态迁移字段/, 'F01：retires 夹带必须被拒');
+  assert.throws(() => lib.revise('canon', 'canon-g01-r1', { supersedes: 'canon-g01' }, { file }), /状态迁移字段/, 'F01：supersedes 夹带必须被拒');
+  // F03：三次版本（走真流程 ⇒ 带 logged_at）、一次回滚 ⇒ 单一当前版本、check 干净
+  writeAll([]);
+  lib.appendRecord('canon', rec('canon-g03'), { file });
+  lib.revise('canon', 'canon-g03', { claim: 'v1' }, { file });
+  lib.revise('canon', 'canon-g03-r1', { claim: 'v2' }, { file });
+  const done = lib.rollbackBatch('canon', { file, since: today, apply: true });
+  const cur = lib.currentRecords(lib.loadStore('canon', file).records).filter((r) => String(r.id).startsWith('canon-g03'));
+  assert.equal(cur.length, 1, 'F03：回滚后必须只剩一个当前版本：' + JSON.stringify(cur.map((r) => r.id)));
+  assert.ok(done.some((d) => d.id === 'canon-g03-r2r1'), 'F03：应从链尾补一条：' + JSON.stringify(done));
+  assert.deepEqual(lib.checkAll({ files: { canon: file, mirror: join(dir, 'm.jsonl'), orphan: join(dir, 'o.jsonl'), pricing: join(dir, 'p.jsonl'), lexicon: join(dir, 'l.jsonl'), frontier: join(dir, 'f.jsonl') } }).errors.filter((e) => String(e.id).startsWith('canon-g03')), [], 'F03：check 不得报错');
+  // F14：退役 ⇒ 普通修订拒；revoke 后放行
+  writeAll([rec('canon-g14')]);
+  lib.retireRecord('canon', 'canon-g14', { file, reason: 't' });
+  assert.throws(() => lib.revise('canon', 'canon-g14', { claim: 'revived?' }, { file }), /已退役/, 'F14：退役链修订必须被拒（默认）');
+  lib.revokeRetire('canon', 'canon-g14', { file });
+  assert.ok(lib.revise('canon', 'canon-g14', { claim: 'ok after revoke' }, { file }).id, 'F14：revoke 后修订应放行');
+  // F15：append→revise→retire→revoke→retire(hard) ⇒ 无残留、check 干净
+  writeAll([rec('canon-g15'), rec('canon-g15-r1', { supersedes: 'canon-g15' })]);
+  lib.retireRecord('canon', 'canon-g15-r1', { file, reason: 't1' });
+  lib.revokeRetire('canon', 'canon-g15-r1', { file });
+  const hd = lib.retireRecord('canon', 'canon-g15-r1', { file, hard: true, reason: 't2' });
+  assert.ok(hd.hard && hd.removed >= 4, 'F15：闭包应含 版本×2 + 墓碑 + 撤销行：' + JSON.stringify(hd));
+  const left = lib.loadStore('canon', file).records.filter((r) => String(r.id).startsWith('canon-g15'));
+  assert.equal(left.length, 0, 'F15：不得残留任何行：' + JSON.stringify(left.map((r) => r.id)));
+  // F02：引号/JSON/按键三形态必须遮；占位与短数字例外不动
+  const S = 'SYNTHETIC_CREDENTIAL_123456';
+  assert.ok(!lib.redact(`password="${S}"`).includes(S), 'F02：带引号赋值必须遮');
+  assert.ok(!lib.redact(JSON.stringify({ api_key: S })).includes(S), 'F02：JSON 键值必须遮');
+  assert.equal(lib.redactDeep({ api_key: S }).api_key, '[redacted]', 'F02：按键必须遮');
+  assert.ok(lib.redact('token=200').includes('200'), 'F02：短数字例外不得动');
+  assert.ok(lib.redact('token=False').includes('False'), 'F02：占位例外不得动');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('GPT 审查修复批 B（F04 合并资格共用检查/F05 回执并集/F11 水位后置）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-gptfixb-'));
+  const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
+  for (const n of lib.STORES) writeFileSync(files[n], '');
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = (id, claim, extra = {}) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today, ...extra });
+  // F04 单元：跨来源拒、同源过、正负定价拒
+  assert.equal(sleepMod.mergeEligiblePair('canon', { source: { type: '复现' } }, { source: { type: '官方' } }).ok, false, 'F04：跨来源必须拒');
+  assert.equal(sleepMod.mergeEligiblePair('canon', { source: { type: '复现' } }, { source: { type: '复现' } }).ok, true, 'F04：同源可并');
+  assert.equal(sleepMod.mergeEligiblePair('pricing', { behavior: 'x', valence: 1 }, { behavior: 'x', valence: -1 }).ok, false, 'F04：正负定价必须拒');
+  // F04 执行侧：不同来源 ⇒ refused-source-mismatch，被拒 absorb 仍在当前集
+  writeFileSync(files.canon, [
+    mk('canon-b-k', '青雀衔环速记：同文甲。'),
+    mk('canon-b-a', '青雀衔环速记：同文乙。', { source: { type: '官方', ref: 'r' } })
+  ].join('\n') + '\n');
+  const rlog = join(dir, 'review-log.jsonl'); const rcpt = join(dir, 'receipt.json');
+  const planF4 = { planId: 'plan-b-f04', version: 1, basis: {}, ops: [
+    { op: 'merge', store: 'canon', keep: 'canon-b-k', absorb: ['canon-b-a'], reason: 'near-duplicate', mergedText: null, evidence: {} }
+  ] };
+  const appF4 = sleepMod.applyPlan(planF4, { files, dry: false, force: true, out: rcpt, reviewLog: rlog });
+  assert.ok(appF4.ok, JSON.stringify(appF4));
+  const d4 = ((appF4.receipt.ops[0] || {}).detail || []).find((x) => x.id === 'canon-b-a');
+  assert.equal(d4 && d4.status, 'refused-source-mismatch', 'F04 执行侧：' + JSON.stringify(appF4.receipt.ops[0]));
+  assert.ok(lib.currentRecords(lib.loadStore('canon', files.canon).records).some((r) => r.id === 'canon-b-a'), 'F04：被拒的 absorb 必须仍在当前集');
+  // F05：两批 apply（only=A → only=B+force）后 revoke 应恢复**两批**
+  writeFileSync(files.canon, [
+    mk('canon-b-d1', '批次一记忆。'), mk('canon-b-d2', '批次二记忆。')
+  ].join('\n') + '\n');
+  const planned5 = sleepMod.sleepPlan({ files, out: false, today });
+  const basis = planned5.ok ? planned5.plan.basis : {};
+  const planF5 = { planId: 'plan-b-f05', version: 1, basis, ops: [
+    { op: 'discard', store: 'canon', id: 'canon-b-d1', reason: 'snapshot-superseded', evidence: {} },
+    { op: 'discard', store: 'canon', id: 'canon-b-d2', reason: 'snapshot-superseded', evidence: {} }
+  ] };
+  const rcpt5 = join(dir, 'receipt5.json');
+  const a1 = sleepMod.applyPlan(planF5, { files, dry: false, only: 'canon-b-d1', out: rcpt5, reviewLog: rlog });
+  assert.ok(a1.ok, JSON.stringify(a1));
+  const a2 = sleepMod.applyPlan(planF5, { files, dry: false, only: 'canon-b-d2', force: true, out: rcpt5, reviewLog: rlog });
+  assert.ok(a2.ok, JSON.stringify(a2));
+  const rv = sleepMod.revokePlan(planF5, { files, dry: false, receipt: rcpt5, out: join(dir, 'rv5.json'), reviewLog: rlog });
+  assert.ok(rv.ok, JSON.stringify(rv));
+  const cur5 = lib.currentRecords(lib.loadStore('canon', files.canon).records).map((r) => r.id);
+  assert.ok(cur5.includes('canon-b-d1') && cur5.includes('canon-b-d2'), 'F05：两批都要恢复：' + JSON.stringify(cur5));
+  // F11：inbox 不可写 ⇒ 水位不动；修复路径后照常推进
+  const dir11 = join(dir, 'logs11'); mkdirSync(dir11, { recursive: true });
+  const logPath = join(dir11, 'hooks.jsonl');
+  appendFileSync(logPath,
+    JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, error: 'synthetic' }) + '\n' +
+    JSON.stringify({ kind: 'gate-denied', tool: 'edit', target: 'synthetic' }) + '\n' +
+    JSON.stringify({ kind: 'turn-end' }) + '\n', 'utf8');
+  const badInbox = join(dir11, 'inbox-is-dir'); mkdirSync(badInbox);
+  const runBad = sleepMod.sleepRun({ trigger: 'manual', log: logPath, stateFile: join(dir11, 'state.json'), inboxFile: badInbox, reportDir: join(dir11, 'r') });
+  assert.equal(runBad.ok, true, JSON.stringify(runBad));
+  assert.equal(runBad.inboxWritten, false, 'F11：inbox 写失败须如实报告');
+  const stBad = JSON.parse(readFileSync(join(dir11, 'state.json'), 'utf8'));
+  assert.equal(stBad.processedBytes, 0, 'F11：写失败不得推进水位：' + JSON.stringify(stBad));
+  rmSync(badInbox, { recursive: true, force: true });
+  sleepMod.sleepRun({ trigger: 'manual', log: logPath, stateFile: join(dir11, 'state.json'), inboxFile: join(dir11, 'inbox.jsonl'), reportDir: join(dir11, 'r') });
+  const stGood = JSON.parse(readFileSync(join(dir11, 'state.json'), 'utf8'));
+  assert.ok(stGood.processedBytes > 0, 'F11：修复路径后水位应推进：' + JSON.stringify(stGood));
+  rmSync(dir, { recursive: true, force: true });
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

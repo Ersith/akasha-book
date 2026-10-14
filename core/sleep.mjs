@@ -303,16 +303,19 @@ export function sleepRun(opts = {}) {
       emit({ kind: 'sleep-report-error', message: String(error?.message ?? error).slice(0, 300), code: String(error?.code ?? '') });
     }
 
+    let inboxOk = true;
     if (todo.length > 0) {
       try {
         mkdirSync(dirname(inboxFile), { recursive: true });
         appendFileSync(inboxFile, JSON.stringify({ ts: stamp, kind: 'todo', fromReport: reportFile, items: todo }) + '\n', 'utf8');
-      } catch (error) { emit({ kind: 'sleep-inbox-error', message: String(error?.message ?? error).slice(0, 200) }); }
+      } catch (error) { inboxOk = false; emit({ kind: 'sleep-inbox-error', message: String(error?.message ?? error).slice(0, 200) }); }
     }
 
+    // F11（2026-10-14 外部审查 · GPT）：**持久化成功才提交水位**——inbox 写失败时若照推 processedBytes，
+    //   这批待办永久漏件且不会重试。失败 ⇒ 水位停在原处，下一轮重读同窗口（报告已落盘，重复无害）。
     const next = {
-      processedBytes: readBytes,
-      processedLines: lineTo,
+      processedBytes: inboxOk ? readBytes : (Number.isInteger(state.processedBytes) ? state.processedBytes : 0),
+      processedLines: inboxOk ? lineTo : (Number.isInteger(state.processedLines) ? state.processedLines : 0),
       lastRunAt: stamp,
       lastTrigger: trigger,
       lastReport: reportFile,
@@ -326,7 +329,7 @@ export function sleepRun(opts = {}) {
       writeFileAtomic(stateFile, JSON.stringify(next, null, 2));
     } catch (error) { emit({ kind: 'sleep-state-error', message: String(error?.message ?? error).slice(0, 200) }); }
 
-    return { ok: true, reportFile, todo: todo.length, processedFrom: lineFrom, processedTo: lineTo, truncated, state: next };
+    return { ok: true, reportFile, todo: todo.length, inboxWritten: inboxOk, processedFrom: lineFrom, processedTo: lineTo, truncated, state: next };
   } catch (error) {
     return { ok: false, error: String(error?.message ?? error).slice(0, 300) };
   }
@@ -573,7 +576,11 @@ export function sleepPlan(opts = {}) {
         for (let j = i + 1; j < cands.length; j += 1) {
           if (taken.has(j)) continue;
           const sim = jaccard(cands[i].toks, cands[j].toks);
-          if (sim >= params.theta) { taken.add(j); absorb.push(cands[j].v.rec.id); pairs.push({ id: cands[j].v.rec.id, jaccard: +sim.toFixed(4) }); }
+          if (sim < params.theta) continue;
+          // F04：相似度达标还不够——决定性字段不一致（跨来源 / 正负定价）⇒ 不吸收，理由记进证据。
+          const el = mergeEligiblePair(store, cands[i].v.rec, cands[j].v.rec);
+          if (!el.ok) { pairs.push({ id: cands[j].v.rec.id, jaccard: +sim.toFixed(4), refused: el.why }); continue; }
+          taken.add(j); absorb.push(cands[j].v.rec.id); pairs.push({ id: cands[j].v.rec.id, jaccard: +sim.toFixed(4) });
         }
         if (!absorb.length) continue;
         taken.add(i);
@@ -593,7 +600,10 @@ export function sleepPlan(opts = {}) {
             if (id === keepId) continue;                       // ⚠ 排除 keep 自身（2026-10-14 修：此前曾产出 keep ← keep 自吸收）
             const other = cands.find((c) => c.v.rec.id === id);
             const sim = keeper && other ? jaccard(keeper.toks, other.toks) : 0;
-            if (sim >= params.theta) { finalAbsorb.push(id); finalPairs.push({ id, jaccard: +sim.toFixed(4) }); }
+            if (sim < params.theta) continue;
+            const el = keeper && other ? mergeEligiblePair(store, keeper.v.rec, other.v.rec) : { ok: false, why: '候选缺失' };
+            if (!el.ok) { finalPairs.push({ id, jaccard: +sim.toFixed(4), refused: el.why }); continue; }   // F04：换 keep 后同样要过资格检查
+            finalAbsorb.push(id); finalPairs.push({ id, jaccard: +sim.toFixed(4) });
           }
           if (!finalAbsorb.length) { for (const id of group) used.add(key(store, id)); continue; }
         }
@@ -704,6 +714,24 @@ const planRefLoad = (ref) => {
 };
 const isExemptRecord = (rec, id) => isProtocolId(String(id)) || isSelfLayerRecord(rec ?? {});
 
+/** F04（2026-10-14 外部审查 · GPT）：合并的**决定性字段**必须一致——「同正文 ≠ 同事实」。
+ *  canon/mirror：`source.type`（R1 跨来源禁令）；pricing：`behavior` + `valence`（正负定价相反的规则不可并）；
+ *  lexicon：定义类字段（word/term/label/category/emotion，见字段才比）。**计划生成与执行共用本函数**（同一资格检查）。
+ *  字段缺失 ⇒ 不加约束（对旧数据保守，合口径「宁可漏并也不误并」）。 */
+const MERGE_DECISIVE = {
+  canon: ['source.type'], mirror: ['source.type'],
+  pricing: ['behavior', 'valence', 'kind'], lexicon: ['word', 'term', 'label', 'category', 'emotion'],
+};
+const valueAt = (rec, path) => path.split('.').reduce((x, k) => (x == null ? undefined : x[k]), rec);
+export function mergeEligiblePair(store, a, b) {
+  for (const f of (MERGE_DECISIVE[store] || [])) {
+    const va = valueAt(a, f); const vb = valueAt(b, f);
+    if (va === undefined || vb === undefined) continue;
+    if (JSON.stringify(va) !== JSON.stringify(vb)) return { ok: false, why: '决定性字段不一致：' + f };
+  }
+  return { ok: true };
+}
+
 export function applyPlan(planRef, opts = {}) {
   try {
     const plan = planRefLoad(planRef);
@@ -721,7 +749,12 @@ export function applyPlan(planRef, opts = {}) {
     for (const op of plan.ops) {
       if (!op || !op.op) continue;
       const touched = op.op === 'merge' ? [op.keep, ...(op.absorb || [])].filter(Boolean) : [op.id];
-      if (only && !touched.includes(only)) { results.push({ op: op.op, store: op.store, status: 'filtered' }); continue; }
+      if (only && !touched.includes(only)) {
+        // F05（2026-10-14 外部审查 · GPT）：filtered 也必须带**稳定标识**——否则第二批回执无法与首批对齐，
+        //   回执合并时丢墓碑 ⇒ after `only=A`、`only=B` 后 revoke 只恢复一批（原缺陷）。
+        results.push({ op: op.op, store: op.store, status: 'filtered', ...(op.op === 'merge' ? { keep: op.keep ?? null, absorb: op.absorb || [] } : { id: op.id }) });
+        continue;
+      }
       if (op.op === 'merge') {
         if (op.needsHuman || op.keep == null) { results.push({ op: 'merge', store: op.store, keep: null, absorb: op.absorb || [], status: 'refused-needs-human', why: 'keep 判不了代际（R4）：人工指定后再执行' }); refusedN += 1; continue; }
         const recs = loadStore(op.store, fileOf(op.store)).records;
@@ -732,6 +765,8 @@ export function applyPlan(planRef, opts = {}) {
         const detail = [];
         for (const id of op.absorb || []) {
           if (isExemptRecord(byId.get(id), id)) { detail.push({ id, status: 'refused-exempt', why: '豁免面' }); refusedN += 1; continue; }
+          const el = mergeEligiblePair(op.store, keepRec, byId.get(id) ?? {});
+          if (!el.ok) { detail.push({ id, status: 'refused-source-mismatch', why: el.why }); refusedN += 1; continue; }   // F04：执行侧同资格检查（防旧计划/手改计划绕过）
           const cur = currentRecords(recs).some((r) => r.id === id);
           if (!cur) { detail.push({ id, status: 'skipped', why: '不在当前集（已处理/已退役）' }); skippedN += 1; continue; }
           if (dry) { detail.push({ id, status: 'would-retire', reason: 'merged-into ' + op.keep }); continue; }
@@ -775,6 +810,10 @@ export function applyPlan(planRef, opts = {}) {
               }
             }
             receipt.firstAppliedAt = prev.firstAppliedAt || prev.appliedAt;
+            // F05：**累计回执**——本批未触及的旧条目原样保留（不能因「没出现在本批结果里」而消失；
+            //   两批 apply 的并集，保证 revoke 能看全历次成功证据）。
+            const seen = new Set(receipt.ops.map((r) => keyOf(r)));
+            for (const p of prev.ops) if (p.status !== 'filtered' && !seen.has(keyOf(p))) receipt.ops.push(p);
           }
         }
       } catch { /* 旧回执坏了就照新回执写 */ }

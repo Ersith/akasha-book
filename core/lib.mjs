@@ -66,6 +66,11 @@ const REDACT_RES = [
   [/\b([a-z][a-z0-9+.\-]*:\/\/)((?:ghp_|github_pat_|xox[baprs]-|npm_|hf_|glpat-|sk-)[A-Za-z0-9_\-]{4,}|[^\/\s:@]{12,})@/gi, '$1[redacted]@'],
   // Authorization 头的**非 Bearer** 形态（Bearer 已在上面第 6 条）
   [/\b(Authorization\s*:\s*)(Basic|token|Token|ApiKey)\s+[A-Za-z0-9._\-+/=]{6,}/g, '$1$2 [redacted]'],
+  // F02（2026-10-14 外部审查 · GPT）：**带引号 / JSON 形态**此前漏遮——`password="xxx"`、`{"api_key":"xxx"}`
+  //   会原样落库。两条规则：① JSON 键值对（敏感键名 + 双引号值）；② 赋值形态的引号值（单/双引号）。
+  //   例外沿用既有口径（占位值与短数字不动：False/True/None/null、1–4 位数字）。
+  [/("[A-Za-z0-9_-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential|authorization)[A-Za-z0-9_-]*"\s*:\s*")(?!False|True|None|null|n\/a)([^"]{6,})(")/gi, '$1[redacted]$3'],
+  [/((?:api[_-]?key|apikey|token|secret|password|passwd|pwd|credential|authorization)\s*[=:]\s*)(["'])(?!False|True|None|null|n\/a)([^"']{6,})\2/gi, '$1$2[redacted]$2'],
   // **明确不做**（2026-10-11 裁定）：通用「长随机串」规则（如 [A-Za-z0-9_-]{32,}）—— 它与**我们自己的 id 形态**
   //   冲突（`node-7fe8ec84-L2-2781-4441-eb9ff212` / `canon-…-20261011` 都会命中）⇒ **必然误伤** ⇒ 违反口径①。
   //   此条即「独立令牌形态」的具体取舍：宁可漏报，不做泛化长串遮蔽 ✓
@@ -76,11 +81,17 @@ export function redact(value) {
   return out;
 }
 
-/** 递归脱敏（对象 / 数组 / 字符串）——只有字符串才过规则，结构原样保留。 */
-export function redactDeep(v) {
-  if (typeof v === 'string') return redact(v);
-  if (Array.isArray(v)) return v.map(redactDeep);
-  if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = redactDeep(v[k]); return o; }
+/** 递归脱敏（对象 / 数组 / 字符串）——只有字符串才过规则，结构原样保留。
+ *  F02（2026-10-14 外部审查 · GPT）：**按键判定**——值本身不带凭据前缀时文本规则抓不到，
+ *  而键名（api_key / password / token…）已经点名「这是凭据字段」⇒ 直接遮蔽；占位值与短数字仍是例外。 */
+const SENSITIVE_KEY_RE = /(api[_-]?key|apikey|password|passwd|pwd|secret|token|authorization|credential)/i;
+export function redactDeep(v, keyHint) {
+  if (typeof v === 'string') {
+    if (keyHint && SENSITIVE_KEY_RE.test(keyHint) && v.length >= 6 && !/^(true|false|null|none|yes|no)$/i.test(v) && !/^\d{1,4}$/.test(v)) return '[redacted]';
+    return redact(v);
+  }
+  if (Array.isArray(v)) return v.map((x) => redactDeep(x, keyHint));
+  if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = redactDeep(v[k], k); return o; }
   return v;
 }
 
@@ -3207,28 +3218,46 @@ export function rollbackBatch(store, opts = {}) {
     const rolledBy = new Set();
     for (const r of records) if (r.rollback_of !== undefined && isStr(r.supersedes)) rolledBy.add(r.supersedes);
     const plan = [];
+    // F03（2026-10-14 外部审查 · GPT）：**按链聚合**——同一条链在窗口内多次修订时，只从**当前链尾**追加
+    //   **一次**恢复（内容 = 「窗口内第一个修订」的前一版）。原实现逐修订各补一条 ⇒ 一条链出现两个
+    //   「当前版本」（分叉，且 check 无感）⇒ 后续召回可能拿到冲突版本。
+    const roots = new Map();
     for (const r of records) {
-      if (!isStr(r.id) || !isStr(r.supersedes) || r.rollback_of !== undefined) continue;      // 只看「修订版」（且有前版）
-      const stamp = String(r.logged_at ?? '').slice(0, 10);
-      if (stamp < day) continue;
-      const prev = byId.get(r.supersedes);
-      if (!prev) continue;
-      if (rolledIds.has(r.id) || rolledBy.has(r.id)) continue;                                // 已回滚过 ⇒ 跳过（幂等）
-      plan.push({ store, id: r.id, restores: prev.id, claim: prev.claim ?? prev.summary ?? prev.behavior ?? prev.title ?? '' });
+      if (!isStr(r.id)) continue;
+      let c = r;
+      while (c.supersedes && byId.has(c.supersedes)) c = byId.get(c.supersedes);
+      if (!roots.has(c.id)) roots.set(c.id, c);
+    }
+    for (const [rootId, root] of roots) {
+      const ch = [root];
+      let c = root;
+      for (;;) { const n = records.find((x) => x.supersedes === c.id); if (!n) break; c = n; ch.push(n); }
+      const tip = ch[ch.length - 1];
+      if (!isStr(tip.id) || tip.id === rootId) continue;                                          // 只有追加、无修订 ⇒ 无可回滚
+      // 候选 = 窗口内「未回滚过的修订」（rollback 记录自身不是候选）——重跑/链尾已是回滚记录时自然为空 ⇒ 幂等。
+      const firstIdx = ch.findIndex((x, k) => k > 0 && x.rollback_of === undefined && String(x.logged_at ?? '').slice(0, 10) >= day && !rolledBy.has(x.id));
+      if (firstIdx < 1) continue;                                                                 // 窗口内无未回滚修订 ⇒ 无可回滚
+      const restore = ch[firstIdx - 1];
+      if (isProtocolId(rootId) || isProtocolId(tip.id) || isProtocolId(restore.id)) {             // F01：协议链回滚须人工 --allow-protocol
+        plan.push({ store, id: tip.id, restores: restore.id, refused: 'protocol' });
+        continue;
+      }
+      plan.push({ store, id: tip.id, restores: restore.id, claim: restore.claim ?? restore.summary ?? restore.behavior ?? restore.title ?? '' });
     }
     if (!need) return plan;
     const done = [];
     for (const p of plan) {
-      if (rolledIds.has(p.id)) continue;
+      if (p.refused) continue;
+      if (rolledBy.has(p.id) || rolledIds.has(p.id)) continue;
       const prev = byId.get(p.restores);
-      // id 必须新（重复 id 是硬错误）：内容=前版，id = **被打版自身 + r1**，再把回滚版的链尾撤到「被打版」之前。
+      // id 必须新（重复 id 是硬错误）：内容=前一版，id = **链尾 + r1**。
       const targetId = p.id + 'r1';
-      if (records.some((x) => x.id === targetId)) continue;                                   // 幂等（重跑时目标已存在 ⇒ 跳过）
+      if (records.some((x) => x.id === targetId)) continue;                                       // 幂等（重跑时目标已存在 ⇒ 跳过）
       const rec = { ...prev, id: targetId, supersedes: p.id, rollback_of: p.id };
-      delete rec.logged_at;                                                                    // 回滚=一次新写入 ⇒ 盖新戳
+      delete rec.logged_at;                                                                        // 回滚=一次新写入 ⇒ 盖新戳
       appendRecord(store, rec, { file, locked: true });
       rolledIds.add(p.id);
-      done.push({ id: targetId, rollback_of: p.id, restores: p.restores, claim: p.claim });
+      done.push({ id: targetId, rollback_of: p.id, restores: p.restores, claim: p.claim ?? '' });
     }
     return done;
   });
@@ -3696,7 +3725,8 @@ export function revise(store, id, patch = {}, opts = {}) {
   if (isProtocolId(id) && !opts.allowProtocol) {
     throw new Error('拒绝修订 ' + id + '：该条渲染进系统提示。模型路径（MCP）不可改；人工确认后用 CLI --allow-protocol。');
   }
-  const file = opts.storeFile || storePath(store);
+  // 2026-10-14：文件参数统一——`opts.file` 为主、`opts.storeFile` 兼容旧写法（promote 侧仍用 storeFile）。
+  const file = opts.file || opts.storeFile || storePath(store);
   return withFileLock(file, () => reviseUnlocked(store, id, patch, { ...opts, file }));
 }
 
@@ -3705,11 +3735,23 @@ function reviseUnlocked(store, id, patch, opts) {
   const byId = new Map(records.map((r) => [r.id, r]));
   const found = byId.get(id);
   if (!found) throw new Error('找不到记录：' + id);
+  // F01（2026-10-14 外部审查 · GPT）：**状态迁移字段不得经普通修订写入**——否则可借普通条目的 patch 夹带
+  //   `retires:<协议条>` 把受保护协议条从当前集抹掉（且 check 零报错）。supersedes / rollback_of 同理：
+  //   它们只由 revise / retire / revoke / rollback 这些**专门函数**生成，普通 patch 一律只许内容字段。
+  const STATE_FIELDS = ['supersedes', 'retires', 'revokes', 'rollback_of', 'retired_at', 'retired_reason'];
+  const illegal = STATE_FIELDS.filter((k) => patch && patch[k] !== undefined);
+  if (illegal.length) throw new Error('状态迁移字段不可经普通修订写入（' + illegal.join(' / ') + '）：退役用 retire、撤销用 revoke、回滚用 rollback、修订用 revise');
   let tip = found;
   for (;;) {
     const next = records.find((r) => r.supersedes === tip.id);
     if (!next) break;
     tip = next;
+  }
+  // F14（2026-10-14 外部审查 · GPT）：**退役链默认拒绝普通修订**——否则用历史 id 修订会悄悄生成新版本复活
+  //   （无显式 revoke）。恢复走显式通道（revokeRetire / sleep --revoke），或显式 allowRetired。
+  const revokedSet = new Set(records.map((r) => r.revokes).filter((v) => typeof v === 'string' && v !== ''));
+  if (opts.allowRetired !== true && records.some((r) => r.retires === tip.id && !revokedSet.has(r.id))) {
+    throw new Error('该链已退役（' + tip.id + '）——普通修订不复活退役记忆；恢复请先 revoke（revokeRetire / sleep --revoke），或显式 allowRetired:true');
   }
   const chain = [tip];
   let cursor = tip;
@@ -3895,7 +3937,13 @@ function retireRecordUnlocked(store, id, opts, file) {
 
   if (hard) {
     const dropIds = new Set(chainIds);
-    for (const r of records) if (r.retires && dropIds.has(r.retires)) dropIds.add(r.id);   // 连墓碑一起
+    // F15（2026-10-14 外部审查 · GPT）：闭包 = 链版本 ∪ **全部墓碑（含已撤销）** ∪ **指向被删墓碑的撤销元数据行**
+    //   ——否则残留 '-retired-revoked' 行并造成 revokes / retires 悬空引用（checkAll 报错，链删除不完整）。
+    for (const r of records) if (isStr(r.retires) && dropIds.has(r.retires)) dropIds.add(r.id);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const r of records) if (isStr(r.revokes) && dropIds.has(r.revokes) && !dropIds.has(r.id)) { dropIds.add(r.id); grew = true; }
+    }
     const removed = records.filter((r) => dropIds.has(r.id));
     const keep = records.filter((r) => !dropIds.has(r.id));
     // 回收站跟着存储文件走（真库 = DATA/_trash，与此前一致）；此前固定写 DATA/_trash，
