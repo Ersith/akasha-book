@@ -4484,6 +4484,62 @@ t('GPT 审查修复批 B（F04 合并资格共用检查/F05 回执并集/F11 水
   rmSync(dir, { recursive: true, force: true });
 });
 
+t('F08 修复批（预算账实 ≤cap / 整条上账 / 分页原始序号口径 / cross 显式预算）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-f08-'));
+  const dataDir = join(dir, 'data'); mkdirSync(dataDir, { recursive: true });
+  const logsDir = join(dir, 'logs'); mkdirSync(logsDir, { recursive: true });
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
+  const lines = [];
+  for (let i = 1; i <= 6; i += 1) lines.push(mk('canon-f08-s' + i, '青雀速记：短夹具第 ' + i + ' 号。'));
+  lines.push(mk('canon-f08-big', '青雀速记：大夹具。' + '垫'.repeat(800)));
+  writeFileSync(join(dataDir, 'canon.jsonl'), lines.join('\n') + '\n');
+  const big = '长字段'.repeat(150);
+  writeFileSync(join(dataDir, 'mirror.jsonl'), JSON.stringify({ id: 'mirror-f08', situation: '青雀：' + big, behavior: big, outcome: big, social_reaction: big, emotion: big, logged_at: new Date().toISOString() }) + '\n');
+  const env = { ...process.env, AKASHA_ROOT: dataDir, AKASHA_LOGS: logsDir, AKASHA_QUERY_LOG: 'off' };
+  const run = (...args) => spawnSync(process.execPath, [join(ROOT, 'akasha.mjs'), ...args], { cwd: ROOT, encoding: 'utf8', env });
+  const budgetOf = (s) => { const m = /(\d+)\/(\d+) tok/.exec(s); return m ? { used: Number(m[1]), cap: Number(m[2]) } : null; };
+  // ① 预算账实：used ≤ cap（修前 324/300 超卖 ⇒ 能红）
+  const p1 = run('lookup', '青雀', '--max-tokens', '300');
+  assert.equal(p1.status, 0, p1.stderr);
+  const b1 = budgetOf(p1.stdout);
+  assert.ok(b1 && b1.used <= b1.cap, '账实：used 不得超 cap：' + JSON.stringify(b1));
+  // ② 整条上账：mirror 五字段长（整条 > cap）但 claim 短 ⇒ 定额下必须被跳过（旧口径只估主字段会装下）
+  const pFull = run('lookup', '青雀', '--full');
+  assert.ok(/\[mirror\]/.test(pFull.stdout), '前提：mirror 条须在命中面（--full 下可见）');
+  const mirrorRec = JSON.parse(readFileSync(join(dataDir, 'mirror.jsonl'), 'utf8').trim());
+  assert.ok(lib.estimateTokens(JSON.stringify(mirrorRec)) > 500, '夹具前提：mirror 整条 >500 tok');
+  const p2 = run('lookup', '青雀', '--max-tokens', '500');
+  assert.ok(!/\[mirror\]/.test(p2.stdout), '整条上账：超预算的 mirror 条必须被跳过');
+  // ③ 分页原始序号口径：页 2 与页 1 不得重叠（修前 offset+已装条数 会原地打转 ⇒ 能红）
+  const mOff = /续取 offset=(\d+)/.exec(p1.stdout);
+  if (mOff) {
+    const p3 = run('lookup', '青雀', '--max-tokens', '300', '--offset', mOff[1]);
+    const idsOf = (s) => [...s.matchAll(/\[canon\] (\S+)/g)].map((x) => x[1]);
+    const a = idsOf(p1.stdout); const b = idsOf(p3.stdout);
+    assert.ok(a.length && b.length, '两页都应装到短条目：' + JSON.stringify({ a, b }));
+    assert.equal(a.filter((x) => b.includes(x)).length, 0, '两页不得重叠：' + JSON.stringify({ a, b }));
+  }
+  // ④ cross：默认豁免（无预算行）／显式预算生效且账实；两页不重复（修前页 2 == 页 1）
+  const c1 = run('cross', '青雀');
+  assert.ok(!/本页/.test(c1.stdout), 'cross 默认豁免：不得出现预算行');
+  const c2 = run('cross', '青雀', '--max-tokens', '400');
+  const b2 = budgetOf(c2.stdout);
+  assert.ok(b2 && b2.used <= b2.cap, 'cross 显式预算账实：' + JSON.stringify(b2));
+  const mOff2 = /续取 offset=(\d+)/.exec(c2.stdout);
+  if (mOff2) {
+    const c3 = run('cross', '青雀', '--max-tokens', '400', '--offset', mOff2[1]);
+    const idSet = (s) => new Set([...s.matchAll(/\b(?:canon|mirror|frontier|lexicon|pricing|orphan)-[a-z0-9-]+/g)].map((x) => x[0]));
+    const s2 = idSet(c2.stdout); const s3 = idSet(c3.stdout);
+    assert.ok(s2.size && s3.size, '两页都应有条目 id：' + JSON.stringify({ p1: [...s2], p2: [...s3] }));
+    assert.equal([...s2].filter((x) => s3.has(x)).length, 0, 'cross 两页不得重复');
+  }
+  // ⑤ brief 直通不炸
+  const br = run('brief', '青雀', '--max-tokens', '300');
+  assert.equal(br.status, 0, br.stderr);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
 if (failures.length) {
   console.log('失败清单：');

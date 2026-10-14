@@ -58,7 +58,7 @@ switch (cmd) {
     const rSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: null };
     const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
     if (!rSel.ok || !rUnt.ok) { console.error(rSel.error || rUnt.error); code = 1; break; }
-    const __paging = { offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined };
+    const __paging = { offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined };
     const recallMode = !!flags.recall;   // #7 多路召回 + RRF（2026-10-12 窗口 3；默认关，行为与并前一致）
     const perspective = flags.perspective ? String(flags.perspective) : undefined;   // #37（窗口 5）：world|experience
     if (perspective && !['world', 'experience'].includes(perspective)) { console.error('--perspective 须为 world|experience'); code = 1; break; }
@@ -99,7 +99,7 @@ switch (cmd) {
     if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
     if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
     const __doseThB = Number.isFinite(Number(flags['dose-threshold'])) ? Number(flags['dose-threshold']) : undefined;   // I-12 P1-③：0=关闸
-    const b = brief(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, doseThreshold: __doseThB, perStore: Number(flags.per) || 3, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined });
+    const b = brief(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, doseThreshold: __doseThB, perStore: Number(flags.per) || 3, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
     const lines = [`主题简报「${b.query}」：` + (b.groups.length ? `命中 ${b.groups.length} 库` : '无命中')];
     // #31 --ladder（2026-10-12 窗口 5）：先亮「停在哪一层、为何没下钻」。
     if (flags.ladder && Array.isArray(b.ladder)) {
@@ -196,7 +196,7 @@ switch (cmd) {
     if (flags.all) { console.error('六库 cross 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
     if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
     if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
-    const c = cross(rest[0] || '', { via: 'cli', reflect: !!flags.reflect, perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined });
+    const c = cross(rest[0] || '', { via: 'cli', reflect: !!flags.reflect, perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
     const lines = [];
     const dateNote = () => {
       if (!(flags.since || flags.until)) return;
@@ -210,6 +210,7 @@ switch (cmd) {
       print(c, lines.join('\n'));
       break;
     }
+    if (c.budget) lines.push('· ' + c.budget.hint);
     lines.push(`对位比较「${c.query}」：命中 ${c.groups.length} 库 / ${c.total} 条（当前版本）`);
     for (const g of c.groups) {
       lines.push(`[${g.store} ×${g.total}]`);
@@ -1004,7 +1005,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('用法：node akasha.mjs <check|stats|budget [--enable] [--phase-check 文本]|lookup <词> [--since D --until D] [--include-refuted] [--today D] [--load-balance] [--balance-log F]|brief <主题> [--per N] [--since D --until D]|cross <词> [--per N] [--since D --until D]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]|sleep [--dry]|sleep --replay [--log F] [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit [--due] [--today D]|diff [--since D] [--until D] [--store S]|conflict <id|主题词> [--top N]|review pack <id>|review log <id> --verdict 维持\|修正\|升级 [--by self\|subagent]|review list [--limit N]|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>（体裁隔离：P0 读侧剥皮（lookup/brief/show/**cross**）与过程段不回放、P1 剂量闸——`--reflect` / `--raw-process` 反思通道不受限；`--dose-threshold N` 调闸 / 0 关闸）');
+    console.log('用法：node akasha.mjs <check|stats|budget [--enable] [--phase-check 文本]|lookup <词> [--since D --until D] [--max-tokens N] [--offset N] [--include-refuted] [--today D] [--load-balance] [--balance-log F]|brief <主题> [--per N] [--since D --until D] [--max-tokens N] [--offset N]|cross <词> [--per N] [--since D --until D] [--max-tokens N] [--offset N]|summary [--per N]|show <id>|mirror match <文本> [--limit N] [--mode task|improve] [--role solution|boundary] [--evidence story|own-log] [--era …] [--context …]|sleep [--dry]|sleep --replay [--log F] [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N]|sleep --plan [--out F] [--today D] [--theta X] [--max K] [--orphan-days N] [--stale-days N] [--log F]|kit|promote [--dry]|revise <store> <id> --data \'<json>\'|price --severity N --irreversibility N --cost N [--good|--bad] [--apply-store S --apply-id ID] [--json]|metrics [--since D]|orphan add --summary ... [--event-time YYYY-MM-DD]|orphan list|frontier list|frontier due|frontier recheck <id> --status <S> [--next-review D]|audit [--due] [--today D]|diff [--since D] [--until D] [--store S]|conflict <id|主题词> [--top N]|review pack <id>|review log <id> --verdict 维持\|修正\|升级 [--by self\|subagent]|review list [--limit N]|add --store <s> --data \'<json>\'|retire <store> <id> [--reason \'...\'] [--hard]|session <index|lookup|promote|context|tree|node|loopwatch|stats|help>（细目见 session help）>（体裁隔离：P0 读侧剥皮（lookup/brief/show/**cross**）与过程段不回放、P1 剂量闸——`--reflect` / `--raw-process` 反思通道不受限；`--dose-threshold N` 调闸 / 0 关闸）');
     code = cmd ? 1 : 0;
 }
 process.exit(code);

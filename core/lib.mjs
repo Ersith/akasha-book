@@ -691,6 +691,9 @@ export function cross(query, opts = {}) {
   }
   const __out = { query: q, groups, total, hint };
   if (opts.__noQueryLog !== true) recordQuery({ cmd: 'cross', query: __qRaw, hits: total, ms: Date.now() - __t0, ids: groups.flatMap((g) => g.items.map((it) => it.id)) }, opts);
+  // F08（2026-10-14 外部审查 · GPT）：**显式给了 maxTokens / offset 才守预算**——默认仍豁免全量（「性能优先」：
+  //   对位视图的完整可达性优先，削减只在调用方明确要求时发生；分页可续取 `budget.nextOffset`，不丢内容）。
+  if (opts.maxTokens !== undefined || Math.floor(opts.offset ?? 0) > 0) return clipByBudget(__out, { ...opts });
   return __out;
 }
 
@@ -906,44 +909,68 @@ export function clipByBudget(result, opts = {}) {
   //       取 2048 时 cross 对位视图会被砍到 4/95 条，违背其「主行不截断」契约。
   const DEFAULT_CALL_CAP = 4096;
   const cap = Math.max(200, Math.floor(opts.maxTokens ?? DEFAULT_CALL_CAP));
-  const usedOf = (item) => estimateTokens(String(item.snippet ?? item.gist ?? item.claim ?? item.title ?? item.line ?? ''));
-  let used = 0, trimmed = 0, oversize = 0, floorApplied = false;
-  /** 通用：按 rank 顺序装入；单条超预算**只跳自己**（后面更短的照收）；全超时**地板保底给第一条**（防「空结果 ≈ 库里没有」）。 */
-  const trim = (list) => {
+  // F08（2026-10-14 外部审查 · GPT）：**账实相符**——预算必须覆盖**整条**（全部字段与元数据），而不是只估主文本一个字段。
+  //   旧口径漏计：mirror 五字段（0/4096）、lookup report 元数据（2060 vs 实际 6213）。现口径＝整条 JSON 过同一
+  //   estimateTokens（与复现脚本「同一算法复算」同口径）。结构符与 budget 自身不计（量级 = 个位数 tok）。
+  const usedOf = (item) => estimateTokens(JSON.stringify(item ?? {}));
+  let used = 0, trimmed = 0, oversize = 0, floorApplied = false, floorDone = false;
+  /** 通用：按 rank 顺序装入；单条超预算**只跳自己**（后面更短的照收）；全超时**地板保底给第一条**（防「空结果 ≈ 库里没有」）。
+   *  F08：`reserve` = 外围（query+hint+结构）预留——装载时就把外围算进去，保证 used ≤ cap（账实优先）。 */
+  const trim = (list, reserve = 0) => {
     const kept = [];
-    for (const it of list) {
+    let lastKeptIdx = 0;                                      // F08：最后装下条目在输入序中的下标+1（供 nextOffset 原始序号口径）
+    for (let i = 0; i < list.length; i += 1) {
+      const it = list[i];
       const t = usedOf(it);
-      if (used + t > cap) {
+      if (used + t + reserve > cap) {
         if (t > cap) oversize++;                    // 单条自身超上限 ⇒ 自跳（不连带后面更短的）
         trimmed++;
         continue;
       }
-      used += t; kept.push(it);
+      used += t; kept.push(it); lastKeptIdx = i + 1;
     }
-    if (kept.length === 0 && list.length > 0) {      // 地板：没有一条装得下 ⇒ 排名第一必须留下
+    // F08：地板**只给全局第一条**（多组时后面的组不得各自保底——否则每组各留一条，预算被打穿、账不再实）。
+    if (kept.length === 0 && list.length > 0 && used === 0 && !floorDone) {
       const first = list[0];
       kept.push(first);
       used += usedOf(first);
-      floorApplied = true;
+      floorApplied = true; floorDone = true;
       trimmed = Math.max(0, list.length - 1);        // 首条算留下，其余未显示
+      lastKeptIdx = Math.max(lastKeptIdx, 1);
     }
-    return kept;
+    return { kept, lastIndex: lastKeptIdx };
   };
   const out = { ...result };
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  // F08：预留——外围（query + hint + 结构符）在装载时尚未知，按「查询词 + 75 tok」预留（hint 实测
+  //   ~60-70 tok 中文；200 会吃掉小 cap 的装载量——#29 的「后续补齐」即被它误伤，已校准回 75）。
+  const reserve = estimateTokens(String(out.query ?? '')) + 75;
   if (Array.isArray(out.hits)) {
     const all = out.hits;
     if (offset > 0) out.hits = all.slice(offset);          // ② 分页：先跳过后裁剪（排序稳定）
     out.__afterOffset = out.hits.length;                    // 供区分「offset 跳过」与「上限裁掉」
-    out.hits = trim(out.hits);
+    const t1 = trim(out.hits, reserve);
+    out.hits = t1.kept;
+    out.__nextRaw = offset + t1.lastIndex;                  // F08：nextOffset=原始序号口径（已翻过的条目数）
     out.budget = null;                                      // 占位，下面统一写
     out.__total = all.length;
   }
   if (Array.isArray(out.groups)) {
     // brief 用 groups[].hits，cross 用 groups[].items ⇒ 两者都处理（2026-10-11）
-    out.groups = out.groups.map((g) => (Array.isArray(g.hits)
-      ? { ...g, hits: trim(g.hits) }
-      : { ...g, items: trim(g.items || []) }));
+    // F08（2026-10-14 外部审查 · GPT）：**全局序**处理 offset 与预算（按组序 × 组内序展平）——
+    //   原实现逐组独立 slice/trim ⇒ offset 对 groups 完全失效（复现实测：页 2 与页 1 重复、拼不齐全集）。
+    const flat = [];
+    out.groups.forEach((g) => (g.items || g.hits || []).forEach((it) => flat.push(it)));
+    const sliced = flat.slice(Math.min(offset, flat.length));
+    const t1 = trim(sliced, reserve);
+    const kept = new Set(t1.kept);
+    out.__nextRaw = offset + t1.lastIndex;                  // F08：原始序号口径（同 hits 分支）
+    out.groups = out.groups.map((g) => {
+      const own = (Array.isArray(g.hits) ? g.hits : (g.items || [])).filter((it) => kept.has(it));
+      return Array.isArray(g.hits) ? { ...g, hits: own } : { ...g, items: own };
+    });
+    out.__afterOffset = sliced.length;                      // 供区分「offset 跳过」与「上限裁掉」
+    out.__total = flat.length;
   }
   const before = (Array.isArray(result.hits) ? result.hits.length : 0)
     + (Array.isArray(result.groups) ? result.groups.reduce((n, g) => n + (g.items || g.hits || []).length, 0) : 0);
@@ -954,7 +981,10 @@ export function clipByBudget(result, opts = {}) {
   delete out.__total; delete out.__afterOffset;
   const trimmedOut = Math.max(0, afterOffset - after);      // 仅「被上限裁掉」的条数（不含 offset 跳过）
   const skippedByOffset = Math.min(offset, total);
-  const nextOffset = offset + after;
+  // F08：nextOffset 用**原始序号口径**——「已翻过的条目数（含被跳过的）」；此前用 offset+已装条数，
+  //   在「大条目自跳」列表上会原地打转（页 2 重走同一批被跳条、装出与页 1 相同的两条 —— 复现实测）。
+  const nextOffset = Math.min(total, out.__nextRaw ?? (offset + after));
+  delete out.__nextRaw;
   // ③ 可见性：每次返回都带一行人类可读的装载说明（不再有静默截断）
   const parts = ['本页 ' + after + ' 条 / 共 ' + total + ' 条', used + '/' + cap + ' tok'];
   if (skippedByOffset > 0) parts.push('已跳过前 ' + skippedByOffset + ' 条(offset)');
@@ -962,7 +992,9 @@ export function clipByBudget(result, opts = {}) {
   else if (trimmedOut > 0) parts.push('因上限未显示 ' + trimmedOut + ' 条 → 续取 offset=' + nextOffset + '（或 --full）');
   else parts.push('无因上限丢弃');
   const hint = parts.join(' · ');
-  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0, hint };
+  // F08：外围文本（查询词 / 提示行）也上账——whole-response 口径尽量贴近。
+  used += estimateTokens(String(out.query ?? '') + String(hint ?? ''));
+  out.budget = { mode: 'per-call-cap', capTokens: cap, usedTokens: used, offset, skippedByOffset, total, itemsBefore: before, itemsAfter: after, trimmed: trimmedOut, truncated: trimmedOut, oversize, floorApplied, nextOffset, exhausted: trimmedOut === 0 || nextOffset >= total, hint };
   return out;
 }
 
