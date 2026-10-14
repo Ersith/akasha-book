@@ -110,8 +110,11 @@ switch (cmd) {
     for (const g of b.groups) {
       lines.push(`[${g.store} ×${g.total}${g.hits.length < g.total ? ` → top${g.hits.length}` : ''}]`);
       for (const h of g.hits) {
+        // Q03（GPT 第四轮）：**占位统一渲染**——白名单占位后各库原字段不存在；占位走 id+摘要+展开指引，
+        //   不再进入按库渲染（否则 `h.supports.length` 等 TypeError / undefined 直出）。
+        if (h.oversizeOmitted === true) { lines.push(`  - ⧉ ${h.id}：${String(h.snippet ?? '')}${h.fullHint ? '（' + h.fullHint + '）' : ''}`); continue; }
         const t = (h.agePrefix ? h.agePrefix + ' ' : '') + (h.time ? `[${h.time}] ` : '') + (typeof h.valence === 'number' && h.valence < 0 ? '⚠ ' : '');
-        if (g.store === 'frontier') lines.push(`  - ${t}${G(h.title)} [${h.status}] ${h.topic}${h.supports.length ? '  supports=' + h.supports.join(' ') : ''}`);
+        if (g.store === 'frontier') lines.push(`  - ${t}${G(h.title)} [${h.status}] ${h.topic}${(h.supports || []).length ? '  supports=' + h.supports.join(' ') : ''}`);
         else if (g.store === 'canon') lines.push(`  - ${t}${h.displayTier ? h.displayTier + ' ' : ''}${h.stale ? '待复核 ' : ''}${h.id}: ${G(h.claim)}（${h.source} · ${h.ref}）`);
         else if (g.store === 'mirror') lines.push(`  - ${t}${h.id}: ${G(h.situation)} → ${G(h.outcome)}`);
         else if (g.store === 'orphan') lines.push(`  - ${t}[${h.severity}] ${h.id}: ${G(h.summary)}`);
@@ -214,7 +217,10 @@ switch (cmd) {
     lines.push(`对位比较「${c.query}」：命中 ${c.groups.length} 库 / ${c.total} 条（当前版本）`);
     for (const g of c.groups) {
       lines.push(`[${g.store} ×${g.total}]`);
-      for (const item of g.items) lines.push(`  ${item.agePrefix ? item.agePrefix + ' ' : ''}${item.id} | ${item.line}`);
+      for (const item of g.items) {
+        if (item.oversizeOmitted === true) { lines.push(`  ${item.agePrefix ? item.agePrefix + ' ' : ''}${item.id} | ${String(item.snippet ?? '')}${item.fullHint ? '（' + item.fullHint + '）' : ''}`); continue; }   // Q03：占位统一
+        lines.push(`  ${item.agePrefix ? item.agePrefix + ' ' : ''}${item.id} | ${item.line}`);
+      }
     }
     if (c.hint) lines.push('· ' + c.hint);
     dateNote();

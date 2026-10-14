@@ -83,15 +83,9 @@ const REDACT_RES = [
 ];
 export function redact(value) {
   let out = String(value ?? '');
-  // N01/N02（GPT 第三轮）：**结构化优先**——整串是 JSON 对象/数组时，解析后**按键递归脱敏**再序列化
-  //   （Authorization 任意大小写、转义引号、嵌套形态一次性覆盖；解析失败退回文本规则）。
-  const s = out.trim();
-  if ((s.startsWith('{') || s.startsWith('[')) && s.length > 8) {
-    try {
-      const parsed = JSON.parse(s);
-      if (parsed && typeof parsed === 'object') return JSON.stringify(redactDeep(parsed, null));
-    } catch { /* 非完整 JSON ⇒ 走文本规则 */ }
-  }
+  // Q04（GPT 第四轮）：**不做 JSON 解析往返**——`JSON.parse→stringify` 经 JS Number，会把大整数/高精度小数
+  //   改写（9007199254740993 → …992）且**非敏感字段也中招**。脱敏只该改敏感值：纯文本规则（已支持转义值、
+  //   含 authorization 名单）足以覆盖 N01/N02 的全部形态；其余字面量原样保留。
   for (const [re, to] of REDACT_RES) out = out.replace(re, to);
   return out;
 }

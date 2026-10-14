@@ -310,7 +310,7 @@ if (mod) {
     assert.ok(!lines.some((l) => l.kind === 'session-index-skip' && l.reason === 'unchanged'), '失败不得被 unchanged 快路掩盖（stat 只记成功）：' + JSON.stringify(lines));
     rmSync(dir, { recursive: true, force: true });
   });
-  tz('会话 id 前缀归一（session- 前缀可解析；记账用裸 id）', () => {
+  tz('会话 id 完整保留（Q06：不剥前缀——两个合法 ID 可区分）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
     const log = join(dir, 'hooks.jsonl');
     const sessionsRoot = join(dir, 'sessions');
@@ -323,7 +323,7 @@ if (mod) {
     (handlers['session/event'] ?? []).forEach((fn) => fn({ id: 'session-abc12345' }, { type: 'turn/end', data: { turn: 1 } }));
     const idx = readLines(log).filter((l) => l.kind === 'session-index');
     assert.equal(idx.length, 1, JSON.stringify(readLines(log)));
-    assert.equal(idx[0].session, 'abc12345', '记账应用裸 id');
+    assert.equal(idx[0].session, 'session-abc12345', '台账记完整原始 ID（Q06）');
     assert.equal(idx[0].added, 1);
     rmSync(dir, { recursive: true, force: true });
   });

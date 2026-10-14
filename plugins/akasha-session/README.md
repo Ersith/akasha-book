@@ -22,6 +22,11 @@ npm pack
 # 然后：plugin_manager install_bundle <tgz 绝对路径>（本 profile 为启动型：装载/替换以重启生效，以安装返回为准）
 ```
 
+## v0.3.3-h1（2026-10-14，GPT 第四轮 · Q06）
+
+- **会话 ID 完整保留**：索引器四处 `session-` 前缀剥离全部移除——台账/段记录存**完整原始宿主 ID**（`session-1` 与 `1` 两个合法 ID 不再被归一撞车）；目录查找（`resolveSessionFile`）与读端（sleep）各自保留双向兼容（旧数据不丢）。
+- 测试同步：selftest 的「前缀归一（记账用裸 id）」用例改为「完整保留」断言（**28/28**）。
+
 ## v0.3.0（2026-10-10）—— 索引 worker 化（会话层计划里的 v0.4 队列项）
 
 - **架构**：宿主回调只投递（`postMessage`，µs 级返回）；常驻 worker 线程 `lib/index-worker.mjs`（apply 即预热）串行执行索引、同会话排队去重；重活不再占用宿主事件循环。

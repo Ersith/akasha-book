@@ -201,7 +201,7 @@ export function apply(ctx, config = {}) {
 
   // V0 遗物兼容：`assistant/chunk` 事件（现役 v4 格式不再发此事件；字段面保留，防旧宿主）。
   const onChunk = (session, event) => {
-    const sid = String(session?.id ?? '').replace(/^session-/, '');
+    const sid = String(session?.id ?? '');   // Q06：完整原始 ID（不剥前缀）
     const chunk = event?.data?.chunk;
     if (!sid || !chunk || typeof chunk.type !== 'string') return;
     probeType(sid, chunk.type);
@@ -213,7 +213,7 @@ export function apply(ctx, config = {}) {
   // 现役格式：`agent/assistant-stream` 进程内瞬态帧（真值对 dsh-agent-loop AssistantStreamAttempt 与 dsh-headless 消费口径）。
   // frame：{type:'start'|'chunk'|'end', attemptId, turn, step, chunk?}；chunk：text-delta/reasoning-delta/tool-call-delta/block-*/usage/finish。
   const onStreamFrame = (agent, frame) => {
-    const sid = String(agent?.session?.id ?? agent?.id ?? '').replace(/^session-/, '');
+    const sid = String(agent?.session?.id ?? agent?.id ?? '');   // Q06：完整原始 ID（不剥前缀）
     const frameType = String(frame?.type ?? '');
     if (!sid || !frameType) return;
     probeType(sid, frameType + (frame?.chunk?.type ? '/' + frame.chunk.type : ''));
@@ -232,7 +232,7 @@ export function apply(ctx, config = {}) {
   };
 
   const rememberAssistant = (session, event) => {
-    const sid = String(session?.id ?? '').replace(/^session-/, '');
+    const sid = String(session?.id ?? '');   // Q06：完整原始 ID（不剥前缀）
     if (!sid) return;
     lastAssistant.set(sid, { turn: event?.data?.turn ?? null, message: event?.data?.message });
     if (lastAssistant.size > 64) lastAssistant.delete(lastAssistant.keys().next().value);
@@ -241,7 +241,7 @@ export function apply(ctx, config = {}) {
   // turn 环：全文检测。取数＝事件流缓存（2026-10-07 复查：官方 Session 无 .events 属性，
   // 同步读者 snapshotEvents/ownEvents 已被官方弃用「新调用禁止」——宿主容器改事件驱动，插件不得伸手进日志）。
   const onTurnWatch = (sidIn, turn) => {
-    const sid = String(sidIn ?? '').replace(/^session-/, '');
+    const sid = String(sidIn ?? '');   // Q06：完整原始 ID（不剥前缀）
     const key = `${sid}:${turn ?? '?'}`;
     if (!sid || watchTurnDone.has(key)) return;
     const cached = lastAssistant.get(sid);
@@ -366,7 +366,7 @@ export function apply(ctx, config = {}) {
    * { ok:null, reason:'debounced' } = 去抖跳过（不作结论）。opts.force（压缩路径）绕过去抖与失败背压。
    */
   const indexNow = (sidIn, trigger, extra = {}, opts = {}) => {
-    const sid = String(sidIn ?? '').replace(/^session-/, ''); // 前缀归一：宿主事件常见 'session-<id>'，目录 / 记账恒用裸 id
+    const sid = String(sidIn ?? ''); // Q06（GPT 第四轮）：**存完整原始宿主 ID**（不再剥 `session-` 前缀——两个合法 ID 得以区分；resolveSessionFile 自带双向目录兼容、读端亦有旧数据单前缀兜底）
     try {
       if (!sid) return { ok: false, reason: 'no-session' }; // 空 id：静默跳过（正常路径不出现；见 README 降级节）
       const now = Date.now();
@@ -419,7 +419,7 @@ export function apply(ctx, config = {}) {
     try {
       if (event?.type === 'turn/end') indexNow(String(session?.id ?? ''), 'turn-end', { turn: event?.data?.turn ?? null });
       else if (event?.type === 'compaction/end' && event?.data?.error === void 0) {
-        const sid = String(session?.id ?? '').replace(/^session-/, '');
+        const sid = String(session?.id ?? '');   // Q06：完整原始 ID（不剥前缀）
         watchCtxChars.set(sid, 0); // 上下文长度代理归零（相位基准＝最近一次压缩；只记录）
         // 先索引再宣称「已收入」（2026-10 复查）；B1（wave1）：宣称与否取决于索引结论——
         // 压缩是稀有且关键的时刻，force 绕过去抖/背压强制补一次；失败如实记 indexed:false，节奏条不说「已收入」。

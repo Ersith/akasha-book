@@ -109,27 +109,37 @@ export function tailReadText(file, maxBytes = TAIL_WINDOW_BYTES) {
     return { text, bytes: n, truncated: start > 0 };
   } finally { closeSync(fd); }
 }
-// N09（GPT 第三轮）：**身份归一**——会话索引器持久化时剥 `session-` 前缀（生产者 dsh-akasha-session），
-//   渲染/事件侧是完整 id ⇒ 两侧经 normSid 归一后比较（`session-1` ≡ `1`）。**模块级**：latestIntentGist 亦需。
-const normSid = (s) => String(s ?? '').replace(/^session-/, '');
+// N09→Q06（第三/四轮）：`normSid` 归一已弃用——多对一转换无法区分 `session-1` 与 `1` 两个合法 ID；
+//   读取走「精确优先 + 单前缀差兜底」（见 latestIntentGist），生产者（session 插件）改存完整原始 ID。
 
 export function latestIntentGist(text, session) {
-  // R04（GPT 复核二轮）：**按 session 过滤**——intent 记录带 session 字段；`session===null`（来源不明）⇒ 不读，
-  //   绝不把上一会话的意图喂给当前会话（复现：A 的 intent 触发 B 的 C3）。N09：两侧经 normSid 归一。
+  // R04/N09/Q06（GPT 二~四轮）：会话意图读取——**精确优先**（原始 id 全等），精确无命中时才接受「单前缀差」变体
+  //   （旧数据兼容：历史索引记录曾剥 `session-` 前缀）。**遇歧义不猜测归属**：两个合法 ID（`session-1` 与 `1`）并存时
+  //   各走各的精确记录、不互读；unknown 仍返回 null。
   if (session === null) return null;
+  const want = session === undefined ? undefined : String(session);
   const lines = String(text ?? '').split('\n');
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (!lines[i].includes('"kind":"intent"')) continue;
-    let r; try { r = JSON.parse(lines[i]); } catch { continue; }
-    if (session !== undefined && normSid(r.session) !== normSid(session)) continue;
-    const g = String(r.gist || '');
-    if (!g) continue;
-    // 规则化跳过注入段（2026-10-10 生产核对：除 runtime context 外还有 openviking / hindsight 等注入块被记成 intent）
-    if (g.startsWith('<') || g.length > 800
-      || /Current runtime context|Relevant memory from|Hindsight|openviking-context|阿卡夏·/.test(g)) continue;
-    return g;
-  }
-  return null;
+  const pick = (pred) => {
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (!lines[i].includes('"kind":"intent"')) continue;
+      let r; try { r = JSON.parse(lines[i]); } catch { continue; }
+      if (pred && !pred(r)) continue;
+      const g = String(r.gist || '');
+      if (!g) continue;
+      // 规则化跳过注入段（2026-10-10 生产核对：除 runtime context 外还有 openviking / hindsight 等注入块被记成 intent）
+      if (g.startsWith('<') || g.length > 800
+        || /Current runtime context|Relevant memory from|Hindsight|openviking-context|阿卡夏·/.test(g)) continue;
+      return g;
+    }
+    return null;
+  };
+  if (want === undefined) return pick(null);
+  const exact = pick((r) => String(r.session ?? '') === want);
+  if (exact !== null) return exact;
+  const up = 'session-' + want;
+  const down = want.startsWith('session-') ? want.slice('session-'.length) : want;
+  if (up === want && down === want) return null;
+  return pick((r) => { const s = String(r.session ?? ''); return s === up || s === down; });
 }
 
 export function apply(ctx, config = {}) {
@@ -341,7 +351,7 @@ export function apply(ctx, config = {}) {
   // R04：**无 sid 不继承**——缺身份的输入归 `(unknown)` 桶，绝不沿用上一会话（来源不明 ⇒ 不碰敏感提醒）。
   const retarget = (sid) => { curSid = sid ? String(sid) : '(unknown)'; };
   const renderSidOf = (context) => sidOf(context?.agent ?? context?.session ?? context);
-  // N09：normSid 已上移模块级（latestIntentGist 亦需；此前误放此处 ⇒ 模块函数引用未定义、被 catch 吞掉）。
+  // Q06：normSid 归一弃用（见 latestIntentGist 的精确优先实现；生产者改存完整 ID）。
   const noteFailure = (tool) => {
     try {
       S().recentFailures.push({ ts: Date.now(), tool: String(tool ?? '?') });
@@ -754,16 +764,14 @@ export function apply(ctx, config = {}) {
   //   两钩子**每回合最多出一行**，优先级 显式 > 语义；都无触发 ⇒ **静默**（不制造噪音）；可关 `recallHook:false`。
   if (cfg.recallHook !== false) {
     const PRONOUN = /(上次|之前|上回|那天|那个|说过|记得|当时|前面说|前面提)/;
-    // N08（GPT 第三轮）：**按当前身份过滤**——恢复提示与 C3 同规则（规范化 id 过滤）；unknown 不读共享最后一条。
+    // N08（GPT 第三轮）：按当前身份过滤；unknown 不读共享最后一条。
+    // Q06（GPT 第四轮）：与 C3 共用同一读法（latestIntentGist：精确优先 + 旧数据单前缀差兜底）。
     const recentIntentGist = () => {
       try {
-        const lib = require_(join(cfg.akashaDir, 'lib.mjs'));
         const sid = curSid;
         if (!sid || sid === '(unknown)') return '';
-        const want = normSid(sid);
-        const rows = lib.loadStore('session').records.filter((r) => r.kind === 'intent' && normSid(r.session) === want);
-        const last = rows[rows.length - 1];
-        return last ? String(last.gist || '') : '';
+        const txt = tailReadText(join(cfg.akashaDir, 'data', 'session.jsonl')).text;
+        return String(latestIntentGist(txt, sid) || '');
       } catch { return ''; }
     };
     const clip120 = (s) => (s.length <= 120 ? s : s.slice(0, 119) + '…');

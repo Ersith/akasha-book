@@ -4,6 +4,7 @@
 
 > **版本（单一真值）**：以本包 `package.json` 的 `version` 为准；本 README **不再复述版本号**（2026-10-13 审计 P3：此处曾停在 v1.5.5 而实际已到 1.7.x-h 线）。当前装载版本用 `plugin_manager list_bundles` 查；装载态与源的逐字节一致性核查方法见 `akasha/MEMORY-TEST.md`（prompt-safety 双侧 `diff -q` 先例）。
 
+- **v1.10.8-h1（2026-10-14，GPT 第四轮批 · Q06 读端）**：会话意图读取改「**精确优先 + 单前缀差兜底**」（旧数据兼容；`session-1` 与 `1` 的并存/嵌套歧义如实登记为已知边界——新数据起精确可区分）；`normSid` 归一弃用。
 - **v1.10.7-h1（2026-10-14，GPT 第三轮批收尾）**：**normSid 上移模块级**（此前误放 apply 内 ⇒ latestIntentGist 的 N09 过滤运行时 ReferenceError 被 catch 吞、C3 全哑——复跑捉出）。
 - **v1.10.6-h1（2026-10-14，GPT 第三轮批 · N08–N11）**：**指代召回按身份过滤**（`recentIntentGist` 经规范化 id 过滤；unknown 不读共享最后一条——N08）；**会话身份归一**（`session-1` ≡ `1`，与索引器剥前缀口径对齐——N09）；**失败压缩不计成功**（`data.error` 非空另计，不再触发多余补查提醒——N10）；**工具执行参数读 `exec.arguments`**（宿主 ToolExecution 真实契约优先，修「查过库仍显示未查」——N11）。
 - **v1.10.5-h1（2026-10-14，GPT 复核二轮批 B3）**：**渲染/事件全程显式会话身份**——text 回调带 `context`（按 `context.agent` 选桶）；`session/event` 按宿主真实 **(session, event)** 两参契约消费（压缩计数/用户消息触发路由回归）；回合真值补 `turn/start`（取消/异常回合后 C3 当轮标记正常失效 ⇒ C1 恢复）；**无身份输入归 unknown 桶（不继承上一会话）**；preflight 去抖与 `latestIntentGist` 均按会话隔离（A 的冷却/intent 不再串到 B）。**她方合约复跑**：A/B 渲染各归其位、两参契约下压缩+触发恢复、aborted 后 C1 恢复、unknown 不继承 ✓。
