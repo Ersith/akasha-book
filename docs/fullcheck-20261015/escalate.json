@@ -1,0 +1,198 @@
+{
+  "escalations": [
+    {
+      "id": "S1",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S2",
+      "reason": "A1",
+      "risk_class": "false-fix",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S3",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S4",
+      "reason": "A1",
+      "risk_class": "coverage-gap",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S1",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S3",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S4",
+      "reason": "A1",
+      "risk_class": "false-green",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S1",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S3",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S4",
+      "reason": "A1",
+      "risk_class": "false-green",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S1",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S3",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S4",
+      "reason": "A1",
+      "risk_class": "false-green",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S1",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S3",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S4",
+      "reason": "A1",
+      "risk_class": "false-green",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S1",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S3",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S4",
+      "reason": "A1",
+      "risk_class": "false-green",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S-core-1",
+      "reason": "A1",
+      "risk_class": "false-green",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S-core-2",
+      "reason": "A1",
+      "risk_class": "dataloss",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S-core-3",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S-core-4",
+      "reason": "A1",
+      "risk_class": "coverage-gap",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S1",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S3",
+      "reason": "A1",
+      "risk_class": "false-green",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S4",
+      "reason": "A1",
+      "risk_class": "false-fix",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S5",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "S6",
+      "reason": "A1",
+      "risk_class": "silent-skip",
+      "why": "已实证且非理论 ⇒ 立即升级"
+    },
+    {
+      "id": "(趟末)",
+      "reason": "A2",
+      "risk_class": "false-fix/crash（实证）",
+      "why": "已实证 2 条（同文件 ≥2 或总量 ≥2）"
+    }
+  ],
+  "escalate": true,
+  "counts": {
+    "slices": 61,
+    "a1": 28,
+    "a2": 1
+  },
+  "certificate": {
+    "slices": 61,
+    "units": 5,
+    "unitsWithoutSlices": [],
+    "withFalsifier": 61,
+    "withoutFalsifier": 0,
+    "untranslatable": 0,
+    "claimsSeen": null,
+    "complete": true
+  },
+  "files": 5,
+  "badLines": [],
+  "validationProblems": [],
+  "verdict": "needs-slow"
+}

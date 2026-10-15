@@ -1,0 +1,97 @@
+{
+  "meta": {
+    "task": "门档 P2 慢层 · A 路（代码面升级项裁决）— cli-mcp.jsonl + core.jsonl 共 10 条",
+    "when_local": "2026-10-15 20:33-20:38 (+08:00)",
+    "revision_drift_warning": "裁决期间工作树被并发补丁修改：lib.mjs sha256 8d296978f19d(切片时) → 57f7c2b1(20:32:35) → 33ecb348(20:35:54) → f19d8b87(20:36，现)；akasha.mjs b9696ee9febb(切片时) → 2fd7aff1(20:32:49，现)；mcp.mjs 5a89635e9f1417（与切片 rev 完全一致，未变）。凡时间敏感条目均给了两次测量。",
+    "method": "逐条复跑切片 falsifier + 自加更狠实验；写操作全部落 runs\\cli-mcp-sandbox 或 tmp，真库只读；探针见 runs\\vprobe-cli.sh / vprobe-mcp.mjs / vprobe-core.mjs / vprobe-extra.mjs / v-core.json",
+    "lead_recheck": {
+      "cli-mcp S2": "Lead 结论在补丁前有效；lib.mjs 于 20:32:35 下沉 dayArg 后不再成立（我 20:34 实测 exit=1）。残留=CLI 读工具族 today 未校验（实测有失真）。",
+      "cli-mcp S5": "Lead 的 185051B 与我 20:34 的 185119B 同属 pre-patch 状态；20:35:54 起 lib 加 Math.min(20) 后不复现（19831B）=> 结论过期，需标注测量时点。"
+    }
+  },
+  "verdicts": [
+    {
+      "id": "S1",
+      "file": "cli-mcp.jsonl",
+      "verdict": "确认",
+      "severity": "medium（silent-skip）",
+      "evidence": "当前 HEAD（akasha.mjs 2fd7aff1）复现两次：AKASHA_ROOT=<沙箱> node akasha.mjs orphan add --summary 裁决S1-a --observed 观测 --event-time 15/10/2026 → exit=0、已追加 orphan-37f5fb，落库行含 event_time 15/10/2026；更狠：event-time 9999-13-45 同样 exit=0 落库；随后 node akasha.mjs check exit=0 全绿（orphan 137/137，event_time 零命中）⇒ 脏日期落库且校验面不报。MCP 同输入已拒：akasha_orphan_add{event_time:15/10/2026} 回 error 非法日期（应为 YYYY-MM-DD 或 ISO 8601，含时区按 UTC 归一）。读写不对称成立：写在 CLI（漏网）、校验只在 MCP（mcp.mjs:143-147）。",
+      "fix": "最小修法（1 行，akasha.mjs:486）：把 flags[event-time] 直接落库改为先过 normalizeDateArg（已在 akasha.mjs:5 导入），不 ok 就 throw r.error；顶层 uncaughtException 收口（akasha.mjs:12-16）会打出单行消息 + exit 1。调用点：仅 CLI orphan add 分支（akasha.mjs:475-489），无其它调用方。更稳（建议同批）：把「event_time 须为 YYYY-MM-DD」加进 lib.validateRecord 的 orphan 规则，覆盖 CLI add / 通用 add --store / revise / promote 全部写路径并让 check 报出来（加规则后沙箱里刚写入的 3 条脏行会变红，属预期）。"
+    },
+    {
+      "id": "S2",
+      "file": "cli-mcp.jsonl",
+      "verdict": "证伪（对当前 HEAD）；对切片时点为真",
+      "severity": "已消（残留：CLI 读工具族 today 未校验，且实测非惰性）",
+      "evidence": "切片时点（Lead 亦复核）exit=0 属实。lib.mjs 于 20:32:35 加入 dayArg 下沉（lib.mjs:3836/2182/4004 + akasha.mjs 顶层收口）。我把 falsifier 原样重跑：node akasha.mjs audit --today bogus --json → exit=1，单行 today 必须是 YYYY-MM-DD（或可归一的日期）：bogus；kit --today bogus → exit=1。即「CLI audit/kit 透传、bogus 判全量到期」不再成立。残留（部分确认）：lookup/brief/cross --today bogus 仍 exit=0 不校验，且非惰性——A/B 实测 lookup 纪律 --today bogus 与 --today 2026-10-15 输出不同（agePrefix：[日期未知] vs [过去·5天]），即非法 today 静默劣化标注；MCP 面同输入回 error ⇒ 双端不对称缩小为「CLI 读工具族」。",
+      "fix": "主项无需修（已由 lib 层修复）。残留修法（2 选 1）：① akasha.mjs 的 lookup/brief/cross 分支构造 opts 前统一走 dayArg（需把 dayArg 加进 akasha.mjs:5 导入表）；② 在 main 入口对全局 flags.today 做一次闸（一处覆盖全部子命令，注意 sleep/session 等分支一起过）。波及：lookup/brief/cross 三个 CLI 分支；未传 today 时行为不变。"
+    },
+    {
+      "id": "S3",
+      "file": "cli-mcp.jsonl",
+      "verdict": "确认",
+      "severity": "medium（不可信记录污染留痕线；mcp.mjs rev 未受补丁影响）",
+      "evidence": "mcp.mjs sha256=5a89635e9f1417（== 切片 rev 5a89635e9f14，期间未改）。stdio 探针：akasha_review_log{store:bogusstore, id:no-such-id, verdict:随便写} → ok:true 落沙箱 logs/review-log.jsonl；随后 akasha_review_list 原样读回该行（含 fast 层此前两行同形记录）。CLI 面 review log 有校验（akasha.mjs:781-791：id 必须能 show 到、verdict 有值域）⇒ 双端口径不一致成立。",
+      "fix": "最小修法（mcp.mjs:119-121，2 行）：appendReviewLog 前加 store 白名单与 id 存在性——if (!STORES.includes(String(a.store))) throw new Error(...)；if (!loadStore(String(a.store)).records.some(r => r.id === a.id)) throw new Error(...)（STORES/loadStore 已在 mcp.mjs:4 导入）。verdict 值域是否收紧由 Lead 定（CLI 侧限 维持/修正/升级，MCP 描述里写了 合并/退役/回滚，两处口径先对齐）。波及：仅 akasha_review_log；sleep.mjs 的 appendReviewLog（内部路径、自带 file 参数）不受影响。"
+    },
+    {
+      "id": "S4",
+      "file": "cli-mcp.jsonl",
+      "verdict": "确认（覆盖面事实成立；其指向的差集已因 S2 修复而缩小）",
+      "severity": "low（过程性/元级）",
+      "evidence": "test.mjs 四个检测器（5032 I-14 V6 / 5080 I-15 G2 / 5177 I-17 F6a / 5189 I-17 F6b）逐块读取：全部 spawnSync(process.execPath, [join(ROOT,'mcp.mjs')], ...)，无一 spawn akasha.mjs；grep 审计 --today 与 --event-time 在 test.mjs 零命中，CLI 侧日期闸用例数=0。⇒ 修复面两文件 / 覆盖面一文件 成立。时点修正：S2 的 CLI 缺陷已被 lib 层共用闸补上，故当前 CLI 面真正无测试保护的只剩 S1。",
+      "fix": "补 1 条 CLI 用例（复制 I-17 F6b 夹具，改 spawn akasha.mjs，env 指 AKASHA_ROOT/AKASHA_LOGS 到临时目录）：断言 status!==0 且输出不含 已追加。修 S1 前该用例应是红的，正好当回归门。"
+    },
+    {
+      "id": "S5",
+      "file": "cli-mcp.jsonl",
+      "verdict": "部分确认 + 时间敏感（切片/Lead 时点成立；当前 HEAD 已被并发补丁修掉）",
+      "severity": "已消（残留：per 上界=20，约 4.7× 默认）",
+      "evidence": "① 20:34（lib 57f7c2b1）：node akasha.mjs summary 3528B vs --per 1000000000 185119B（52×），--per 100000 同为 185119B（无上界）；MCP akasha_summary{per:1e8} 21732B vs 默认 4172B（5.2×）。② 20:35:54 起 lib.mjs:2182 变为 Math.min(20, ...)；20:36 复测：CLI 默认 4254B、--per 1e9 19831B（已被夹到 20/库）；MCP per=1e8 21393B、per=-5 4158B。③ 修复中间态曾把 CLI 打红：20:36 前一刻 node akasha.mjs summary 仅输出 20 字节 opts is not defined（补丁未收尾）⇒ 建议该修复必须过 test.mjs。④ 附带两点：boundedInt 已定义（lib.mjs:3834）但全文零调用（死代码）；akasha_session_lookup{limit:-3} 我复测 2781B，未复现切片所称 316.9KB（量级依赖当时会话库内容，schema 无 minimum 属实但放大效应未重现）；MCP summary 我实测 21.7KB 不等于切片所称 203.5KB（疑为累计或多请求口径）。",
+      "fix": "主项已被 lib 层 Math.min(20) 修掉（落点正确、两端共用）。建议：① 把 20 提为常量并补一条断言 per 上界的用例（现在无用例）；② 要么删掉死代码 boundedInt（YAGNI），要么把 summary 与 session 的 limit 统一改用它；③ session_lookup 的 limit 在 mcp.mjs:141 传参处过 boundedInt（min 1 / max 200），schema 补 minimum、maximum。"
+    },
+    {
+      "id": "S-core-1",
+      "file": "core.jsonl",
+      "verdict": "确认（比原判更严重：单次 audit 内部混读真库与夹具）",
+      "severity": "medium（false-green：用 files 注入的断言实际读真库）",
+      "evidence": "空夹具（六库全指空文件）下：summary({files}).stores.canon.total=432、stats().canon.total=432（=真库），对照 checkAll({files}).stores.canon.total=0 ⇒ summary/stats 完全忽略 opts.files。更狠：audit 半认——audit({files:{canon:幽灵路径}}) 的 review.counts.scanned 由 494 掉到 62（62=494-432），而 findings 侧（frontier-due 等）仍走真库 ⇒ 同一次调用内两种数据源混读；stats({files}) 不抛、静默忽略。",
+      "fix": "最小修法（lib.mjs 3 处）：audit/summary/stats 内的 loadStore(name) 改为 loadStore(name, opts.files ? opts.files[name] : undefined)——summary:2183、stats:3641-3642（另需给 stats 补 opts={} 形参，现在它没有参数位）、audit 的多库遍历处。波及（grep 全调用点）：lib 内部 audit→(3902 返回体、3946 kit 路径、sleep.mjs:257 无参调用)、summary→(akasha.mjs:326、mcp.mjs:114)、stats→(akasha.mjs:61、mcp.mjs:91)；全部不传 files 时逐字不变（undefined 回退 storePath），向后兼容。"
+    },
+    {
+      "id": "S-core-2",
+      "file": "core.jsonl",
+      "verdict": "确认（机理与量化均成立）——但分级降档：不是 dataloss，是渲染层语义篡改",
+      "severity": "medium（读侧显示 + 剂量计数；库内原文不动）",
+      "evidence": "lib.mjs:3435 的「好。→。」替换无边界：实测 stripGenre(偏好。)=偏。、(你好。)=你。、(正好。)=正。、(只好。)=只。；设计形态（行首/句末）由 3434 覆盖，3435 属超范围吞并。真库扫描：627 个字符串字段会被改动，其中 18 处为「词尾好被吃」（含 canon-paper-v01-20261007.claim 产品偏好。论 → 产品偏。论；canon-genre-p0-20261013 / canon-idle-resume-v110 系 18 个版本链条目）。额外面：skeletonCount 与 stripGenre 同白名单 ⇒ skeletonCount(偏好。)=1，普通词被算作完成态符号、污染剂量闸。作用域确认：stripGenre 只用于读侧渲染（lib.mjs:705 cross 行、2412 mirror 命中字段），库内 jsonl 一字未动 ⇒ 切片 risk_class=dataloss 属夸大。",
+      "fix": "最小修法（lib.mjs:3435，1 行）：把无边界规则锚化成两种设计形态——先做「(行首|标点后)好。→ 删除」再做「行尾好。→ 。」（即把 3434 的标点集扩大并补一条行尾规则，删掉 3435 的无边界版）。⚠ 副作用：现有夹具样本 嗯好。继续 不再被剥（它与 偏好。 字面不可区分）⇒ 必须同批换夹具为行首/行尾样本，否则该用例转红（预期）。波及：stripGenre 调用方（lib.mjs:705/2412、akasha.mjs 导入表）+ skeletonCount 同规则，建议一并把计数口径对齐。"
+    },
+    {
+      "id": "S-core-3",
+      "file": "core.jsonl",
+      "verdict": "部分确认（机制复现；但『非法条件抛错』的适用面被夸大、危害为理论值）",
+      "severity": "low（失效方向=条目保留，不是静默丢弃）",
+      "evidence": "复现：validateCondition({op:bogus}) 不抛、evalCondition 结果 false、filterNotApplicable 的 excluded 为空（该条不排除）；{turnn:3}（字段名打错）、{gte:3} 同类。反面对照：算子对象内的错算子确实抛——validateCondition({turn:{bogus:1}}) 抛 条件非法（$.turn）：未知算子 bogus（可用 eq/ne/gte/lte/in/contains）。判定：{op:bogus} 与合法等值条件 {turn:3} 结构同形（都是 字段名:标量），校验器无法区分「写错算子」与「字段名恰好叫 op」⇒ 这是设计面而非缺陷面；文档（lib.mjs:480/4179）承诺的是未知算子抛错，这条它做到了。真实库 15 条 not_applicable 全是字段+算子正规形（如 mirror-saiweng-r3 {era:{eq:现实事件}}），零命中。",
+      "fix": "不建议为此加抛错（会把合法等值条件打死）。两条可选：① 文档口径修正（1 行注释）：写明字段名不做白名单——写错的字段名=恒不匹配=该条 not_applicable 不生效，方向是保留条目而非丢弃；② 若要更强可测性，在 evalCondition 收到 ctx 时校验条件字段名是否在 Object.keys(ctx) 内（仅 ctx 非空时生效），抛错或告警由 Lead 定。波及：validateCondition/evalCondition 的调用方（validateRecord 的 mirror 校验、filterNotApplicable、checkAll）；改语义前先跑 test.mjs 全量。"
+    },
+    {
+      "id": "S-core-4",
+      "file": "core.jsonl",
+      "verdict": "确认（量化逐字复现）",
+      "severity": "medium（引用计数与输出审计双失明）",
+      "evidence": "自跑计数：六库当前版本共 646 条，OUTPUT_ID_RE（lib.mjs:2422）不匹配 13 条 = frontier 11（frontier- 前缀 8 条 + front-eric/front-voi/front-wald 3 条）+ orphan 1（orphan-0001）+ lexicon 1（lex-fear）——与切片 13 条完全一致。auditText 喂入同时含 canon-akasha-usage / frontier-xxx / orphan-0001 / lex-fear 的句子 → 只有 canon-akasha-usage 进 ids，frontier、orphan、lex 三类既不进 ids 也不进 unknownIds（隐形，而非误报）。根因两条：前缀闭集缺 frontier 与 lexicon；最小长度量词 {4,} 把 4 字符 id 全排除。",
+      "fix": "最小修法（lib.mjs:2422，1 行）：前缀表补 frontier 与 lexicon，并把最小长度量词从 {4,} 降到 {2,} 或 {3,}（保守替代：只补前缀、保留 {4,}，能救 8/13 条）。⚠ 必须回归：缩短后要拿 logs\\output-audit 的历史文本扫一遍确认不产生假 id。波及（grep）：auditText（hooks 输出审计线）、recordCitedIds（hooks usage 计数 + sleep.mjs:1066）、test.mjs:246-250 既有断言需复核；OUTPUT_ID_RE 是模块私有常量，导出面无影响。"
+    },
+    {
+      "id": "S-core-5",
+      "file": "core.jsonl",
+      "verdict": "确认（数字复现；附两点限定）",
+      "severity": "low（元级/覆盖面）",
+      "evidence": "重跑 runs\\core-probe4.mjs：total=49、rulesThatFire=48、rulesThatDoNotFire=1（mirror-not_applicable，其不触发的原因正是 S-core-3 的 {op:bogus} 不抛），另有 48 条规则的期望串不在 test.mjs 源码内。限定：①「期望串不在测试源码」是启发式上界——测试可以断言行为而不复写错误串；② 唯一打不红的规则（mirror-not_applicable）依赖 S-core-3 的条件校验空档，改口径会连带影响它。",
+      "fix": "无代码修法。建议挑 3-5 条高危规则补测试（id 为空 / 重复 id / 时间格式 / verdict 值域），并把 core-probe4.mjs 收编成 test.mjs 的一条元用例（断言每条规则至少有一个反例夹具）——现在会红 48 条，当作待补清单而非门。"
+    }
+  ],
+  "falsified": ["cli-mcp S2（对当前 HEAD）", "cli-mcp S5（对当前 HEAD）"],
+  "confirmed": ["cli-mcp S1", "cli-mcp S3", "cli-mcp S4", "core S-core-1", "core S-core-2", "core S-core-4", "core S-core-5"],
+  "partial": ["core S-core-3", "cli-mcp S2 残留（CLI 读工具族 today）", "cli-mcp S5 残留（per 上界 20）"]
+}
