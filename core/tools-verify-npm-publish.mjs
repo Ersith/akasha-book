@@ -8,7 +8,7 @@ const EXPECT = {
   '@akasha-book/sleep': '1.6.5',
   '@akasha-book/mcp': '1.1.2',
 };
-const PROXY = process.env.HTTPS_PROXY || 'http://127.0.0.1:<PORT>';
+const PROXY = process.env.HTTPS_PROXY || 'http://127.0.0.1:7897';
 
 async function getJSON(url) {
   try {

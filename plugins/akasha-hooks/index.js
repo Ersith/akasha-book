@@ -39,6 +39,19 @@ export function akashaCliOf(name, args) {
   } catch { return null; }
 }
 
+/** 调用体量代理（2026-10-15；来源＝B 臂发现「hooks 的 tool 行只有 {ts,session,tool,ok}，无 token/字符数 ⇒
+ *  『token/发现』根本算不出来，只能拿字节代理」）。最小改法：给 tool 行加 `chars`（＝入参 + 返回体）。
+ *  安全：字符串取 length；其余 JSON.stringify；**循环引用 / 不可序列化一律降级 0**（绝不因记账把事件打挂）。 */
+export function sizeOf(v) {
+  try { return typeof v === 'string' ? v.length : JSON.stringify(v ?? '').length; } catch { return 0; }
+}
+/** 体量三元组：chars 总 / charsIn 入参 / charsOut 返回体。纯函数，供自测做等价对照。 */
+export function charsOf(exec, result) {
+  const charsIn = sizeOf(exec?.arguments);
+  const charsOut = sizeOf(result?.content ?? result?.error ?? result ?? '');
+  return { chars: charsIn + charsOut, charsIn, charsOut };
+}
+
 export function apply(ctx, config = {}) {
 
   // A/B 实验开关（2026-10-10 用户解冻，见 docs/ab-experiment-design.md §6）：
@@ -114,6 +127,7 @@ export function apply(ctx, config = {}) {
         tool: exec?.name ?? null,
         ok: !isError,
         message,
+        ...charsOf(exec, result),          // 2026-10-15：chars / charsIn / charsOut（体量代理，补 token 口径的仪表缺口）
         ...(akashaCli ? { akashaCli } : {})
       });
     } catch { /* 见文件头注释 */ }

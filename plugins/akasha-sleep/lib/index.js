@@ -52,6 +52,7 @@ const DEFAULTS = {
   addressOrder: 133,
   preflightOrder: 135, // C1｜易错点前置
   statefulOrder: 134,  // C3｜断言前把关（order 134 < 135 ⇒ 先渲染，命中时 C1 让位）
+  gateOrder: 136,      // 门档｜重要工作自动挂（2026-10-15；排在 C3/C1 之后，不扰动既有的让位次序）
   // I-12b 行为层（2026-10-13 重挂；**默认关**——先观测）：判据＝形态 B；冷却 / 限次防扰动循环。
   idleResume: false,
   idleResumeOnWeak: false,
@@ -134,6 +135,25 @@ export function latestIntentGist(text, session) {
   };
   if (want === undefined) return pick(null);
   return pick((r) => String(r.session ?? '') === want);
+}
+
+/** 门档触发判据（2026-10-15 落地；**顶层导出**，供自测做等价对照——与 tailReadText/latestIntentGist 同规矩）。
+ *  依据：canon-thinkloop-gate-20261015（何时该开三趟+独立审核）+ canon-gate-v2-20261015（v2：p0 机检 97s / 升级项才开慢层）。
+ *  三类「重要工作」：① 代码（写/改/修/实现/重构）② 审计（审/复核/证伪/根因）③ 数据完整性/不可逆（迁移/重建/紧凑化/回滚/发布/删除）。
+ *  **负例优先**：泛词不算——「查代码/看代码/代码在哪」这类检索动作**不得**触发（否则每回合都响，退化成噪音）。 */
+export const GATE_TRIGGERS = [
+  // 2026-10-15 修（门档自审发现）：原词表**漏掉高频口语表达** ⇒ 7 条实测里 6 条不触发（含「全量检查」「排查」「体检」「审一下」）——
+  // 最该挂门档的场景反而挂不上（当天那次"对阿卡夏做一次全量检查"就是靠用户明说才走的）。
+  { cat: '审计', re: /审计|审查|审核|复核|复检|复验|核对|排查|检查|体检|证伪|挑错|挑毛病|找问题|对抗性|根因|事故|审一下|查一下有没有问题/ },
+  { cat: '迁移/不可逆', re: /迁移|重建|紧凑化|回滚|清库|发布|上线|不可逆|删掉|删除/ },
+  { cat: '代码', re: /(写|改|修|加|补|实现|重构|落)(一下|下|个|一个|一段|点|这个|那个|的)*\s*(代码|函数|脚本|补丁|模块)|修\s*(个|一个)?\s*bug|fix\s*bug|重构|落码|实现一下/ },
+];
+export function gateTriggerOf(gist) {
+  const t = String(gist ?? '').trim();
+  if (!t) return null;
+  if (/查代码|看代码|搜代码|读代码|代码在哪|找代码|代码风格|代码库|代码量/.test(t)) return null;   // 负例优先
+  for (const g of GATE_TRIGGERS) if (g.re.test(t)) return { cat: g.cat };
+  return null;
 }
 
 export function apply(ctx, config = {}) {
@@ -333,7 +353,7 @@ export function apply(ctx, config = {}) {
     obs: { turn: 0, steps: 0, compactions: 0, usedToolsN: 0, lastRecallTurn: null, lastCompactionTurn: null },
     recentFailures: [], usedTools: new Set(), announcedTraps: new Set(),
     lastUserText: { text: '', at: 0 }, firedTriggers: new Map(), broughtUp: { at: 0, id: null },
-    gateState: { c3Cat: null, c3At: 0, c3Turn: -1 }, preflight: { tool: null, at: 0 },
+    gateState: { c3Cat: null, c3At: 0, c3Turn: -1, gateCat: null, gateAt: 0, gateTurn: -1 }, preflight: { tool: null, at: 0 },
   });
   const S = () => {
     if (!sessionStates.has(curSid)) sessionStates.set(curSid, freshState());
@@ -468,8 +488,10 @@ export function apply(ctx, config = {}) {
         retarget(renderSidOf(context));
         try {
           const path = join(cfg.akashaDir, "data", "session.jsonl");
+          // 2026-10-15 修：未知会话时**必须传 undefined**（＝"任意会话"分支）；原先传 null ⇒ 走 `String(r.session) === null`
+          // 恒假的比较 ⇒ **C3 在会话 id 未知时永远不触发**（stateful.test.mjs 的 6 条红即此因）。
           let gist = null;
-          try { gist = latestIntentGist(tailReadText(path).text, curSid === '(unknown)' ? null : curSid); } catch { /* 文件缺失/半行等 → 走 null */ }
+          try { gist = latestIntentGist(tailReadText(path).text, curSid === '(unknown)' ? undefined : curSid); } catch { /* 文件缺失/半行等 → 走 null */ }
           if (!gist) return null;
           const hit = STATEFUL.find((k) => k.re.test(gist));
           if (!hit) return null;
@@ -481,6 +503,37 @@ export function apply(ctx, config = {}) {
               JSON.stringify({ ts: new Date().toISOString(), kind: "stateful-reminder", cat: hit.cat }) + "\n", "utf8");
           } catch { /* 事件失败不影响提示 */ }
           return "[断言提醒] 状态性事实——先查再答（例：versions + dist-tags 两处核对）";
+        } catch { return null; }
+      }
+    });
+  }
+
+  // 门档｜重要工作自动挂（2026-10-15；用户令「逻辑上你得在做第一次代码任务或者审计之类的重要工作的时候就开始 3 次循环+独立审核」）
+  // 依据：canon-thinkloop-gate-20261015 + canon-gate-v2-20261015（**先 p0 机检 97s，只有升级项才开慢层**——这正是"不让每步都变长"的落点）。
+  // 形态：一行 ≤80 字，只提示不阻断；与 C3 同法（尾窗读 intent + 同类 30 分钟去重 + hooks 留痕）；gateHints:false ⇒ 提示与事件双停。
+  if (cfg.gateHints !== false) {   // 默认开；gateHints:false ⇒ 提示与事件双停（与 C1/C3 同规矩）
+    ctx.systemPrompt.context({
+      name: 'akasha:gate',
+      order: cfg.gateOrder,
+      text: (context) => {
+        retarget(renderSidOf(context));
+        try {
+          const path = join(cfg.akashaDir, 'data', 'session.jsonl');
+          // 2026-10-15 修（plugins 单元发现，实证）：**哨兵必须传 undefined**——`latestIntentGist(text, null)`
+          // 会走 `String(r.session) === null` 的恒假比较 ⇒ 本行在"会话 id 未知"时**永远不出话**
+          // （全历史 hooks.jsonl 里 `gate-reminder` 计数 = 0，对照 stateful-reminder = 21）。
+          let gist = null;
+          try { gist = latestIntentGist(tailReadText(path).text, curSid === '(unknown)' ? undefined : curSid); } catch { /* 容缺 */ }
+          const hit = gateTriggerOf(gist);
+          if (!hit) return null;
+          const now = Date.now();
+          if (S().gateState.gateCat === hit.cat && now - S().gateState.gateAt < 30 * 60 * 1000) return null;   // 同类 30 分钟去重
+          S().gateState.gateCat = hit.cat; S().gateState.gateAt = now; S().gateState.gateTurn = S().obs.turn;
+          try {
+            appendFileSync(join(cfg.akashaDir, 'logs', 'hooks.jsonl'),
+              JSON.stringify({ ts: new Date().toISOString(), kind: 'gate-reminder', cat: hit.cat }) + "\n", "utf8");
+          } catch { /* 事件失败不影响提示 */ }
+          return `[门档] 本轮属${hit.cat}类：先跑 p0 机检（akasha/tools/gate.mjs p0，97s），有升级项才开慢层`;
         } catch { return null; }
       }
     });

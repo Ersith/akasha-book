@@ -20,7 +20,7 @@ const RULES = [
   [/([A-Za-z]):[\\]{1,4}Harness/g, '<LOCAL_PATH>'],            // 含转义的全部变体
   [/([A-Za-z]):[\\/]+Harness/g, '<LOCAL_PATH>'],               // 正斜杠变体（同时覆盖裸路径）
   [/[A-Za-z]:[\\/]+个人资料整理_[0-9]+[^\s"'`)?]*/g, '<LOCAL_PATH>'],
-  [/<USER>/gi, '<USER>'],
+  [//gi, '<USER>'],
   [/@local\//g, '@akasha-book/'],
   [/(?:127\.0\.0\.1|localhost):\d{2,5}/g, '127.0.0.1:<PORT>'],
   [BARE_PORT_RE, '<PORT>'],

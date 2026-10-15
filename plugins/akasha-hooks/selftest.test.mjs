@@ -177,4 +177,18 @@ assert.ok(readFileSync(logC, 'utf8').includes('"kind":"activated"'), '降级时�
   assert.deepEqual(twice, ['brief', 'brief'], 'replay：同输入两次识别一致（纯函数、可重放）');
 }
 
+// —— 体量代理（2026-10-15；补 hooks 的 token/字符口径）——
+{
+  const { sizeOf, charsOf } = await import('./index.js');
+  assert.equal(sizeOf('abcdef'), 6, '字符串取 length');
+  assert.equal(sizeOf({ a: 1 }), 7, '对象走 JSON.stringify（{"a":1} = 7）');
+  const cyc = {}; cyc.self = cyc;
+  assert.equal(sizeOf(cyc), 0, '循环引用降级 0（记账不得把事件打挂）');
+  assert.equal(sizeOf(undefined), 2, 'undefined ⇒ JSON.stringify(undefined ?? "") = "\\"\\"" ⇒ 2 字符（安全降级，非 0）');
+  const r = charsOf({ arguments: { a: 1, b: 'x'.repeat(10) } }, { content: [{ type: 'text', text: 'y'.repeat(20) }] });
+  assert.ok(r.chars === r.charsIn + r.charsOut && r.charsIn > 0 && r.charsOut > r.charsIn, 'chars = 入参 + 返回体：' + JSON.stringify(r));
+  const r2 = charsOf({ arguments: 'abc' }, { isError: true, error: { message: 'boom' } });
+  assert.ok(r2.chars > 0 && r2.charsOut > 0, '失败路径也要有体量（走 error 分支）：' + JSON.stringify(r2));
+}
+
 console.log('selftest: all assertions passed');

@@ -37,11 +37,27 @@ export function readSessionArchive(filePath) {
   }
   if (!hasZstd()) zstdDecompressSync(buf); // 能力缺失 → 抛清楚的版本错误（不被下面的「不是有效容器」吞掉）
   if (hits.length <= 1) {
+    let text = '';
     try {
-      return { text: zstdDecompressSync(buf).toString('utf8'), frames: hits.length || 1, frameFails: 0, frameTruncated: 0 };
+      text = zstdDecompressSync(buf).toString('utf8');
     } catch (e) {
       throw new Error('不是有效的 zstd 会话容器：' + filePath + '（' + e.message + '）');
     }
+    // 单帧分支的尾部完整性检查（2026-10-15，E 题审计确证：此前【结构性缺失】——多帧分支有、单帧分支没有，
+    // 于是「半写单帧」在部分 Node 版本上解出截断文本却零旗标 ⇒ 下游把半行当完整内容吃进去（静默丢数据）。
+    // 口径与多帧分支一致：末尾非空且 JSON 解析不出的 tail ⇒ frameTruncated=1（下游据此丢弃半行）。
+    const tail1 = text.slice(text.lastIndexOf('\n') + 1).trim();
+    let frameTruncated1 = 0;
+    if (tail1) { try { JSON.parse(tail1); } catch { frameTruncated1 = 1; } }
+    // 近似魔数扫描（2026-10-15，二轮审计 D4）：多帧容器的**第二个帧头不完整/受损**时 hits 计数不到、落回本分支，
+    // 于是 zstd 只解第一帧、尾部被静默丢弃且零旗标。务实修法：扫描 zstd 魔数的前两字节 `28 B5`——完整魔数之外的
+    // 任何命中都说明「后面还有（残缺的）帧」（并发半写与帧损坏在本机行为上不可区分，故只置信号、不抛错）。
+    let nearMagic = 0;
+    for (let i = 0; i + 1 < buf.length; i += 1) {
+      if (i !== 0 && buf[i] === 0x28 && buf[i + 1] === 0xb5) nearMagic += 1;
+    }
+    if (nearMagic > 0) frameTruncated1 = 1;
+    return { text, frames: hits.length || 1, frameFails: nearMagic, frameTruncated: frameTruncated1 };
   }
   const parts = [];
   let frameFails = 0;
@@ -161,6 +177,15 @@ function fp8(s) {
   return h.toString(16).padStart(8, '0');
 }
 
+/** 会话 id 归一（2026-10-15，P1 审计）：宿主两种形态（裸 uuid / `session-<uuid>`）经 resolveSessionFile
+ *  解析到**同一档案**，而我们历史上按两种形态分别落段 ⇒ 库里出现孪生（真库跨键同内容 5376 行）。
+ *  约定：**入口一律存裸形态**；读侧用 sessionMatches 兼容老键（两种形态都能查到同一批段）。 */
+export function normalizeSid(s) { return String(s ?? 'unknown').replace(/^session-/, '') || 'unknown'; }
+// 2026-10-15 全量检查（Lead 修）：`sessionMatches` 原先**只归一左边**（`normalizeSid(v) === sid`）——
+// 当库里两种写法**并存**时（真库：裸 37012 行 + 前缀 2820 行），`resolveSessionPrefix` 会提前返回**前缀形态**的键，
+// 于是右侧的 `sid` 是前缀、左侧归一后是裸 ⇒ **恒不匹配**（实测：前缀写法命中 0）。两边都归一才对。
+function sessionMatches(v, sid) { return normalizeSid(v) === normalizeSid(sid); }
+
 function makeSeg(sid, sid8, { seq, time, turn, step, kind, gist, why, keywords, tools, ptr }) {
   const rec = {
     store: 'session',
@@ -194,8 +219,11 @@ const contentText = (content) =>
  *  修复的洞：冲刷推进水位后，迟到结果（seq ≤ emitFrom）此前被整条吞掉 ⇒ **完成版永不落库**（注释「结果后到 → 走完成版」与实现不符）。
  *  修法（消除闸门、不绕幂等）：结果配对成功且 `callSeq ∉ completedCallSeqs` ⇒ **强制 emit**（与 emitFrom 无关）；已在集内 ⇒ 照旧跳过（靠 id 去重兜底）。 */
 export function extractSegments(records, { session, emitFrom = 0, completedCallSeqs = null, recordedUnpaired = null } = {}) {
-  const sid = String(session ?? 'unknown');
-  const sid8 = sid.slice(0, 8);
+  const sid = normalizeSid(session);
+  // 会话短键（2026-10-15，E 题审计确证 V2；同日二轮审计 D1 修正）：原 `sid.slice(0, 8)` 在 `session-` 前缀上**恒等于 `session-`**。
+  // 二轮修正要点：**指纹必须取全 8 hex**——`fp8(sid).slice(0,4)` 是 djb2 高 16 位，对「仅末尾 1 字符不同」的 id **恒定不敏感**
+  // （实测 4/4 高 4 hex 相同）⇒ 只加 4 hex 等于没修。全 8 hex 的低位含末字符信息，敏感 ✓
+  const sid8 = `${sid.slice(0, 8)}-${fp8(sid)}`;
   const out = [];
   const pending = new Map();
   const lastReasoning = new Map();
@@ -271,7 +299,8 @@ function readMeta(metaFile) {
  *  注意：不能锁 storeFile——appendSegments 内部已对 store 取锁，同进程嵌套会死等。 */
 export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.storeFile, metaFile = SESSION_DEFAULTS.metaFile, full = false, lock = true } = {}) {
   const run = () => {
-    const sid = String(session ?? 'unknown');
+    // 会话 id 归一（2026-10-15，P1 审计）：两种形态解析到同一档案 ⇒ 入口统一存裸形态，杜绝孪生重复。
+    const sid = normalizeSid(session);
     const { text, frameFails, frameTruncated } = readSessionArchive(file);
     const records = [];
     let parseFails = 0;
@@ -289,20 +318,32 @@ export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.store
     // 配对按「全量记录」维护（修复中途索引切批的漏配）；产出只取新：emitFrom=lastSeq（--full 时 0）。
     // 已完成集合（2026-10-12 emit 门修复）：库中已有完成版（gist 含 ↳）的 callSeq —— 修复「水位推进后迟到结果被吞」。
     const inStore = loadStore('session', storeFile).records;
+    // 会话过滤（2026-10-15，E 题审计确证 V1）：本集合语义是「**本会话**已有完成版的 callSeq」。
+    // 原实现未按 session 过滤 ⇒ 别会话的同号 callSeq 会把本会话的「迟到完成版」当已完成（emitPair 返回 false）
+    // 而整条吞掉——真库实测 2994 个 callSeq 被多会话共用（26/27 会话有撞号面）。隔壁 recordedUnpaired 一直有该过滤，此处补齐。
     const completedCallSeqs = new Set(
-      inStore.filter((r) => r.kind === 'action' && String(r.gist ?? '').includes('↳') && Number.isInteger(r.ptr?.callSeq))
+      inStore.filter((r) => sessionMatches(r.session, sid) && r.kind === 'action' && String(r.gist ?? '').includes('↳') && Number.isInteger(r.ptr?.callSeq))
         .map((r) => r.ptr.callSeq)
     );
     const recordedUnpaired = new Set(
-      inStore.filter((r) => r.kind === 'action' && r.session === sid && String(r.gist ?? '').includes('（无结果）') && Number.isInteger(r.ptr?.callSeq))
+      inStore.filter((r) => r.kind === 'action' && sessionMatches(r.session, sid) && String(r.gist ?? '').includes('（无结果）') && Number.isInteger(r.ptr?.callSeq))
         .map((r) => r.ptr.callSeq)
     );
     const segs = extractSegments(records, { session: sid, emitFrom: full ? 0 : lastSeq, completedCallSeqs, recordedUnpaired });
     const existing = new Set(inStore.map((r) => r.id));
-    const incoming = segs.filter((x) => !existing.has(x.id));
+    // 迁移安全去重（2026-10-15，配合 sid8 方案变更）：段 id 变了以后老段按 id 认不出 ⇒ `--full` 会整批重复追加。
+    // 故**同时**按「本会话的 (seq, kind, gist, why, tools) 内容键」比对——与 id 字符串形状解耦：
+    //   同内容（无论老 id 新 id）⇒ 跳过（幂等不变）；变内容 ⇒ 仍追加新版（F2 漂移语义不破）。
+    //   seq 非整数的手工段回退按 id 比对（绝不把两条不同段误并成一条）。
+    const contentKey = (r) => (Number.isInteger(r.seq)
+      // P1 审计（2026-10-15）：键必须**转义**——裸 `|` 拼接时 gist/why 的边界位移会让两条不同段同键（静默丢段）。
+      ? JSON.stringify([r.seq, r.kind, r.gist, r.why ?? '', Array.isArray(r.tools) ? r.tools : String(r.tools ?? '')])
+      : `id:${r.id}`);
+    const existingKeys = new Set(inStore.filter((r) => sessionMatches(r.session, sid)).map(contentKey));
+    const incoming = segs.filter((x) => !existing.has(x.id) && !existingKeys.has(contentKey(x)));
     const skipped = segs.length - incoming.length;
     appendSegments(storeFile, incoming);
-    const ownedRecs = loadStore('session', storeFile).records.filter((r) => r.session === sid);
+    const ownedRecs = loadStore('session', storeFile).records.filter((r) => sessionMatches(r.session, sid));
     const ownedIds = new Set(ownedRecs.map((r) => r.id));
     const conclIds = new Set(ownedRecs.filter((r) => r.kind === 'conclusion').map((r) => r.id));
     const next = {
@@ -344,6 +385,11 @@ export function resolveSessionPrefix(records, session) {
   if (!s) return s;
   const ids = new Set(records.map((r) => String(r.session ?? '')));
   if (ids.has(s)) return s;
+  // 归一匹配（2026-10-15，P1 审计）：`abcd…` 与 `session-abcd…` 指向同一档案 ⇒ 先按归一形态找**唯一键**，
+  // 让下游 `sessionMatches(r.session, sess)` 这类比较自然命中（读侧兼容老键；入口已统一存裸形态）。
+  const ns = normalizeSid(s);
+  const normMatches = [...ids].filter((id) => normalizeSid(id) === ns);
+  if (normMatches.length === 1) return normMatches[0];
   const matches = [...ids].filter((id) => id.startsWith(s));
   return matches.length === 1 ? matches[0] : s;
 }
@@ -385,13 +431,13 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   if (kinds.includes('node')) {
     genBy = new Map(); // 各会话各取最新代——跨会话查询不得互相遮挡（终局复核 F1）
     for (const r of records) {
-      if (r.kind !== 'node' || (sess && r.session !== sess)) continue;
+      if (r.kind !== 'node' || (sess && !sessionMatches(r.session, sess))) continue;
       genBy.set(r.session, Math.max(genBy.get(r.session) ?? -1, Number(r.treegen) || 0));
     }
   }
   const hits = [];
   for (const r of view) {
-    if (sess && r.session !== sess) continue;
+    if (sess && !sessionMatches(r.session, sess)) continue;
     if (!kinds.includes(r.kind)) continue;
     if (r.kind === 'node' && (Number(r.treegen) || 0) !== genBy.get(r.session)) continue; // 旧代不参与检索
     if (since || until) {
@@ -421,7 +467,7 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   }
   let scopeTotal = 0;
   for (const r of view) {
-    if (sess && r.session !== sess) continue;
+    if (sess && !sessionMatches(r.session, sess)) continue;
     if (!kinds.includes(r.kind)) continue;
     scopeTotal += 1;
   }
@@ -431,7 +477,7 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   if (!incProcess) {
     for (const r of view) {
       if (r.kind !== 'process') continue;
-      if (sess && r.session !== sess) continue;
+      if (sess && !sessionMatches(r.session, sess)) continue;
       if (since || until) { const day = String(r.time || '').slice(0, 10); if (!day || (since && day < String(since).slice(0, 10)) || (until && day > String(until).slice(0, 10))) continue; }
       const gistL = String(r.gist ?? '').toLowerCase();
       const extraKeywords = (r.keywords ?? []).filter((k) => !gistL.includes(String(k).toLowerCase()));
@@ -439,9 +485,12 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
       if (scoreTokens(hay, tokens).score > 0) withheldProcess += 1;
     }
   }
-  const off = Math.max(0, Math.floor(offset) || 0);
+  // 2026-10-15 全量检查（cli-mcp S5）：`limit/offset` 无闸 ⇒ 负数/超大值直接把剂量闸与装载预算绕过
+  // （实测 `session_lookup{limit:-3}` 返回 316.9KB）⇒ 在此处收口（CLI/MCP 两端共用本函数）。
+  const lim = Math.min(200, Math.max(1, Math.floor(Number(limit)) || 10));
+  const off = Math.min(100000, Math.max(0, Math.floor(offset) || 0));
   const rankedAll = hits.sort((a, b) => b.weight - a.weight || a.seq - b.seq);
-  const ranked = rankedAll.slice(off, off + limit);
+  const ranked = rankedAll.slice(off, off + lim);
   // wave2 §1：promotion 标记折叠到段命中上（不参与计分、不改 strong）。
   const bySeg = new Map();
   for (const r of records) {
@@ -469,7 +518,7 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   //   顺序纪律：**先计负荷、后剥皮/摘要**——反过来会把负荷算成 0（哑闸，当日实测教训）。
   let dose = null;
   const longSegs = Number.isInteger(longSessionSegs) ? longSessionSegs : GENRE_DOSE_DEFAULTS.longSessionSegs;
-  const scopedSegCount = records.filter((r) => r.kind !== 'promotion' && (!sess || r.session === sess)).length;
+  const scopedSegCount = records.filter((r) => r.kind !== 'promotion' && (!sess || sessionMatches(r.session, sess))).length;
   const autoStrict = !!sess && scopedSegCount >= longSegs;
   const doseTh = Number.isInteger(doseThreshold) ? doseThreshold : (autoStrict ? GENRE_DOSE_DEFAULTS.strictThreshold : GENRE_DOSE_DEFAULTS.threshold);
   const dg = (!highFidelity && doseTh > 0 && ranked.length) ? doseGate(ranked.map((h) => h.gist), { threshold: doseTh }) : null;
@@ -514,7 +563,7 @@ export function sessionClusters({ storeFile = SESSION_DEFAULTS.storeFile, sessio
   // intent 段里混着系统提示/注入块（<system-reminder>、<hindsight_knowledge>、【起床包】、runtime context…）
   // ——那是脚手架不是对话，会把簇带成 prompt/memory/search。
   const SCAFFOLD = SCAFFOLD_RE;
-  const allScoped = allRecords.filter((r) => kinds.includes(r.kind) && (!sess || r.session === sess));
+  const allScoped = allRecords.filter((r) => kinds.includes(r.kind) && (!sess || sessionMatches(r.session, sess)));
   const recs = allScoped.filter((r) => !SCAFFOLD.test(String(r.gist || '')));
   const skippedScaffold = allScoped.length - recs.length;
   const BLACK = new Set(['edit', 'grep', 'read', 'write', 'pwsh', 'bash', 'apply_patch', 'apply', 'patch', 'node', 'json', 'jsonl', 'md', 'zstd', 'html', 'yaml',
@@ -614,7 +663,7 @@ export function sessionClusters({ storeFile = SESSION_DEFAULTS.storeFile, sessio
 export function sessionThemes({ storeFile = SESSION_DEFAULTS.storeFile, session, limit = 60, seedTopN = 12 } = {}) {
   const allRecords = loadStore('session', storeFile).records;
   const sess = resolvedSess(allRecords, session);
-  const segs = allRecords.filter((r) => (!sess || r.session === sess));
+  const segs = allRecords.filter((r) => (!sess || sessionMatches(r.session, sess)));
   let lo = Infinity, hi = -Infinity;
   for (const r of segs) {
     const t = Date.parse(String(r.time || '')) || null;
@@ -709,7 +758,7 @@ export function lookupTopics({ storeFile = SESSION_DEFAULTS.storeFile, term, ses
 export function renderSessionContext({ storeFile = SESSION_DEFAULTS.storeFile, session, budget = 600 } = {}) {
   const allRecords = loadStore('session', storeFile).records;
   const sess = resolvedSess(allRecords, session);
-  const records = allRecords.filter((r) => r.kind !== 'promotion' && (!sess || r.session === sess));
+  const records = allRecords.filter((r) => r.kind !== 'promotion' && (!sess || sessionMatches(r.session, sess)));
   const counts = { conclusion: 0, action: 0, intent: 0, process: 0 };
   for (const r of records) if (counts[r.kind] !== undefined) counts[r.kind] += 1;
   const sid8 = String(session ?? '').slice(0, 8) || 'all';
@@ -818,12 +867,16 @@ const NODE_EXTRA_CAP = 1200;
 
 /** 机械切块 + 递归聚合（纯函数式：只读 store；写盘用 appendNodes）。切块＝按 turn 边界每 chunkTurns 个 turn 一块。 */
 export function buildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, chunkTurns = 8, segCap = 40, fanout = 4 } = {}) {
-  const sid = String(session ?? 'unknown');
+  const sid = normalizeSid(session);   // 归一（2026-10-15，P1 审计）：两种形态同档，入口统一裸形态
+  // 节点 id 的撞号修复（2026-10-15；二轮审计 D1 修正）：`sid.slice(0,8)` 在 `session-` 前缀上恒等 ⇒ 同前缀会话若
+  // turn/seq 区间与内容指纹也相同，会算出同一个节点 id。修法＝末尾追加**会话指纹**（**全 8 hex**：4 hex 是 djb2 高 16 位，
+  // 对「仅末尾 1 字符不同」的 id 恒定不敏感，实测 4/4 ⇒ 等于没修）；同时保住 `node-<sid8>-L…` 既有前缀形状。
   const sid8 = sid.slice(0, 8);
+  const sidFp = fp8(sid);
   const seen = new Set();
   const segs = [];
   for (const r of loadStore('session', storeFile).records) {
-    if (r.session !== sid || r.kind === 'node' || seen.has(r.id)) continue;
+    if (!sessionMatches(r.session, sid) || r.kind === 'node' || seen.has(r.id)) continue;
     seen.add(r.id);
     segs.push(r);
   }
@@ -863,7 +916,7 @@ export function buildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, chu
     const extra = pickNodeText(items, NODE_EXTRA_CAP);
     const fp = fp8([`L${level}`, children.join(','), gist].join('|'));
     return {
-      id: `node-${sid8}-L${level}-${seq0}-${seq1}-${fp}`,
+      id: `node-${sid8}-L${level}-${seq0}-${seq1}-${fp}-${sidFp}`,
       store: 'session',
       session: sid,
       kind: 'node',
@@ -905,18 +958,18 @@ export function buildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, chu
  *   ③ **无损可展开**——节点带 `children` + `ptr`，全保真仍走 ptr 回原档（既有语义不变）。
  *  节流：`minIntervalMs`（默认 10 分钟）内不重复建（lastBuildAt 由上代节点的 latestSeq 推得）。 */
 export function autoBuildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, minIntervalMs = 600000, force = false, chunkTurns = 8, fanout = 4 } = {}) {
-  const sid = String(session ?? 'unknown');
+  const sid = normalizeSid(session);   // 归一（2026-10-15，P1 审计）：两种形态同档，入口统一裸形态
   const all = loadStore('session', storeFile).records;
   const segs = [];
   const seen = new Set();
   for (const r of all) {
-    if (r.session !== sid || r.kind === 'node' || seen.has(r.id)) continue;
+    if (!sessionMatches(r.session, sid) || r.kind === 'node' || seen.has(r.id)) continue;
     seen.add(r.id);
     segs.push(r);
   }
   const segCount = segs.length;
   const latestSeq = segs.reduce((m, r) => Math.max(m, Number(r.seq) || 0), 0);
-  const nodeRecs = all.filter((r) => r.kind === 'node' && r.session === sid);
+  const nodeRecs = all.filter((r) => r.kind === 'node' && sessionMatches(r.session, sid));
   const latestGen = nodeRecs.reduce((m, r) => Math.max(m, Number(r.treegen) || 0), 0);
   const curNodes = nodeRecs.filter((r) => (Number(r.treegen) || 0) === latestGen);
   const curFp = curNodes.length ? (curNodes[0].treeFingerprint ?? null) : null;
@@ -955,7 +1008,7 @@ export function appendNodes(storeFile, nodes, treegen) {
 /** 当前代（最新 treegen）节点；旧代留档但不参与检索/渲染。 */
 export function latestNodes(storeFile, session) {
   const sid = String(session ?? '');
-  const nodeRecs = loadStore('session', storeFile).records.filter((r) => r.kind === 'node' && r.session === sid);
+  const nodeRecs = loadStore('session', storeFile).records.filter((r) => r.kind === 'node' && sessionMatches(r.session, sid));
   if (!nodeRecs.length) return [];
   const latest = Math.max(...nodeRecs.map((r) => Number(r.treegen) || 0));
   return nodeRecs
@@ -968,7 +1021,7 @@ export function renderTree(storeFile, session) {
   const sid = String(session ?? '');
   const nodes = latestNodes(storeFile, sid);
   if (!nodes.length) return `（无节点：先 node akasha.mjs session tree --build --session ${sid || '<id>'}）`;
-  const segCount = new Set(loadStore('session', storeFile).records.filter((r) => r.session === sid && r.kind !== 'node').map((r) => r.id)).size;
+  const segCount = new Set(loadStore('session', storeFile).records.filter((r) => sessionMatches(r.session, sid) && r.kind !== 'node').map((r) => r.id)).size;
   const levels = [...new Set(nodes.map((n) => n.level))].sort((a, b) => b - a);
   const gen = nodes[0]?.treegen ?? '';
   const lines = [`小阿卡夏·树（${sid.slice(0, 8)}）：${nodes.length} 节点 / ${segCount} 段（treegen ${gen}）`];

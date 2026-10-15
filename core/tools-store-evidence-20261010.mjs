@@ -13,7 +13,7 @@ const run = JSON.parse(readFileSync(join(RUNS, latest), 'utf8'));
 const sha = execFileSync('git', ['-C', OSS, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 
 const NPM_VERSION = { 'akasha-gate': '1.2.1', 'akasha-hooks': '1.2.1', 'akasha-session': '0.3.0', 'akasha-sleep': '1.5.1', 'mcp-akasha': '1.0.0' };
-const REAL = '@akasha-book/* 已装入真实桌面 profile（desktop，DSH 0.2.0-rc.2，端口 <PORT>），hooks.jsonl 有 gate-armed / session-armed / sleep-armed 线；mcp-akasha 经官方 @deepseek-ai/dsh-mcp-client 以 stdio 运行（mcp__akasha__* 工具在本机可用）。';
+const REAL = '@akasha-book/* 已装入真实桌面 profile（desktop，DSH 0.2.0-rc.2，端口 19387），hooks.jsonl 有 gate-armed / session-armed / sleep-armed 线；mcp-akasha 经官方 @deepseek-ai/dsh-mcp-client 以 stdio 运行（mcp__akasha__* 工具在本机可用）。';
 
 mkdirSync(OUT, { recursive: true });
 const rows = [];

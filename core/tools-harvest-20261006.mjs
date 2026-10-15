@@ -44,7 +44,7 @@ const canon = [
   {
     id: 'canon-node-tmpdir-env',
     claim: 'Windows 上 Node 的 os.tmpdir() 读 TEMP/TMP 环境变量（子进程继承）——可用它把某个进程树的临时文件整体改盘。',
-    source: { type: '官方', ref: 'Node.js Docs — os.tmpdir()；2026-10-06 实测：设 TEMP=<LOCAL_PATH> 后 os.tmpdir() 返回 <LOCAL_PATH>' },
+    source: { type: '官方', ref: 'Node.js Docs — os.tmpdir()；2026-10-06 实测：设 TEMP=D:\\dsh-temp 后 os.tmpdir() 返回 D:\\dsh-temp' },
     last_reviewed: D,
     tags: ['node', 'windows']
   }

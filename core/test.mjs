@@ -1157,7 +1157,7 @@ t('MCP：initialize / tools/list / stats / frontier_due / audit / brief / kit / 
     JSON.stringify({ jsonrpc: '2.0', id: 19, method: 'tools/call', params: { name: 'akasha_cross', arguments: { query: '裁定' } } }),
     JSON.stringify({ jsonrpc: '2.0', id: 20, method: 'tools/call', params: { name: 'akasha_cross', arguments: { query: '裁定', reflect: true } } })
   ].join('\n') + '\n';
-  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe });
+  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe, maxBuffer: 1 << 26 });
   const lines = (r.stdout || '').trim().split(/\r?\n/).map(l => JSON.parse(l));
   assert.equal(lines.length, 20, (r.stdout || '') + (r.stderr || ''));
   assert.equal(lines[0].result.serverInfo.name, 'akasha');
@@ -1198,7 +1198,11 @@ t('loop-detect：块重复/变体重复/标点串/零误报（文献方法论机
   assert.ok(stars.exact.length === 0, '纯符号窗不得算块重复');
   const punct = '分析一下：——：——：——：——：——：——：——：——：——：——：然后结束';
   const rp = loopDetect.detectLoops(punct, {});
-  assert.ok(rp.punctRuns.length >= 1 && rp.punctRuns[0].length >= 6, JSON.stringify(rp.punctRuns));
+  // 2026-10-15 判据收紧（P1 标定巡检）：单串 = 合法长串，**不得**再算命中——原判据"单次出现即入列"把良性标点串当环
+  assert.equal(rp.punctRuns.length, 0, '单次出现的标点串不算环（P1 判据收紧）：' + JSON.stringify(rp.punctRuns));
+  const punctDup = '分析一下：——：——：——：——：——：然后结束：——：——：——：——：——：再看一眼。';
+  const rpd = loopDetect.detectLoops(punctDup, {});
+  assert.ok(rpd.punctRuns.length >= 1 && rpd.punctRuns[0].length >= 6, '同串重复 ≥2 才入列：' + JSON.stringify(rpd.punctRuns));
   const rn = loopDetect.detectLoops('普通的一段分析，没有重复内容，也检查不出循环。再补一短句收尾。', {});
   assert.ok(rn.exact.length === 0 && rn.variant.length === 0 && rn.punctRuns.length === 0, JSON.stringify(rn.stats));
   const empty = loopDetect.detectLoops('', {});
@@ -1210,11 +1214,34 @@ t('loop-detect：punctRuns 不含空白（列表不误报）+ 奇周期循环（
   const md = '核对清单：\n  - 甲项\n  - 乙项\n  - 丙项\n  - 丁项';
   assert.equal(loopDetect.punctRuns(md).length, 0, '列表符号不得成串：' + JSON.stringify(loopDetect.punctRuns(md)));
   const tpl = '——：——：——：——';
-  assert.ok(loopDetect.punctRuns(tpl).length >= 1, '模板串仍须命中');
+  assert.ok(loopDetect.punctRuns(tpl).length >= 1, '模板串仍须命中（punctRuns 提取层语义不变——不做重复过滤）');
   // 奇周期：13 字句 ×5 + window 30 —— 旧 step=2 采样只见 2 窗（不足 3），step=1 修正后命中（防回退哨兵）
   const seg = '这是一个奇周期的循环文本啊';
   const odd = loopDetect.detectLoops(seg.repeat(5), { window: 30, blockCount: 3 });
   assert.ok(odd.exact.length >= 1, '奇周期循环应命中：' + JSON.stringify(odd.stats));
+});
+t('loop-detect：punct 判据收紧（2026-10-15）——重复才计环源 + 重复计数 + 合法长串零误伤', () => {
+  assert.ok(loopDetect, 'loop-detect 模块缺失');
+  // ① 真实重复的标点串：应入列且带 punctRepeats 计数（≥2）。注意：串两侧要留汉字/空白边界——
+  //    紧贴的句号会被并入标点串（`。——：…`），那是提取层的真实行为，不该让夹具自欺。
+  const rep = '——：——：——：';
+  const r1 = loopDetect.detectLoops(`前文\n${rep}\n后文\n${rep}\n再后文`, {});
+  assert.ok(r1.punctRuns.length >= 1, '同串重复应命中：' + JSON.stringify(r1));
+  assert.ok((r1.punctRepeats?.[rep] ?? 0) >= 2, '计数应 ≥2：' + JSON.stringify(r1.punctRepeats));
+  // ② 真库同款良性单串（仅 1 次）——判据收紧前会误报，现须为 0
+  const one = loopDetect.detectLoops('标题\n——：——：——：\n正文一句。', {});
+  assert.equal(one.punctRuns.length, 0, '单次出现不得入列：' + JSON.stringify(one.punctRuns));
+  // ③ 合法长破折号串（论文式标点）只有 1 次 ⇒ 不误伤
+  const legit = loopDetect.detectLoops('结论如下：' + '——：'.repeat(9) + '以上。', {});
+  assert.equal(legit.punctRuns.length, 0, '合法长单串不得误伤：' + JSON.stringify(legit.punctRuns));
+  // ④ 多行重复（真库 0fd706f7#16 同款形态：换行分隔的重复标点串）⇒ 命中且计数 ≥2
+  //   （注意：换行会截断"连续串"，三行 ⌀ 计数=2——串首 `——：` 被换行切开；断言按提取层真实行为写）
+  const tri = `看这里\n${rep}\n${rep}\n${rep}\n收尾`;
+  const r3 = loopDetect.detectLoops(tri, {});
+  assert.ok(r3.punctRuns.length >= 1, '多行重复应命中：' + JSON.stringify(r3));
+  assert.ok((r3.punctRepeats?.[rep] ?? 0) >= 2, '计数应 ≥2：' + JSON.stringify(r3.punctRepeats));
+  // ⑤ punctRuns 提取层保持无重复过滤语义（显式契约：过滤只在 detectLoops 层）
+  assert.ok(loopDetect.punctRuns(`x${rep}y`).length >= 1, 'punctRuns 单串提取仍可用（无重复过滤）');
 });
 
 
@@ -3782,7 +3809,11 @@ t('I-11 P0-②：stripGenre 幂等 + 白名单（枚举内剥、枚举外零改�
   assert.equal(lib.stripGenre('done ✓ ok'), 'done ok', '✓ 删除（规整空格）');
   assert.equal(lib.stripGenre('完成。好。'), '完成。', '。好。→。');
   assert.equal(lib.stripGenre('好。开始'), '开始', '行首好。→删');
-  assert.equal(lib.stripGenre('嗯好。继续'), '嗯。继续', '句中好。→。');
+  assert.equal(lib.stripGenre('。好。继续'), '。继续', '标点后好。→吞并');
+  // 2026-10-15 全量检查（S-core-2）回归门：无锚的全局替换会把**词尾的「好」**一起吃掉（真库 18 处，如"偏好。"→"偏。"）
+  assert.equal(lib.stripGenre('产品偏好。论文'), '产品偏好。论文', '词尾好不得吞');
+  assert.equal(lib.stripGenre('你好。正好。'), '你好。正好。', '整句词尾好均不得吞');
+  assert.equal(lib.skeletonCount('产品偏好。论文'), 0, '计数与剥皮须同锚（否则剂量闸被词尾好污染）');
   const keep = '★ ◆ ▶ ①② **粗体** —— 只动枚举内';
   const out = lib.stripGenre(keep);
   assert.equal(out, '★ ◆ ▶ ①② **粗体** —— 只动枚举内', '枚举外字符零改动：' + JSON.stringify(out));
@@ -4909,6 +4940,339 @@ t('GPT 复核二轮批（R7 分页不漏 / R8 账实对齐 / R6 退役链拒回�
   assert.ok(!cur.some((id) => String(id).startsWith('canon-r6t-b')), 'R6：退役链不得回当前集：' + JSON.stringify(cur));
   rmSync(dir, { recursive: true, force: true });
   function PlanCheck(p) { return Array.isArray(p) && p.some((x) => x && x.refused === 'retired'); }
+});
+
+// ── I-13（2026-10-15）：E 题审计确证的四项修复（会话层静默丢数据 ×3 + revise patch 类型） ──
+tz('I-13 V1：completedCallSeqs 按会话过滤——别会话同号 callSeq 不得吞本会话迟到完成版（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i13v1-'));
+  const store = join(dir, 'session.jsonl'); const meta = join(dir, 'meta.json');
+  // 种入：会话 A 已有一条「完成版」（gist 带 ↳、ptr.callSeq=5）
+  writeFileSync(store, JSON.stringify({
+    id: 'seg-sA-5-aaaaaaaa', store: 'session', session: 'sessA', seq: 5, kind: 'action',
+    gist: 'read ↳ ok', keywords: [], tools: ['read'], ptr: { seq: 5, callSeq: 5 }, logged_at: '2026-10-15T00:00:00.000Z'
+  }) + '\n');
+  // 会话 B：水位已推到 6（复现「结果迟到」：rSeq(6) ≯ emitFrom(6)）
+  writeFileSync(meta, JSON.stringify({ sessions: { sessB: { lastSeq: 6, segments: 0 } } }));
+  const recs = [
+    { seq: 5, time: 1791312005000, type: 'tool/call', data: { turn: 1, step: 1, callId: 'c5', name: 'read', arguments: '{"filePath":"A:\\\\x"}' } },
+    { seq: 6, time: 1791312006000, type: 'tool/result', data: { turn: 1, step: 1, toolCallId: 'c5', content: [{ type: 'text', text: 'ok' }] } }
+  ];
+  const fx = join(dir, 'b.jsonl.zstd');
+  writeFileSync(fx, zstdCompressSync(Buffer.from(recs.map((r) => JSON.stringify(r)).join('\n') + '\n')));
+  sessionMod.indexSession({ file: fx, session: 'sessB', storeFile: store, metaFile: meta });
+  const rows = lib.loadStore('session', store).records;
+  const bDone = rows.filter((r) => r.session === 'sessB' && r.kind === 'action' && String(r.gist ?? '').includes('↳'));
+  assert.ok(bDone.length >= 1, 'B 会话迟到完成版必须落库（跨会话同号不得吞）：' + JSON.stringify(rows.filter((r) => r.session === 'sessB').map((r) => r.gist)));
+  rmSync(dir, { recursive: true, force: true });
+});
+tz('I-13 V2：session- 前缀两会话同 seq 同内容不得撞段 id / 被静默跳过（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i13v2-'));
+  const store = join(dir, 'session.jsonl'); const meta = join(dir, 'meta.json');
+  const mk = (name, seq, text) => {
+    const f = join(dir, name + '.jsonl.zstd');
+    writeFileSync(f, zstdCompressSync(Buffer.from(JSON.stringify({ seq, time: 1791312000000 + seq * 1000, type: 'user/message', data: { content: [{ type: 'text', text }] } }) + '\n')));
+    return f;
+  };
+  const r1 = sessionMod.indexSession({ file: mk('a', 1, '同内容'), session: 'session-s1', storeFile: store, metaFile: meta });
+  const r2 = sessionMod.indexSession({ file: mk('b', 1, '同内容'), session: 'session-s2', storeFile: store, metaFile: meta });
+  assert.equal(r1.added, 1);
+  assert.equal(r2.added, 1, '第二个前缀会话的同内容段被误判重复（sid8 撞号）：' + JSON.stringify(r2));
+  const all = lib.loadStore('session', store).records;
+  assert.equal(new Set(all.map((r) => r.id)).size, all.length, '段 id 必须全体唯一');
+  rmSync(dir, { recursive: true, force: true });
+});
+tz('I-13 V3：单帧档案尾部截断不得静默通过（大帧档：部分解出必须带旗标）（能红）', () => {
+  // 二轮审计 D3 修正：原用例的输入（200 字小负载）在 v24.19 解出**空文本**、在 v24.21 直接**抛错**，
+  // 两条路径都绕过新代码 ⇒ 对修复前实现也通过（假红）。可达场景是大负载截断（v24.19 实测解出 ~43KB 部分文本、
+  // 尾行不可解析）⇒ 换成 50k 字符负载，并加一条「完整帧不得误报」的阴性断言防修过头。
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i13v3-'));
+  const line = JSON.stringify({ seq: 1, time: 1791312000000, type: 'user/message', data: { content: [{ type: 'text', text: '甲'.repeat(50000) }] } }) + '\n';
+  const full = zstdCompressSync(Buffer.from(line));
+  const okFile = join(dir, 'intact.zstd');
+  writeFileSync(okFile, full);
+  const rok = sessionMod.readSessionArchive(okFile);
+  assert.equal(rok.frameTruncated, 0, '完整单帧不得误报截断：' + JSON.stringify({ t: rok.frameTruncated, len: rok.text.length }));
+  assert.ok(rok.text.length >= 50000, '完整帧应解出全部内容量级：' + rok.text.length); // 负载 50k 字符 + JSON 壳
+  const badFile = join(dir, 'truncated.zstd');
+  writeFileSync(badFile, full.subarray(0, Math.max(4, full.length - 6)));   // 尾部砍 6 字节
+  let ok = false; let info = null;
+  try { const r = sessionMod.readSessionArchive(badFile); info = r; ok = r.frameTruncated === 1; }
+  catch (e) { ok = false; info = { threw: e.message }; }   // 注释：v24.21 上抛错也算"已暴露"，但本套件在 v24.19 跑，
+  assert.ok(ok, '大帧截断必须报 frameTruncated=1（不得静默通过）：' + JSON.stringify(info)); // 此断言在 v24.19 才具判别力
+  rmSync(dir, { recursive: true, force: true });
+});
+t('I-13 V4：revise 的 patch 必须校验为普通对象（字符串不得被静默展开写入）（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i13v4-'));
+  const f = join(dir, 'canon.jsonl');
+  writeFileSync(f, JSON.stringify({ id: 'canon-i13v4', claim: 'x', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-15', event_time: '2026-10-15' }) + '\n');
+  let threw = false;
+  try { lib.revise('canon', 'canon-i13v4', 'zzz', { file: f }); } catch { threw = true; }
+  assert.ok(threw, '非对象 patch 必须拒绝');
+  const recs = lib.loadStore('canon', f).records;
+  assert.ok(!recs.some((r) => r && Object.prototype.hasOwnProperty.call(r, '0')), '不得写入垃圾键：' + JSON.stringify(recs[recs.length - 1]));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── I-14（2026-10-15）：批量 2 —— 节点 id 撞号 / MCP 日期校验 / schema 漂移 ──
+tz('I-14 V5：session- 前缀两会话的节点 id 不得撞号（能红）', () => {
+  // 二轮审计 D2 修正：节点 id 的 fp 输入含 children（段 id），若夹具段 id 带完整会话名（seg-session-s1-… vs …s2-…），
+  // 旧代码也会算出不同节点 id ⇒ 用例假红。故夹具改用**两会话段 id 完全相同**（模拟修复前数据），并先锁前提。
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i14v5-'));
+  const store = join(dir, 'session.jsonl');
+  const mk = (sid, seq, text) => ({ id: `seg-session--${seq}-x`, store: 'session', session: sid, seq, time: new Date(1791312000000 + seq * 1000).toISOString(), turn: 1, step: 1, kind: 'conclusion', gist: text, keywords: [], tools: [], ptr: {}, logged_at: 'x' });
+  const rows = [];
+  for (const sid of ['session-s1', 'session-s2']) for (let seq = 1; seq <= 4; seq += 1) rows.push(mk(sid, seq, '相同内容' + seq));
+  writeFileSync(store, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const idsOf = (sid) => rows.filter((r) => r.session === sid).map((r) => r.id).sort().join(',');
+  assert.equal(idsOf('session-s1'), idsOf('session-s2'), '夹具前提：两会话段 id 必须完全相同（否则测不到节点撞号）');
+  const t1 = sessionMod.buildTree({ session: 'session-s1', storeFile: store, chunkTurns: 2, fanout: 4 });
+  const t2 = sessionMod.buildTree({ session: 'session-s2', storeFile: store, chunkTurns: 2, fanout: 4 });
+  const ids1 = new Set(t1.nodes.map((n) => n.id));
+  const ids2 = t2.nodes.map((n) => n.id);
+  assert.ok(t1.nodes.length > 0 && t2.nodes.length > 0, '夹具：两侧都应有节点');
+  assert.ok(ids2.every((id) => !ids1.has(id)), '两前缀会话节点 id 必须互不相同：' + JSON.stringify([...ids1].slice(0, 3)) + ' vs ' + JSON.stringify(ids2.slice(0, 3)));
+  rmSync(dir, { recursive: true, force: true });
+});
+t('I-14 V6：MCP 读工具必须校验日期（非法 since 不得静默扭曲结果）（能红）', () => {
+  const probe = [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'akasha_brief', arguments: { query: '裁定', since: 'bogus' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'akasha_cross', arguments: { query: '裁定', since: 'bogus' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'akasha_metrics', arguments: { since: 'bogus' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'akasha_session_lookup', arguments: { query: '银杏', since: 'bogus' } } })
+  ].join('\n') + '\n';
+  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe, maxBuffer: 1 << 26, env: { ...process.env, AKASHA_QUERY_LOG: 'off' } });
+  const lines = (r.stdout || '').trim().split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(lines.length, 4, (r.stdout || '') + (r.stderr || ''));
+  lines.forEach((l, i) => {
+    const txt = l.result && l.result.content && l.result.content[0] && l.result.content[0].text || '';
+    assert.ok(/error/.test(txt), `第 ${i + 1} 条（非法日期）应以 error 返回：` + txt.slice(0, 160));
+  });
+});
+t('I-14 V7：MCP schema 应声明实现支持的 pretty / notApplicable（能红）', () => {
+  const probe = [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+  ].join('\n') + '\n';
+  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe, maxBuffer: 1 << 26, env: { ...process.env, AKASHA_QUERY_LOG: 'off' } });
+  const obj = JSON.parse((r.stdout || '').trim().split(/\r?\n/)[0]);
+  const tools = obj.result.tools;
+  const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+  assert.ok(byName.akasha_lookup.inputSchema.properties.pretty, 'lookup 应声明 pretty');
+  assert.ok(byName.akasha_cross.inputSchema.properties.pretty, 'cross 应声明 pretty');
+  assert.ok(byName.akasha_mirror_match.inputSchema.properties.notApplicable, 'mirror_match 应声明 notApplicable');
+});
+
+// ── I-15（2026-10-15）：按 P2/P3 审计缺口补的用例（迁移去重 / until 侧 / 非普通对象 / 残缺第二帧 / schema 覆盖面 / CLI-MCP 口径） ──
+tz('I-15 G1：老 id 段 + --full 重扫不得重复落库（迁移安全去重）（能红）', () => {
+  // P3 判定：本批唯一"守着真实迁移却零用例"的修复——回退后七条全绿，而真库 59MB/3.8 万段一旦失效就是整批翻倍。
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i15g1-'));
+  const store = join(dir, 'session.jsonl'); const meta = join(dir, 'meta.json');
+  const fx = join(dir, 'fx.jsonl.zstd');
+  const recs = [{ seq: 1, time: 1791312000000, type: 'user/message', data: { content: [{ type: 'text', text: '迁移安全去重夹具' }] } }];
+  writeFileSync(fx, zstdCompressSync(Buffer.from(recs.map((r) => JSON.stringify(r)).join('\n') + '\n')));
+  const r1 = sessionMod.indexSession({ file: fx, session: 'sMig', storeFile: store, metaFile: meta });
+  assert.equal(r1.added, 1);
+  // 把已落库段改写成**老 id 方案**（模拟「修复前的历史数据」）
+  const rows = readFileSync(store, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1, '夹具：应恰好一条段');
+  const oldRows = rows.map((r) => ({ ...r, id: `seg-${String(r.session).slice(0, 8)}-${r.seq}-deadbeef` }));
+  writeFileSync(store, oldRows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const r2 = sessionMod.indexSession({ file: fx, session: 'sMig', storeFile: store, metaFile: meta, full: true });
+  assert.equal(r2.added, 0, '内容相同的段不得重复落库（内容键去重，与 id 形状解耦）：' + JSON.stringify(r2));
+  assert.equal(readFileSync(store, 'utf8').split('\n').filter(Boolean).length, 1, '整体行数不得翻倍');
+  rmSync(dir, { recursive: true, force: true });
+});
+t('I-15 G2：MCP 读工具的 until 侧同样必须校验（能红）', () => {
+  // P3 判定：V6 只覆盖 since；until=bogus 此前被静默吞掉/忽略。断言改精确：payload 必须是以 error 打头的对象。
+  const probe = [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'akasha_brief', arguments: { query: '裁定', until: 'bogus' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'akasha_cross', arguments: { query: '裁定', until: 'bogus' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'akasha_session_lookup', arguments: { query: '银杏', until: 'bogus' } } })
+  ].join('\n') + '\n';
+  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe, maxBuffer: 1 << 26, env: { ...process.env, AKASHA_QUERY_LOG: 'off' } });
+  const lines = (r.stdout || '').trim().split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(lines.length, 3, (r.stdout || '') + (r.stderr || ''));
+  lines.forEach((l, i) => {
+    const txt = (l.result && l.result.content && l.result.content[0] && l.result.content[0].text) || '';
+    const obj = JSON.parse(txt);
+    assert.ok(obj && typeof obj.error === 'string' && obj.error.length > 0, `第 ${i + 1} 条（非法 until）payload.error 必须存在：` + txt.slice(0, 160));
+  });
+});
+t('I-15 G3：revise 必须拒绝非普通对象（Date/Map/RegExp/数组），且不得落库（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i15g3-'));
+  const f = join(dir, 'canon.jsonl');
+  writeFileSync(f, JSON.stringify({ id: 'canon-i15g3', claim: 'x', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-15', event_time: '2026-10-15' }) + '\n');
+  const before = readFileSync(f, 'utf8');
+  for (const [label, val] of [['Date', new Date()], ['Map', new Map()], ['RegExp', /x/], ['Array', []], ['null', null], ['string', 'zzz']]) {
+    let threw = false;
+    try { lib.revise('canon', 'canon-i15g3', val, { file: f }); } catch { threw = true; }
+    assert.ok(threw, `非普通对象「${label}」必须被拒（否则会落一条内容相同的假修订）`);
+  }
+  assert.equal(readFileSync(f, 'utf8'), before, '拒绝路径不得写入任何内容');
+  rmSync(dir, { recursive: true, force: true });
+});
+tz('I-15 G4：第二帧魔数残缺（半写）必须报 frameTruncated（能红）', () => {
+  // P3 判定：D4 的近似魔数扫描零用例。构造：帧1 完整 + 帧2 的魔数被破坏（28 B5 2F FE）⇒ hits 只数到 1 ⇒ 落单帧分支。
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i15g4-'));
+  const f = join(dir, 'halfsecond.zstd');
+  const line = (t) => Buffer.from(JSON.stringify({ seq: 1, time: 1791312000000, type: 'user/message', data: { content: [{ type: 'text', text: t }] } }) + '\n');
+  const frame1 = zstdCompressSync(line('第一帧'));
+  const frame2 = zstdCompressSync(line('第二帧'));
+  const brokenMagic = Buffer.from([0x28, 0xb5, 0x2f, 0xfe]);   // 第三字节就不是 0xfd ⇒ 完整魔数扫不到
+  writeFileSync(f, Buffer.concat([frame1, brokenMagic, frame2.subarray(4)]));
+  let ok = false; let info = null;
+  try { const r = sessionMod.readSessionArchive(f); info = r; ok = r.frameTruncated === 1; }
+  catch (e) { info = { threw: e.message }; }
+  assert.ok(ok, '残缺第二帧必须置 frameTruncated=1：' + JSON.stringify(info));
+  rmSync(dir, { recursive: true, force: true });
+});
+t('I-15 G5：pretty 声明必须覆盖 additionalProperties:false 的工具（能红）', () => {
+  // P3 判定：V7 只查了 3 个普通工具，真正的坑在 11 个「严格 schema」工具上（半拉子实现会绕过它们）。
+  const probe = [JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })].join('\n') + '\n';
+  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe, maxBuffer: 1 << 26, env: { ...process.env, AKASHA_QUERY_LOG: 'off' } });
+  const tools = JSON.parse((r.stdout || '').trim().split(/\r?\n/)[0]).result.tools;
+  const strict = tools.filter((t) => t.inputSchema && t.inputSchema.additionalProperties === false);
+  assert.ok(strict.length >= 5, '夹具：应有若干严格 schema 工具：' + strict.length);
+  const missing = strict.filter((t) => !t.inputSchema.properties || !t.inputSchema.properties.pretty).map((t) => t.name);
+  assert.deepEqual(missing, [], '严格 schema 工具也必须声明 pretty（否则客户端会以为不能传）：' + JSON.stringify(missing));
+});
+
+tz('I-16 P1：同一档案的两种会话形态（裸 / session- 前缀）不得孪生重复（能红）', () => {
+  // P1 审计：resolveSessionFile 把 `abc…` 与 `session-abc…` 解析到同一档案，而库里曾按两种形态分别落段
+  // （真库跨键同内容 5376 行）。入口归一后：第二种形态再索引必须 added=0、库不增长；且两种形态都能查到同一批段。
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i16p1-'));
+  const store = join(dir, 'session.jsonl'); const meta = join(dir, 'meta.json');
+  const fx = join(dir, 'fx.jsonl.zstd');
+  const sid = 'abcd1234-0000-1111-2222-333344445555';
+  const recs = [{ seq: 1, time: 1791312000000, type: 'user/message', data: { content: [{ type: 'text', text: '对偶形态夹具' }] } }];
+  writeFileSync(fx, zstdCompressSync(Buffer.from(recs.map((r) => JSON.stringify(r)).join('\n') + '\n')));
+  const r1 = sessionMod.indexSession({ file: fx, session: sid, storeFile: store, metaFile: meta });
+  assert.equal(r1.added, 1);
+  const r2 = sessionMod.indexSession({ file: fx, session: 'session-' + sid, storeFile: store, metaFile: meta });
+  assert.equal(r2.added, 0, '带前缀形态不得再落一份（入口归一）：' + JSON.stringify(r2));
+  const rows = readFileSync(store, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1, '库不得出现孪生行：' + rows.map((r) => r.id));
+  const rowsUnderBare = sessionMod.lookupSegments('对偶形态', { storeFile: store, session: sid });
+  const rowsUnderPrefixed = sessionMod.lookupSegments('对偶形态', { storeFile: store, session: 'session-' + sid });
+  assert.equal(rowsUnderBare.length, rowsUnderPrefixed.length, '两种形态必须查到同一批段（读侧兼容老键）');
+  assert.ok(rowsUnderBare.length >= 1, '至少应有一条命中');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── I-17（2026-10-15）：backlog 清理批（pretty 缩进 / notApplicable 空对象 / today 校验 / event_time 格式 / 日志源 / CLI 报错样式） ──
+t('I-17 F3：MCP pretty 输出必须保留缩进（不得被剥皮折掉）（能红）', () => {
+  const probe = [JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'akasha_summary', arguments: { pretty: true, per: 1 } } })].join('\n') + '\n';
+  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe, maxBuffer: 1 << 26, env: { ...process.env, AKASHA_QUERY_LOG: 'off' } });
+  const txt = JSON.parse((r.stdout || '').trim().split(/\r?\n/)[0]).result.content[0].text;
+  assert.ok(/\n {2}"/.test(txt), 'pretty 应保留两空格缩进（stripGenre 曾把连续空格折成一个）：' + JSON.stringify(txt.slice(0, 140)));
+});
+t('I-17 F4：mirrorMatch 的 notApplicable 空对象必须与「不过滤」同义（能红）', () => {
+  // 空 ctx 下 ne 型条件会「碰巧命中」（undefined !== 'solution'）⇒ 旧口径会把条目静默排除。
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i17f4-'));
+  const file = join(dir, 'mirror.jsonl');
+  writeFileSync(file, JSON.stringify({ id: 'mirror-i17-a', situation: '口令排查', behavior: 'b', outcome: 'o', social_reaction: 's', emotion: 'e', patterns: ['x'], role: 'solution', not_applicable: { role: { ne: 'solution' } } }) + '\n');
+  const base = { file, mode: 'task' };
+  const none = lib.mirrorMatch('口令排查', base).map((h) => h.id);
+  const empty = lib.mirrorMatch('口令排查', { ...base, notApplicable: {} }).map((h) => h.id);
+  assert.deepEqual(empty, none, '空对象不得改变结果：' + JSON.stringify({ none, empty }));
+  const fired = lib.mirrorMatch('口令排查', { ...base, notApplicable: { role: 'other' } }).map((h) => h.id);
+  assert.deepEqual(fired, [], '非空且命中条件时仍须排除（防修过头）：' + JSON.stringify(fired));
+  rmSync(dir, { recursive: true, force: true });
+});
+t('I-17 F6a：MCP 的 today 必须校验（audit/kit/show 同族）（能红）', () => {
+  const probe = [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'akasha_audit', arguments: { today: 'bogus' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'akasha_kit', arguments: { today: '15/10/2026' } } })
+  ].join('\n') + '\n';
+  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe, maxBuffer: 1 << 26, env: { ...process.env, AKASHA_QUERY_LOG: 'off' } });
+  const lines = (r.stdout || '').trim().split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+  lines.forEach((l, i) => {
+    const obj = JSON.parse(l.result.content[0].text);
+    assert.ok(obj && typeof obj.error === 'string' && obj.error.includes('today'), `第 ${i + 1} 条（非法 today）必须报 today 错：` + l.result.content[0].text.slice(0, 120));
+  });
+});
+t('I-17 F6b：orphan_add 的 event_time 必须校验格式（能红，写沙箱）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i17f6b-'));
+  const probe = [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'akasha_orphan_add', arguments: { summary: '格式校验夹具', event_time: '15/10/2026' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'akasha_orphan_add', arguments: { summary: '合法夹具', event_time: '2026-10-15' } } })
+  ].join('\n') + '\n';
+  const r = spawnSync(process.execPath, [join(ROOT, 'mcp.mjs')], { cwd: ROOT, encoding: 'utf8', input: probe, maxBuffer: 1 << 26, env: { ...process.env, AKASHA_ROOT: dir, AKASHA_LOGS: dir, AKASHA_QUERY_LOG: 'off' } });
+  const lines = (r.stdout || '').trim().split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+  const bad = JSON.parse(lines[0].result.content[0].text);
+  assert.ok(bad && typeof bad.error === 'string', '非法 event_time 必须拒（不得落库后被静默排除）：' + lines[0].result.content[0].text.slice(0, 140));
+  const okObj = JSON.parse(lines[1].result.content[0].text);
+  assert.ok(!okObj.error, '合法 event_time 不得误伤：' + JSON.stringify(okObj).slice(0, 140));
+  const store = join(dir, 'orphan.jsonl');
+  assert.ok(readFileSync(store, 'utf8').includes('"2026-10-15"'), '归一后应为 YYYY-MM-DD 落库');
+  assert.ok(!readFileSync(store, 'utf8').includes('15/10/2026'), '非法值不得落库');
+  rmSync(dir, { recursive: true, force: true });
+});
+t('I-17 F7：metrics 的日志源必须吃 AKASHA_LOGS（不得写死 repo/logs）（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i17f7-'));
+  const run = (env) => {
+    const r = spawnSync(process.execPath, [join(ROOT, 'akasha.mjs'), 'metrics', '--json'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 26, env: { ...process.env, ...env } });
+    return (r.stdout || '').trim();
+  };
+  const real = run({});
+  const empty = run({ AKASHA_LOGS: dir });
+  assert.ok(real.length > 0 && empty.length > 0, '两次都应有输出');
+  assert.notEqual(empty, real, 'AKASHA_LOGS 指向空目录时结果必须变化（否则日志源写死）：' + JSON.stringify({ real: real.slice(0, 80), empty: empty.slice(0, 80) }));
+  rmSync(dir, { recursive: true, force: true });
+});
+t('I-17 F8：CLI revise 的报错必须是友好单行（不得甩 Node 栈）（能红）', () => {
+  const r = spawnSync(process.execPath, [join(ROOT, 'akasha.mjs'), 'revise', 'canon', '__no_such__', '--data', '"not-an-object"'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 26, env: { ...process.env, AKASHA_QUERY_LOG: 'off' } });
+  const err = (r.stderr || '') + (r.stdout || '');
+  assert.ok(/patch 必须是普通对象/.test(err), '应给出可读的错误说明：' + err.slice(0, 160));
+  assert.ok(!/\n\s+at /.test(err), '不得输出 Node 调用栈：' + err.slice(0, 200));
+  assert.notEqual(r.status, 0, '应带非零退出码');
+});
+
+tz('I-18 会话写法不得把读面切成两半：裸形态与 session- 前缀形态必须看到同一批段（能红）', () => {
+  // 2026-10-15 全量检查（session-tools 单元 + Lead 复现）：`session.mjs` 的 `!== sess` 一族（431/437/467/477）
+  // 未随同一改动的 `=== sess` 一族换用 sessionMatches ⇒ 库里既有裸形态（37012 行）又有前缀形态（2820 行）时，
+  // 两种写法**命中集合互不相交**（实测：裸 2028 段 vs 前缀 1089 段、主题命中 49 vs 9）。
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i18-'));
+  const store = join(dir, 'session.jsonl');
+  const sid = 'abcd1234-0000-1111-2222-333333333333';
+  const rows = [
+    // 同一会话：一行存裸形态、一行存前缀形态（模拟库里两种写法并存）
+    { id: 'seg-a-1-x', store: 'session', session: sid, seq: 1, kind: 'conclusion', gist: '同一会话甲', time: new Date(1791312000000).toISOString(), turn: 1, step: 1, keywords: [], tools: [], ptr: {}, logged_at: 'x' },
+    { id: 'seg-a-2-x', store: 'session', session: 'session-' + sid, seq: 2, kind: 'conclusion', gist: '同一会话乙', time: new Date(1791312001000).toISOString(), turn: 1, step: 1, keywords: [], tools: [], ptr: {}, logged_at: 'x' }
+  ];
+  writeFileSync(store, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const a = sessionMod.lookupSegmentsDetailed('同一会话', { storeFile: store, session: sid, limit: 10 });
+  const b = sessionMod.lookupSegmentsDetailed('同一会话', { storeFile: store, session: 'session-' + sid, limit: 10 });
+  assert.equal(a.scopeSegs ?? a.scoped, b.scopeSegs ?? b.scoped, '两种写法的作用域必须相同：' + JSON.stringify({ a: a.scopeSegs ?? a.scoped, b: b.scopeSegs ?? b.scoped }));
+  assert.equal(a.hits.length, b.hits.length, '两种写法的命中数必须相同：' + JSON.stringify({ a: a.hits.length, b: b.hits.length }));
+  assert.equal(a.hits.length, 2, '两种写法都应看到两行：' + JSON.stringify(a.hits.map((h) => h.id)));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('I-19 CLI 侧入参闸（今天四套新检测器只 spawn mcp.mjs ⇒ CLI 面零覆盖，本条补上）（能红）', () => {
+  // 2026-10-15 全量检查（cli-mcp S4）：修复面（lib+mcp）− 覆盖面（只有 MCP 用例）的差集，恰好就是 S1/S2。
+  const run = (argv, env = {}) => spawnSync(process.execPath, [join(ROOT, 'akasha.mjs'), ...argv], {
+    cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 24, env: { ...process.env, AKASHA_QUERY_LOG: 'off', ...env },
+  });
+  // ① 非法 today（CLI 面）必须非零退出 + 单行可读报错（不得甩栈）
+  const a = run(['audit', '--today', 'bogus', '--json']);
+  assert.notEqual(a.status, 0, '非法 today 必须非零退出：' + JSON.stringify({ status: a.status, out: (a.stdout || '').slice(0, 80) }));
+  const aErr = (a.stderr || '') + (a.stdout || '');
+  assert.ok(/today/.test(aErr), '应指出是 today 的问题：' + aErr.slice(0, 120));
+  assert.ok(!/\n\s+at /.test(aErr), '不得输出 Node 调用栈：' + aErr.slice(0, 160));
+  // ② 读工具族同样不得裸传（此前 agePrefix 会被静默劣化成「日期未知」）
+  const b = run(['lookup', '门档', '--today', 'bogus']);
+  assert.notEqual(b.status, 0, 'lookup --today bogus 必须非零退出（原为 exit 0 + 标注劣化）');
+  // ③ 合法值仍须正常（防修过头）
+  const c = run(['audit', '--today', '2026-10-15', '--json']);
+  assert.equal(c.status, 0, '合法 today 不得误伤：' + (c.stderr || '').slice(0, 120));
+  // ④ CLI orphan add 的 event-time 必须校验（沙箱根：建一个合法最小根，避免"拒绝静默建空库"）
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i19root-'));
+  for (const s of ['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier']) writeFileSync(join(dir, `${s}.jsonl`), '');
+  const d = run(['orphan', 'add', '--summary', '夹具', '--observed', '观测', '--event-time', '15/10/2026'], { AKASHA_ROOT: dir, AKASHA_LOGS: dir });
+  assert.notEqual(d.status, 0, '非法 event-time 必须非零退出（原先原样落库且 check 全绿）：' + JSON.stringify({ status: d.status, out: (d.stdout || '').slice(0, 120) }));
+  const e = run(['orphan', 'add', '--summary', '夹具', '--observed', '观测', '--event-time', '2026-10-15'], { AKASHA_ROOT: dir, AKASHA_LOGS: dir });
+  assert.equal(e.status, 0, '合法 event-time 不得误伤：' + (e.stderr || '').slice(0, 120));
+  rmSync(dir, { recursive: true, force: true });
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);

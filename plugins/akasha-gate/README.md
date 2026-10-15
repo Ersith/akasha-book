@@ -37,7 +37,7 @@
 
 ```powershell
 cd <LOCAL_PATH>
-<LOCAL_PATH> pack
+F:\h\all\Nodejs\npm.cmd pack
 # 然后：plugin_manager install_bundle <tgz 绝对路径>（新 bundle 会 HMR 热生效）
 ```
 

@@ -2,9 +2,18 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, detectConflicts, multiRecall, rollbackBatch, memoryDiff, conflictReport, stripGenre, autonomyReadings, expandRecord, assertDataRoot, recordRejected, listRejected, blindspotsFor, progressiveRecall, calibrationOf, generationInfo, committedOf, blindspotMap, renderDiscipline, verifyDiscipline, STORES, stats, lookupDetailed, normalizeDateArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS, reviewPack, appendReviewLog, readReviewLog, nowSnapshot } from './lib.mjs';
+import { checkAll, detectConflicts, multiRecall, rollbackBatch, memoryDiff, conflictReport, stripGenre, autonomyReadings, expandRecord, assertDataRoot, recordRejected, listRejected, blindspotsFor, progressiveRecall, calibrationOf, generationInfo, committedOf, blindspotMap, renderDiscipline, verifyDiscipline, STORES, stats, lookupDetailed, normalizeDateArg, dayArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, phaseStabilityCheck, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS, reviewPack, appendReviewLog, readReviewLog, nowSnapshot } from './lib.mjs';
 import { applyPlan, replayHistory, revokePlan, sleepPlan, sleepRun, productionForceRejected } from './sleep.mjs';
 import { indexSession, autoBuildTree, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, buildTopics, lookupTopics, appendSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
+
+// ── 顶层兜底（2026-10-15 全量检查；F8 那一类的**根治**）────────────────────────────
+// 起因：入参闸开始抛错后（`today`/`event_time` 等），CLI 会把整段 Node 栈甩给用户（先给 revise 分支加过 try/catch，
+// 属于"改半边"）。这里统一收口：**任何未捕获错误 ⇒ 单行可读消息 + exit 1**；要栈就 `AKASHA_DEBUG=1`。
+process.on('uncaughtException', (e) => {
+  console.error(String(e?.message ?? e));
+  if (process.env.AKASHA_DEBUG) console.error(e?.stack ?? '');
+  process.exit(1);
+});
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -64,8 +73,8 @@ switch (cmd) {
     if (perspective && !['world', 'experience'].includes(perspective)) { console.error('--perspective 须为 world|experience'); code = 1; break; }
     const __doseTh = Number.isFinite(Number(flags['dose-threshold'])) ? Number(flags['dose-threshold']) : undefined;   // I-12 P1-③：0=关闸
     const { hits, stats, knowledge, budget, rrf, trace, dose } = recallMode
-      ? multiRecall(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, doseThreshold: __doseTh, trace: !!flags.trace, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, ...__paging })
-      : lookupDetailed(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, doseThreshold: __doseTh, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, perspective, trace: !!flags.trace, ...__paging });
+      ? multiRecall(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, doseThreshold: __doseTh, trace: !!flags.trace, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: dayArg(flags.today, 'today'), loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, ...__paging })
+      : lookupDetailed(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, doseThreshold: __doseTh, since: rSel.day, until: rUnt.day, includeUndated: !!flags.undated, includeRefuted: !!flags['include-refuted'], today: dayArg(flags.today, 'today'), loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, tag: flags.tag ? String(flags.tag) : undefined, perspective, trace: !!flags.trace, ...__paging });
     const tierOf = (h) => (h.displayTier ? ' ' + h.displayTier : '') + (h.stale ? ' 待复核' : '') + (h.refuted ? ' refuted' : '');
     // #35 --trace（2026-10-12 窗口 5）：逐条列出计分零件（可审、可复核、可 A/B）。
     const renderTrace = (t) => [
@@ -96,10 +105,14 @@ switch (cmd) {
   }
   case 'brief': {
     if (flags.all) { console.error('六库 brief 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
-    if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
-    if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
+    // 日期口径统一（2026-10-15，P2 审计 F1）：校验过还不够——**必须把归一后的 day 传下去**。
+    // 原来校验通过后仍传 raw 字符串 ⇒ 同一参数 CLI 与 MCP 结果不一致（实测 since=2026-10-08T02:00:00+08:00：
+    // CLI 只中 1 条、MCP 中 2 条）。
+    const bSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: null };
+    const bUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
+    if (!bSel.ok || !bUnt.ok) { console.error(bSel.error || bUnt.error); code = 1; break; }
     const __doseThB = Number.isFinite(Number(flags['dose-threshold'])) ? Number(flags['dose-threshold']) : undefined;   // I-12 P1-③：0=关闸
-    const b = brief(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, doseThreshold: __doseThB, perStore: Number(flags.per) || 3, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
+    const b = brief(rest.join(' '), { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, doseThreshold: __doseThB, perStore: Number(flags.per) || 3, since: bSel.day, until: bUnt.day, includeRefuted: !!flags['include-refuted'], today: dayArg(flags.today, 'today'), loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
     const lines = [`主题简报「${b.query}」：` + (b.groups.length ? `命中 ${b.groups.length} 库` : '无命中')];
     // #31 --ladder（2026-10-12 窗口 5）：先亮「停在哪一层、为何没下钻」。
     if (flags.ladder && Array.isArray(b.ladder)) {
@@ -188,18 +201,26 @@ switch (cmd) {
   }
   case 'revise': {
     const store = rest[0]; const id = rest[1];
-    const patch = flags['data-file']
-      ? JSON.parse(readFileSync(flags['data-file'], 'utf8'))
-      : JSON.parse(flags.data || '{}');
-    const r = revise(store, id, patch, { allowProtocol: flags['allow-protocol'] === true });
-    print(r, `已修订：${id} → ${r.id}（supersedes ${r.supersedes}）`);
+    // 报错样式统一（2026-10-15，P2 审计 F8）：原样抛出会打一整段 Node 栈，而其它分支都是友好单行。
+    try {
+      const patch = flags['data-file']
+        ? JSON.parse(readFileSync(flags['data-file'], 'utf8'))
+        : JSON.parse(flags.data || '{}');
+      const r = revise(store, id, patch, { allowProtocol: flags['allow-protocol'] === true });
+      print(r, `已修订：${id} → ${r.id}（supersedes ${r.supersedes}）`);
+    } catch (e) {
+      console.error(e.message);
+      code = 1;
+      break;
+    }
     break;
   }
   case 'cross': {
     if (flags.all) { console.error('六库 cross 没有 --all（那是会话层动作段归并的开关）。被 refute 的记录用 --include-refuted，或 show <id>。'); code = 1; break; }
-    if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
-    if (flags.until && !normalizeDateArg(flags.until).ok) { console.error(normalizeDateArg(flags.until).error); code = 1; break; }
-    const c = cross(rest[0] || '', { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, perStore: flags.per ? Number(flags.per) : undefined, since: flags.since, until: flags.until, includeRefuted: !!flags['include-refuted'], today: typeof flags.today === 'string' ? flags.today : undefined, loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
+    const cSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: null };
+    const cUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
+    if (!cSel.ok || !cUnt.ok) { console.error(cSel.error || cUnt.error); code = 1; break; }
+    const c = cross(rest[0] || '', { via: 'cli', reflect: !!flags.reflect, depth: typeof flags.depth === 'string' ? flags.depth : undefined, perStore: flags.per ? Number(flags.per) : undefined, since: cSel.day, until: cUnt.day, includeRefuted: !!flags['include-refuted'], today: dayArg(flags.today, 'today'), loadBalance: !!flags['load-balance'], balanceLog: typeof flags['balance-log'] === 'string' ? flags['balance-log'] : undefined, offset: Number(flags.offset) || 0, contextBudget: flags.full ? false : undefined, maxTokens: Number.isFinite(Number(flags['max-tokens'])) ? Number(flags['max-tokens']) : undefined });
     const lines = [];
     const dateNote = () => {
       if (!(flags.since || flags.until)) return;
@@ -471,7 +492,7 @@ switch (cmd) {
         would_refute: flags.refute || '（待补）',
         severity: flags.severity || '中',
         created: flags.created || new Date().toISOString().slice(0, 10),
-        ...(flags['event-time'] ? { event_time: flags['event-time'] } : {})
+        ...(flags['event-time'] ? { event_time: dayArg(flags['event-time'], 'event-time') } : {})   // 2026-10-15（cli-mcp S1）：原先零校验，`15/10/2026` 甚至 `9999-13-45` 都落库且 check 全绿
       };
       const r = appendRecord('orphan', rec);
       print(r, '已追加：' + r.id);
@@ -580,7 +601,9 @@ switch (cmd) {
     break;
   }
   case 'metrics': {
-    const r = metrics({ since: flags.since });
+    // 日期校验（2026-10-15，P2 审计 F2）：原样透传 ⇒ `metrics --since bogus` 静默全 0（对照 14456）。
+    if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
+    const r = metrics({ since: flags.since ? normalizeDateArg(flags.since).day : undefined });
     const c = r.counters;
     const rate = c.tools ? Math.round((1 - c.toolErrors / c.tools) * 100) + '%' : '—';
     const lines = [
@@ -763,7 +786,9 @@ switch (cmd) {
       break;
     }
     if (sub === 'list') {
-      const items = readReviewLog({ limit: Number(flags.limit) || 20, since: typeof flags.since === 'string' ? flags.since : undefined });
+      // 日期校验（2026-10-15，P2 审计 F2）：原样透传 ⇒ `review list --since bogus` 会打印与事实相反的「复审线暂无记录」。
+      if (flags.since && !normalizeDateArg(flags.since).ok) { console.error(normalizeDateArg(flags.since).error); code = 1; break; }
+      const items = readReviewLog({ limit: Number(flags.limit) || 20, since: flags.since ? normalizeDateArg(flags.since).day : undefined });
       print(items, items.length
         ? items.map(x => `${String(x.ts).slice(0, 16)}  ${x.verdict}  ${x.by}  ${x.id}${x.note ? ' · ' + x.note : ''}`).join('\n')
         : '（复审线暂无记录；用 review log 留痕）');
@@ -829,6 +854,10 @@ switch (cmd) {
     }
     if (sub === 'lookup') {
       const q = rest.slice(1).join(' ');
+      // 日期校验 + 归一（2026-10-15，P2 审计 F2）：与主库检索同口径。
+      const lSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: null };
+      const lUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: null };
+      if (!lSel.ok || !lUnt.ok) { console.error(lSel.error || lUnt.error); code = 1; break; }
       // (a) 2026-10-11：走 detailed 版 ⇒ 返回覆盖度（主题命中 M / 作用域内 X 段 / 本页 N / 续取 offset）
       const d = lookupSegmentsDetailed(q, {
         storeFile,
@@ -837,8 +866,8 @@ switch (cmd) {
         //                混进来会把"调过什么"误读成"想过什么" ⇒ 看动作面请显式 --actions。
         kind: flags.kind ? flags.kind : (flags.actions ? 'intent,action,conclusion' : undefined),
         level: flags.level,
-        since: flags.since,
-        until: flags.until,
+        since: lSel.day,
+        until: lUnt.day,
         includeProcess: !!flags.process,
         rawProcess: !!flags['raw-process'],   // I-11 体裁隔离 P0：反思通道（含过程段、不剥皮）
         reflect: !!flags.reflect,

@@ -79,17 +79,39 @@ export function punctRuns(raw, minRun = 6) {
 }
 
 /**
- * detectLoops(text, opts) -> { exact, variant, punctRuns, stats }
+ * 重复标点串过滤（2026-10-15，P1 判据收紧）：同串出现 ≥2 次才入列，并按首现顺序输出。
+ *  背景：P0 命中里 punct 类占 25%，抽查全为「良性单次串」（表格/标题/论文式破折号）——
+ *  单次出现是**合法长串**，不是环；只有同一串重复出现才构成"原地打转"的最小证据。
+ *  ⚠️ 刻意不做「连续行内三连」加严：采样计数（如每 0.5s 一行 `——：` 进度条）是**正常用法**，
+ *  会伤害合法长任务；病态与否交给 P1 候选的「60s 窗口 ≥3 次」时间聚集判据 + 人工判读。
+ */
+export function punctDupRuns(raw) {
+  const counts = new Map(); // key（前 40 字）→ 次数
+  const order = [];         // 首现顺序
+  for (const run of punctRuns(raw)) {
+    if (!counts.has(run)) order.push(run);
+    counts.set(run, (counts.get(run) ?? 0) + 1);
+  }
+  const runs = order.filter((r) => (counts.get(r) ?? 0) >= 2);
+  const repeats = {};
+  for (const r of runs) repeats[r] = counts.get(r);
+  return { runs, counts: repeats };
+}
+
+/**
+ * detectLoops(text, opts) -> { exact, variant, punctRuns, punctRepeats, stats }
  *  exact：归一化后 window 字滑窗出现 ≥ blockCount 次（块重复）；
  *  variant：相距 ≥ 2×window 的两窗 Jaccard ≥ sim（变体重复，≈语义近似代理）；
- *  punctRuns：标点串（原文本统计）。
+ *  punctRuns：**重复**标点串（原文本统计，同串出现 ≥2 次才入列——2026-10-15 收紧：
+ *    原判据单次出现即报 ⇒ 良性标点串（表格/标题/分隔）占 P0 命中 25%，掩盖真信号）；
+ *  punctRepeats：串 → 出现次数（随 punctRuns 同步，供阈值标定）。
  */
 export function detectLoops(text, { window = 100, blockCount = 3, sim = 0.85, step = 1, cap = 60000, maxWindows = 12000, maxVariantPairs = 240 } = {}) {
   // step=1（2026-10-07 修：奇周期循环在步长 2 采样下相邻重复对不可见——turn 环自检首跑即踩中）。
   // 覆盖上限 = step × maxWindows ≈ 12K 归一字符，且**优先保留尾部**（循环随时间升级；更长文本请分段）。
   // 2026-10-12 起：**英文盲区已修**——窗口合格线改双门槛（CJK ≥20% 或 字母 ≥50%），相似度集合并入词级 bigram。
   const raw = String(text ?? '');
-  const puncts = punctRuns(raw);
+  const { runs: puncts, counts: punctRepeats } = punctDupRuns(raw);
   const norm = normalize(raw).slice(0, cap);
   const n = norm.length;
   const exact = [];
@@ -125,6 +147,7 @@ export function detectLoops(text, { window = 100, blockCount = 3, sim = 0.85, st
       exact,
       variant: variant.slice(0, 10),
       punctRuns: puncts,
+      punctRepeats,
       stats: { chars: raw.length, normChars: n, windows, gate: gates.size === 1 ? [...gates][0] : (gates.size ? 'mixed' : null) }
     };
   }
@@ -132,6 +155,7 @@ export function detectLoops(text, { window = 100, blockCount = 3, sim = 0.85, st
     exact,
     variant: variant.slice(0, 10),
     punctRuns: puncts,
+    punctRepeats,
     stats: { chars: raw.length, normChars: n, windows, gate: null }
   };
 }

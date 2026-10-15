@@ -51,9 +51,23 @@ const COMPACT_FAIL_REASON = {
 };
 
 /**
- * 节奏条渲染（纯函数）：段数/会话数 + 回看提示；压缩窗口内追一行。无数据 → null（静默）。
+ * 格式密度分档（纯函数，2026-10-15 归因三轮产物）：加粗标记密度（`**` 数/千字）→ 档位。
+ * 依据：全库 70 会话——峰值密度 >190 的两个会话是全库唯二失稳会话；>40 失衡出现；<15 干净区。
+ * 阈值初值（可校准）：绿 <15 · 黄 15-40 · 橙 40-120 · 红 >120。
+ */
+export function densityTag(rate) {
+  const r = Number(rate) || 0;
+  if (r < 15) return '绿';
+  if (r < 40) return '黄';
+  if (r < 120) return '橙';
+  return '红';
+}
+
+/**
+ * 节奏条渲染（纯函数）：段数/会话数 + 回看提示 + 格式密度行；压缩窗口内追一行。无数据 → null（静默）。
  * B1（2026-10 wave1）：只有「最近一次压缩的补索引确认成功」（compacts[i].indexed === true）才可说「已收入」；
  * 失败 / 未确认（含旧格式条目无 indexed 字段）一律改说「可能未进会话层」并给回退路径——提示行不得替索引作伪证。
+ * 密度行（2026-10-15）：state.density = { rate, tag, rounds }；**本行刻意不含任何加粗标记**（防止观测行自身喂密度）。
  */
 export function renderSessionLine(state, now) {
   const sessions = state?.meta?.sessions ?? {};
@@ -63,6 +77,10 @@ export function renderSessionLine(state, now) {
   for (const id of ids) segments += Number(sessions[id]?.segments ?? 0);
   if (!segments) return null;
   const lines = [`小阿卡夏·会话层：已索引 ${segments} 段（${ids.length} 会话）；回看用 node akasha.mjs session lookup <词>`];
+  const d = state?.density;
+  if (d && Number.isFinite(d.rate) && Number(d.chars ?? 0) >= 2000) {
+    lines.push(`📊 格式密度 ${Number(d.rate).toFixed(1)}/千字（${d.tag}区 · 近 ${d.rounds} 轮）｜分级：黄≥15 橙≥40 红≥120｜高位时降格式负载：少用加粗、多用分段与编号`);
+  }
   const compacts = (state?.compacts ?? []).filter((c) => Number.isFinite(c?.ts) && now - c.ts <= 10 * 60 * 1000);
   if (compacts.length) {
     const last = compacts[compacts.length - 1];
@@ -155,6 +173,16 @@ export function apply(ctx, config = {}) {
   const watchBuf = new Map();      // `${sid}:${attempt}:${index}:${stream}` -> { text, seen, lastChecked, done, hit:Set }
   const watchProbe = new Map();    // sid -> Set(帧/chunk 类型；前 8 个各记一行，防真值漂移）
   const watchTurnDone = new Set(); // `${sid}:${turn}` 去重
+  // 观测线去重（2026-10-15，P1 标定巡检）：同一逻辑事件的多帧（多 attempt / 多 index 前缀）各命中一次时，
+  //   落线只记首报 ⇒ `${sid}:${stream}` 已报过即不再落线。**只影响观测线**（不碰 buf.done 判定）；
+  //   turn 相命中另带 `src:'turn'` 标来源，供下游把"流已报 + 回合全量复检再报"当同一事件去重。
+  const watchStreamHit = new Set();
+  // 格式密度窗口（2026-10-15，归因三轮产物）：sid -> { rounds: [{c,b,turn}], ts }（近 10 轮滚动）。
+  //   只观测：每轮把本回合 reasoning+text 的加粗标记密度推进窗口，节奏条显示档位 + hooks 落 density 线。
+  //   整轮累计（turnAcc）：首验修正——密度口径＝**整轮所有 assistant 消息之和**（对齐分析脚本 r2g/r2h 口径）。
+  const densityWin = new Map();
+  const turnAcc = new Map(); // `${sid}:${turn}` -> { c, b }
+  const DENSITY_WINDOW = 10;
   // 上下文长度代理（2026-10-14 追加；用户令「这个要加」）：自**上次压缩完成**以来本会话累计的流字符数。
   //   只记录、不干预；真实 KV 相位不可由宿主观测，代理仅作离线分析变量（P1 阈值标定用）。无压缩记录时＝自会话开始累计。
   const watchCtxChars = new Map(); // sid -> 累计流字符
@@ -195,7 +223,15 @@ export function apply(ctx, config = {}) {
     const sum = summarizeWatch(res, cls.stream, buf.seen, buf.hit);
     if (sum) {
       buf.done = true;
-      log({ kind: 'loop-watch', session: sid, turn, step, ctxChars: ctxCharsOf(sid), ...sum });
+      // 观测线去重（2026-10-15 首版；**同日复检修正**）：目标是「同一 turn 内的多帧/多 attempt 命中只落首报」。
+      //   首版键为 `${sid}:${stream}`（整会话一刀切）——**复检发现会严重欠报**（一个会话的 stream 命中只会剩 1-2 条，
+      //   P1 标定的样本量会被砍掉大半）；修正为含 turn ⇒ 同轮去重、跨轮各自落线。
+      const dedupKey = `${sid}:${cls.stream}:${turn ?? '?'}`;
+      if (!watchStreamHit.has(dedupKey)) {
+        if (watchStreamHit.size > 200) watchStreamHit.delete(watchStreamHit.keys().next().value);
+        watchStreamHit.add(dedupKey);
+        log({ kind: 'loop-watch', session: sid, turn, step, ctxChars: ctxCharsOf(sid), ...sum });
+      }
     }
   };
 
@@ -231,11 +267,55 @@ export function apply(ctx, config = {}) {
     feedStreamChunk(sid, meta.turn ?? frame?.turn ?? null, meta.step ?? frame?.step ?? null, `${sid}:${attemptId || '?'}:${frame.chunk?.index ?? 0}`, cls);
   };
 
+  // 格式密度：把本轮 reasoning+text 的字符/加粗推进窗口，返回滚动值（纯计算，无副作用之外只写内存与观测线）。
+  const updateDensity = (sid, chars, bold, turn) => {
+    if (!sid || !chars) return null;
+    const w = densityWin.get(sid) ?? { rounds: [] };
+    w.rounds.push({ c: chars, b: bold, turn: turn ?? null });
+    if (w.rounds.length > DENSITY_WINDOW) w.rounds.splice(0, w.rounds.length - DENSITY_WINDOW);
+    w.ts = Date.now();
+    densityWin.set(sid, w);
+    if (densityWin.size > 64) densityWin.delete(densityWin.keys().next().value);
+    const C = w.rounds.reduce((s, x) => s + x.c, 0);
+    const B = w.rounds.reduce((s, x) => s + x.b, 0);
+    const rate = C ? (B / C) * 1000 : 0;
+    const out = { session: sid, turn: turn ?? null, rate: Math.round(rate * 10) / 10, tag: densityTag(rate), chars: C, bold: B, rounds: w.rounds.length };
+    log({ kind: 'density', ...out });
+    return out;
+  };
+  const latestDensity = () => {
+    let best = null;
+    for (const [sid, w] of densityWin) if (!best || w.ts > best.w.ts) best = { sid, w };
+    if (!best) return null;
+    const C = best.w.rounds.reduce((s, x) => s + x.c, 0);
+    const B = best.w.rounds.reduce((s, x) => s + x.b, 0);
+    const rate = C ? (B / C) * 1000 : 0;
+    return { rate: Math.round(rate * 10) / 10, tag: densityTag(rate), rounds: best.w.rounds.length, chars: C };
+  };
+
   const rememberAssistant = (session, event) => {
     const sid = String(session?.id ?? '');   // Q06：完整原始 ID（不剥前缀）
     if (!sid) return;
     lastAssistant.set(sid, { turn: event?.data?.turn ?? null, message: event?.data?.message });
     if (lastAssistant.size > 64) lastAssistant.delete(lastAssistant.keys().next().value);
+    // 整轮密度累计（2026-10-15 首验修正）：首版只统计「该轮最后一条消息」⇒ 与分析口径（整轮所有消息）不一致，
+    //   且样本小易被 2000 门槛挡掉（实测轮 7：单条 1394ch vs 整轮 12666ch）。此处按 (sid,turn) 累计每条 assistant/message 的
+    //   reasoning+text 字符与 ** 匹配数；onTurnWatch 消费并清除。
+    const turn = event?.data?.turn;
+    const msg = event?.data?.message;
+    if (turn == null || !msg) return;
+    let c = 0, b = 0;
+    for (const blk of (msg.content ?? [])) {
+      if (blk?.type !== 'reasoning' && blk?.type !== 'text') continue;
+      const t = String(blk.text ?? '');
+      c += t.length; b += (t.match(/\*\*/g) ?? []).length;
+    }
+    if (!c) return;
+    const k = `${sid}:${turn}`;
+    const acc = turnAcc.get(k) ?? { c: 0, b: 0 };
+    acc.c += c; acc.b += b;
+    turnAcc.set(k, acc);
+    if (turnAcc.size > 128) turnAcc.delete(turnAcc.keys().next().value);
   };
 
   // turn 环：全文检测。取数＝事件流缓存（2026-10-07 复查：官方 Session 无 .events 属性，
@@ -250,13 +330,29 @@ export function apply(ctx, config = {}) {
     watchTurnDone.add(key);
     if (watchTurnDone.size > 200) watchTurnDone.delete(watchTurnDone.keys().next().value);
     const message = cached.message;
+    let dChars = 0, dBold = 0;
+    // 密度口径（整轮，2026-10-15 首验修正）：优先用 turnAcc（本回合全部 assistant 消息累计）；
+    //   无累计时退回「本消息」口径（旧行为，兼容边缘路径）。
+    const accKey = `${sid}:${turn ?? '?'}`;
+    const acc = turnAcc.get(accKey);
+    if (acc) {
+      dChars = acc.c; dBold = acc.b;
+      turnAcc.delete(accKey);
+    } else {
+      for (const stream of ['reasoning', 'text']) {
+        const text = (message.content ?? []).filter((b) => b?.type === stream).map((b) => String(b.text ?? '')).join('');
+        dChars += text.length;
+        dBold += (text.match(/\*\*/g) ?? []).length;
+      }
+    }
     for (const stream of ['reasoning', 'text']) {
       const text = (message.content ?? []).filter((b) => b?.type === stream).map((b) => String(b.text ?? '')).join('');
       if (text.length < 120) continue;
       const res = watchLoopCore().detectLoops(text, {});
       const sum = summarizeWatch(res, stream, text.length, new Set(), 'turn');
-      if (sum) log({ kind: 'loop-watch', session: sid, turn: turn ?? null, phase: 'turn', stream, chars: text.length, ctxChars: ctxCharsOf(sid), hit: sum.hit });
+      if (sum) log({ kind: 'loop-watch', session: sid, turn: turn ?? null, phase: 'turn', src: 'turn', stream, chars: text.length, ctxChars: ctxCharsOf(sid), hit: sum.hit });
     }
+    try { updateDensity(sid, dChars, dBold, turn); } catch { /* 观测不拖垮宿主 */ }
   };
 
   // 某会话索引成功 → 该会话窗口内「补索引未确认」的压缩条目改记为已收入（档案是全量的，后补成功即真收入）。
@@ -454,7 +550,9 @@ export function apply(ctx, config = {}) {
     try {
       const stop = ctx.interval(() => { try { for (const sid of [...lastIndexedAt.keys()]) indexNow(sid, 'timer'); } catch { /* 静默 */ } }, cfg.timerCheckMs);
       ctx.effect(() => () => { try { stop(); } catch { /* 静默 */ } });
-    } catch { /* 静默 */ }
+    } catch (e) { log({ kind: 'session-degraded', event: 'timer-register-failed', message: String(e?.message ?? e).slice(0, 200) }); }   // 2026-10-15（plugins S6）：原为静默 catch ⇒ 降级无观测线
+  } else {
+    log({ kind: 'session-degraded', event: 'timer-unavailable', note: 'ctx.interval 不可用 ⇒ 定时补索引停用' });   // 同族：另一条静默降级路径也补上观测线
   }
 
   // 退出协议（v0.4）：通知 worker drain 后关闭；5s 未退则强杀。
@@ -471,7 +569,7 @@ export function apply(ctx, config = {}) {
     name: 'akasha:session',
     order: cfg.contextOrder,
     text: () => {
-      try { return renderSessionLine({ meta: readMeta(), compacts }, Date.now()); }
+      try { return renderSessionLine({ meta: readMeta(), compacts, density: latestDensity() }, Date.now()); }
       catch { return null; }
     }
   });

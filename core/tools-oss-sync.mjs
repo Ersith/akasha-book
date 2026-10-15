@@ -39,8 +39,8 @@ const CODE_MAP = [
   // join(dirname(...), '..', 'akasha') —— 断言/夹具里"核心目录"的构造（2026-10-11：仓内必须先映射，否则拷不到 core）
   [/join\(dirname\(fileURLToPath\(import\.meta\.url\)\), '\.\.', 'akasha'\)/g, "join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'core')"],
   // 命令与路径（JS 双反斜杠形态 + YAML/文本单反斜杠形态）
-  [/<LOCAL_PATH>, 'node'],
-  [/<LOCAL_PATH>, 'node'],
+  [/F:\\\\h\\\\all\\\\Nodejs\\\\node\.exe/g, 'node'],
+  [/F:\\h\\all\\Nodejs\\node\.exe/g, 'node'],
   [/<AKASHA_DIR>/g, '<AKASHA_DIR>'],
   [/<AKASHA_DIR>/g, '<AKASHA_DIR>'],
   [/'<AKASHA_DIR>'/g, "'<AKASHA_DIR>'"],

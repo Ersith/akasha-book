@@ -1644,7 +1644,7 @@ export function usageWindowFromRecords(records, opts = {}) {
  *  窗口＝`windowMs`（缺省 7 天）：只取窗口内的记录即可产出同一窗口产物；无 ts 的行照样计入（与整读同）。
  *  `full: true` 可回退整读（对照/诊断用，也是本函数单测的反例钩子）。 */
 export function usageWindowFromLog(logPath, opts = {}) {
-  const file = logPath || join(ROOT, 'logs', 'hooks.jsonl');
+  const file = logPath || join(LOGS_DIR, 'hooks.jsonl');
   if (!existsSync(file)) {
     return { byId: new Map(), total: 0, distinct: 0, quota: 0, hhi: 0, hhiOld: 0, hhiNew: 0, slope: 0, windowMs: opts.windowMs ?? LOAD_BALANCE_DEFAULTS.windowMs, missing: true };
   }
@@ -2176,11 +2176,14 @@ export function brief(query, opts = {}) {
 // 全库摘要：六库计数 + 各库最近 N 条（主行）+ frontier 状态分布 + 审计概要 + 最近写入。
 // 「不带问题看一眼全库」的入口——kit 是开工动作、summary 是库自身全貌。
 export function summary(opts = {}) {
-  const per = Number.isInteger(opts.per) && opts.per > 0 ? opts.per : 3;
-  const today = opts.today || new Date().toISOString().slice(0, 10);
+  // 2026-10-15 全量检查（S-core-1）：本函数声称支持 `opts.files` 数据面注入，实际不带路径读真库 ⇒ 接上注入
+  const L = (n) => loadStore(n, (opts.files && opts.files[n]) || storePath(n));
+  // 2026-10-15 全量检查（cli-mcp S5）：`per` 无上界 ⇒ `summary --per 1e9` 出 185KB（默认档 4.3KB）⇒ 钳到 20
+  const per = Math.min(20, Number.isInteger(opts.per) && opts.per > 0 ? opts.per : 3);
+  const today = dayArg(opts.today, 'today') || new Date().toISOString().slice(0, 10);   // 2026-10-15：校验下沉到 lib（原先只有 MCP 面校，CLI 透传 ⇒ 'bogus' 词法大于一切 ISO 日期）
   const stores = {};
   for (const name of STORES) {
-    const cur = currentRecords(loadStore(name).records);
+    const cur = currentRecords(L(name).records);
     stores[name] = {
       total: cur.length,
       recent: cur.slice(-per).reverse().map(r => ({
@@ -2374,7 +2377,9 @@ export function mirrorMatch(text, opts = {}) {
     return true;
   };
   const hits = [];
-  const naCtx = opts.notApplicable && typeof opts.notApplicable === 'object' ? opts.notApplicable : null;
+  // 空对象与缺省同义（2026-10-15，P2 审计 F4）：filterNotApplicable 把 `{}` 当「不过滤」，而 mirrorMatch 原先只查
+  // typeof ⇒ `{}` 被当成"有上下文"，会让 ne/not 型条件在空上下文下静默命中、排除条目。两处口径统一为「空＝不过滤」。
+  const naCtx = opts.notApplicable && typeof opts.notApplicable === 'object' && Object.keys(opts.notApplicable).length ? opts.notApplicable : null;
   for (const r of currentRecords(loadStore('mirror', opts.file || storePath('mirror')).records)) {
     if (!keepRole(r) || !keepMeta(r)) continue;
     if (naCtx && r.not_applicable !== undefined && evalCondition(r.not_applicable, naCtx)) continue;   // #3 不适用条件（非法条件由 validateCondition 抛错）
@@ -2657,7 +2662,7 @@ export function revisabilityStats(opts = {}) {
 }
 
 export function metrics(opts = {}) {
-  const logPath = opts.log || join(ROOT, 'logs', 'hooks.jsonl');
+  const logPath = opts.log || join(LOGS_DIR, 'hooks.jsonl');
   const since = opts.since ? String(opts.since).slice(0, 10) : null;
   let lines = [];
   try { lines = readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean); } catch { lines = []; }
@@ -3429,8 +3434,11 @@ export function stripGenre(text) {
   if (!s) return s;
   s = s.replace(/⇒/g, '→');
   s = s.replace(/[ \t]*✓[ \t]*/g, ' ').replace(/ {2,}/g, ' ');
-  s = s.replace(/(^|。)好。/gm, '$1');
-  s = s.replace(/好。/g, '。');
+  // 2026-10-15 全量检查（S-core-2，P2 复核确认并降档为「读侧渲染篡改」）：原第二条是无锚全局替换 `/好。/g`，
+  // 会把词尾的「好」一起吃掉——真库实测 627 字段受影响 / 18 处（偏好。→偏。；你好。→你。；正好。→正。）。
+  // 现改为**带左边界锚**：只在「行首 / 标点后 / 空白后」才吞并（＝填充语用法），词尾的「好」不再动。
+  // ⚠ 语义收窄是有意的：夹具样本 `嗯好。继续`（好 紧跟"嗯"）从"会被吞"变成"不该吞"，已同批换样本。
+  s = s.replace(/(^|[\n。！？；：，、\s])好。/gmu, '$1');
   s = s.replace(/[ \t]+$/gm, '');
   return /^\s*$/.test(s) ? '' : s;
 }
@@ -3453,7 +3461,7 @@ export function skeletonCount(text) {
   if (!s) return 0;
   let n = 0;
   for (const ch of s) if (ch === '⇒' || ch === '✓') n += 1;
-  n += (s.match(/好。/g) || []).length;
+  n += (s.match(/(^|[\n。！？；：，、\s])好。/gmu) || []).length;   // 2026-10-15：与 stripGenre 同锚（原先无锚 ⇒ 词尾「好」也计数，污染剂量闸）
   return n;
 }
 
@@ -3499,7 +3507,7 @@ export function autonomyReadings(opts = {}) {
     for (const [k, n] of injectedErr) allToolErr.set(String(k), Number(n) || 0);
   } else {
     try {
-      const lines = readFileSync(opts.log || join(ROOT, 'logs', 'hooks.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean);
+      const lines = readFileSync(opts.log || join(LOGS_DIR, 'hooks.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean);
       for (const l of lines) {
         let rec; try { rec = JSON.parse(l); } catch { continue; }
         if (rec.kind === 'tool' && rec.ok === false) { const k = String(rec.tool ?? '?'); allToolErr.set(k, (allToolErr.get(k) ?? 0) + 1); }
@@ -3634,10 +3642,12 @@ export function price({ severity, irreversibility, cost, good }) {
   };
 }
 
-export function stats() {
+export function stats(opts = {}) {   // 2026-10-15：加可选参数以便真正吃 opts.files 注入（原先无参 ⇒ 注入无处可进）
+  // 2026-10-15 全量检查（S-core-1）：本函数声称支持 `opts.files` 数据面注入，实际不带路径读真库 ⇒ 接上注入
+  const L = (n) => loadStore(n, (opts.files && opts.files[n]) || storePath(n));
   const out = {};
-  const cur = (name) => currentRecords(loadStore(name).records);
-  const superseded = (name, current) => loadStore(name).records.length - current.length;
+  const cur = (name) => currentRecords(L(name).records);
+  const superseded = (name, current) => L(name).records.length - current.length;
   const canon = cur('canon');
   out.canon = {
     total: canon.length,
@@ -3812,12 +3822,32 @@ export function reviewPack(id, opts = {}) {
   };
 }
 
+// ── 2026-10-15 全量检查（门档 P2 前置）：两个**两端共用**的入参闸 ──────────────────
+// 起因（已实证）：① `today` 的校验只打在 MCP 面 ⇒ CLI `audit --today bogus` exit 0、且 'bogus' 词法大于一切 ISO 日期
+//   ⇒ 2027 年的条目被判「到期」；② 数字入参无上下界 ⇒ `summary --per 1e9` 出 185KB（剂量闸可被合法输入绕过）。
+// 口径：**校验下沉到 lib**（CLI/MCP/程序化调用共用一处），而不是在各端各加一份（那正是"改半边"的温床）。
+/** 日期参数闸：非法即抛（带字段名的可读消息）；合法返回归一后的 YYYY-MM-DD；缺省返回 undefined。 */
+export function dayArg(v, field = '日期') {
+  if (v === undefined || v === null || v === '') return undefined;
+  const r = normalizeDateArg(v);
+  if (!r.ok) throw new Error(`${field} 必须是 YYYY-MM-DD（或可归一的日期）：${JSON.stringify(String(v)).slice(0, 40)}`);
+  return r.day;
+}
+/** 整数参数闸：钳到 [min,max]（默认 1..1000）；非数字/NaN 用 dflt（或 min）。 */
+export function boundedInt(v, { min = 1, max = 1000, dflt = undefined } = {}) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return dflt === undefined ? min : dflt;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
 export function audit(opts = {}) {
-  const today = opts.today || new Date().toISOString().slice(0, 10);
+  // 2026-10-15 全量检查（S-core-1）：本函数声称支持 `opts.files` 数据面注入，实际不带路径读真库 ⇒ 接上注入
+  const L = (n) => loadStore(n, (opts.files && opts.files[n]) || storePath(n));
+  const today = dayArg(opts.today, 'today') || new Date().toISOString().slice(0, 10);   // 2026-10-15：校验下沉到 lib（原先只有 MCP 面校，CLI 透传 ⇒ 'bogus' 词法大于一切 ISO 日期）
   const days = (a, b) => Math.floor((Date.parse(b) - Date.parse(a)) / 86400000);
   const findings = [];
 
-  const fronts = currentRecords(loadStore('frontier').records);
+  const fronts = currentRecords(L('frontier').records);
   const due = fronts.filter(r => r.next_review && r.next_review <= today);
   if (due.length) findings.push({ level: 'warn', code: 'frontier-due', detail: due.map(r => `${r.id}(${r.next_review})`) });
 
@@ -3830,11 +3860,11 @@ export function audit(opts = {}) {
   const dupUrls = [...urls.entries()].filter(([, ids]) => ids.length > 1);
   if (dupUrls.length) findings.push({ level: 'info', code: 'duplicate-url', detail: dupUrls.map(([u, ids]) => `${ids.join(' = ')} @ ${u}`) });
 
-  const canon = currentRecords(loadStore('canon').records);
+  const canon = currentRecords(L('canon').records);
   const stale = canon.filter(r => r.last_reviewed && days(r.last_reviewed, today) > 365);
   if (stale.length) findings.push({ level: 'warn', code: 'canon-stale', detail: stale.map(r => r.id) });
 
-  const orphans = currentRecords(loadStore('orphan').records);
+  const orphans = currentRecords(L('orphan').records);
   const aging = orphans.filter(r => r.created && days(r.created, today) > 90);
   if (aging.length) findings.push({ level: 'info', code: 'orphan-aging', detail: aging.map(r => r.id) });
   // I-08 热缓冲溢出（2026-10-14）：孤儿＝热缓冲；超阈值即报（**只报不裁**；压缩流程见 PROTOCOL「孤儿热缓冲」）。
@@ -3853,7 +3883,7 @@ export function audit(opts = {}) {
     } catch { usageById = null; }
     if (usageById) {
       const verifiedRoots = new Set();
-      for (const x of loadStore('canon').records) if (x && x.verification) verifiedRoots.add(rootIdOf(x.id) || x.id);
+      for (const x of L('canon').records) if (x && x.verification) verifiedRoots.add(rootIdOf(x.id) || x.id);
       const decay = [];
       for (const r of canon) {
         const anchor = credDay(r.last_reviewed) || credDay(r.event_time);
@@ -3867,7 +3897,7 @@ export function audit(opts = {}) {
   }
 
   for (const name of STORES) {
-    const { errors } = loadStore(name);
+    const { errors } = L(name);
     // 文件不存在（line 0）是空安装，不是损坏。只有解析失败的行才算丢行。
     const bad = errors.filter((e) => e.line > 0);
     if (bad.length) findings.push({ level: 'warn', code: 'bad-jsonl', detail: bad.map((e) => `${name}:${e.line}:${e.error}`) });
@@ -3878,7 +3908,7 @@ export function audit(opts = {}) {
   if (review.counts.due) findings.push({ level: 'info', code: 'review-due', detail: review.items.slice(0, 12).map((x) => `${x.store}/${x.id}（龄 ${x.ageDays}d > ${x.intervalDays}d）`) });
 
   return {
-    today, ok: findings.every(f => f.level !== 'warn'), findings, summary: stats(),
+    today, ok: findings.every(f => f.level !== 'warn'), findings, summary: stats({ files: opts.files, today }),
     review: { counts: review.counts, policy: review.policy, top: review.items.slice(0, 20), undated: review.undated, sample: reviewSample({ due: review }) }
   };
 }
@@ -3886,8 +3916,8 @@ export function audit(opts = {}) {
 // 起床包：开工前一次装配——睡眠摘要 + 待办（inbox）+ 当前审计 + 库况 + 提示。
 // stateFile / inboxFile 可注入（测试用）；默认读 logs\sleep-state.json 与 logs\inbox.jsonl。
 export function kit(opts = {}) {
-  const stateFile = opts.stateFile || join(ROOT, 'logs', 'sleep-state.json');
-  const inboxFile = opts.inboxFile || join(ROOT, 'logs', 'inbox.jsonl');
+  const stateFile = opts.stateFile || join(LOGS_DIR, 'sleep-state.json');
+  const inboxFile = opts.inboxFile || join(LOGS_DIR, 'inbox.jsonl');
   const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; } };
   const readLines = (f) => { try { return readFileSync(f, 'utf8').split(/\r?\n/).filter(Boolean); } catch { return []; } };
 
@@ -3979,9 +4009,9 @@ export function kit(opts = {}) {
 // 候选转正：把 sleep/inbox 的孤案候选（失败回查素材）机械落成孤案条目（零权重留档）。
 // 幂等：id = code + 样本摘要（orphan-b<8hex>），已存在跳过；dry=true 只报不写。
 export function promoteInbox(opts = {}) {
-  const inboxFile = opts.inboxFile || join(ROOT, 'logs', 'inbox.jsonl');
+  const inboxFile = opts.inboxFile || join(LOGS_DIR, 'inbox.jsonl');
   const storeFile = opts.storeFile;
-  const today = opts.today || new Date().toISOString().slice(0, 10);
+  const today = dayArg(opts.today, 'today') || new Date().toISOString().slice(0, 10);   // 2026-10-15：校验下沉到 lib（原先只有 MCP 面校，CLI 透传 ⇒ 'bogus' 词法大于一切 ISO 日期）
   const lines = (() => { try { return readFileSync(inboxFile, 'utf8').split(/\r?\n/).filter(Boolean); } catch { return []; } })();
   const existing = new Set(loadStore('orphan', storeFile).records.map(r => r.id));
   const promoted = []; const wouldPromote = []; const skipped = [];
@@ -4080,6 +4110,15 @@ export function isProtocolId(id) {
 }
 
 export function revise(store, id, patch = {}, opts = {}) {
+  // patch 类型校验（2026-10-15，E 题审计确证 V4；同日二轮审计 D6 收紧）：字符串/数组/null 会被后续 `{...patch}` 静默展开成垃圾键
+  // （实证：patch:'zzz' ⇒ 落库多出 {"0":"z","1":"z","2":"z"} 三个键）。**D6 补充**：仅挡 null/数组/非 object 还不够——
+  // Date/Map/RegExp 都是 typeof 'object' 且非数组，放行后 `{...patch}` 展开为 `{}` ⇒ 落一条与链尾**内容完全相同**的假修订
+  // （污染修订链）。故按「普通对象」字面口径校验：原型必须是 Object.prototype 或 null。
+  const badKind = patch === null ? 'null' : Array.isArray(patch) ? 'array' : typeof patch;
+  const proto = (patch !== null && typeof patch === 'object') ? Object.getPrototypeOf(patch) : null;
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch) || (proto !== Object.prototype && proto !== null)) {
+    throw new Error(`revise：patch 必须是普通对象（收到 ${badKind}${proto && proto !== Object.prototype ? '/' + (proto.constructor?.name ?? 'exotic') : ''}）`);
+  }
   if (!STORES.includes(store)) throw new Error('未知存储：' + store);
   if (isProtocolId(id) && !opts.allowProtocol) {
     throw new Error('拒绝修订 ' + id + '：该条渲染进系统提示。模型路径（MCP）不可改；人工确认后用 CLI --allow-protocol。');

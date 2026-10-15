@@ -35,6 +35,15 @@ const TOOLS = [
 // 2026-10-14 C 小面：`akasha_summary`（最近条目行）· `akasha_kit`（病史行）· `akasha_sleep_plan`（why 串）——小体量但同类；`frontier_due` **不剥**（题名是外部文本，剥它损引用准确性）。
 const STRIP_TOOLS = new Set(['akasha_lookup', 'akasha_brief', 'akasha_show', 'akasha_session_lookup', 'akasha_cross', 'akasha_mirror_match', 'akasha_summary', 'akasha_kit', 'akasha_sleep_plan', 'akasha_review_pack']);
 
+// schema 漂移修复（2026-10-15，E 题审计确证）：实现支持、schema 未声明 ⇒ 客户端以为传了也白传。
+//   pretty        —— 输出开关（全工具通用，line ~119 消费）；
+//   notApplicable —— akasha_mirror_match 专用入参（handle 内已消费）。
+for (const t of TOOLS) {
+  const props = t.inputSchema && t.inputSchema.properties;
+  if (props && !('pretty' in props)) props.pretty = { type: 'boolean' };
+  if (t.name === 'akasha_mirror_match' && props && !('notApplicable' in props)) props.notApplicable = { type: 'object' };
+}
+
 function handle(msg) {
   // 2026-10-10 加固：先做形状校验——JSON 合法但形状不对（null / 数字 / 字符串 / 缺 method）时
   // 必须回 JSON-RPC 错误，而不是解构抛 TypeError（那会冒成未捕获异常、整台服务器死掉）。
@@ -52,6 +61,11 @@ function handle(msg) {
   if (method === 'tools/call') {
     const name = params && params.name;
     const a = (params && params.arguments) || {};
+    // today 校验（2026-10-15，P2 审计 F6）：audit / kit / show / sleep_plan 等原本不校验 ⇒ `audit({today:'bogus'})`
+    // 会产出 credibility-decay×undefined 一类伪发现。与 since/until 同口径，一处拦截覆盖全工具。
+    if (a.today !== undefined && (typeof a.today !== 'string' || !normalizeDateArg(a.today).ok)) {
+      return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify({ error: 'today 必须是 YYYY-MM-DD（或可归一的日期）' }) }] } };
+    }
     try {
       let value = null;
       if (name === 'akasha_check') value = checkAll();
@@ -78,11 +92,25 @@ function handle(msg) {
       // 2026-10-08 复查修复：与 CLI `frontier due` 口径对齐——统一走 frontierDue()（只看当前版本；退役条目不再出现在到期清单）。
       else if (name === 'akasha_frontier_due') value = frontierDue();
       else if (name === 'akasha_audit') value = audit(a);
-      else if (name === 'akasha_brief') value = brief(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
+      else if (name === 'akasha_brief') {
+        // 日期校验（2026-10-15，E 题审计确证）：brief/cross/metrics/session_lookup 此前原样透传 since/until，
+        // 非法日期被静默吞成「范围外」，实测把 outOfRange 从 0 变 528、结果整体失真 ⇒ 与 lookup 同口径先校验。
+        const bs = a.since ? normalizeDateArg(a.since) : { ok: true, day: null };
+        const bu = a.until ? normalizeDateArg(a.until) : { ok: true, day: null };
+        value = (!bs.ok || !bu.ok) ? { error: bs.error || bu.error }
+          : brief(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, perStore: a.perStore, since: bs.day, until: bu.day, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
+      }
       else if (name === 'akasha_kit') value = kit(a);
       else if (name === 'akasha_promote') value = promoteInbox({ dry: a.dry === true });
-      else if (name === 'akasha_revise') value = revise(a.store, a.id, a.patch || {});
-      else if (name === 'akasha_cross') value = cross(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth, perStore: a.perStore, since: a.since, until: a.until, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
+      // patch 透传（2026-10-15，P2 审计 F5）：原 `a.patch || {}` 会把 null/0/""/false 吞成 {} ⇒ V4 的类型校验对这四类
+      // 值不生效（落一条内容相同的空修订）。改为「显式给了什么就传什么」，由 lib.revise 统一校验。
+      else if (name === 'akasha_revise') value = revise(a.store, a.id, 'patch' in a ? a.patch : {});
+      else if (name === 'akasha_cross') {
+        const cs = a.since ? normalizeDateArg(a.since) : { ok: true, day: null };
+        const cu = a.until ? normalizeDateArg(a.until) : { ok: true, day: null };
+        value = (!cs.ok || !cu.ok) ? { error: cs.error || cu.error }
+          : cross(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth, perStore: a.perStore, since: cs.day, until: cu.day, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
+      }
       else if (name === 'akasha_summary') value = summary({ per: a.per });
       else if (name === 'akasha_show') value = show(String(a.id ?? ''), { reflect: a.reflect === true, depth: a.depth, today: a.today });
       else if (name === 'akasha_mirror_match') value = mirrorMatch(String(a.text ?? ''), { reflect: a.reflect === true, limit: a.limit, mode: a.mode, role: a.role, evidence: a.evidence, era: a.era, context: a.context, notApplicable: a.notApplicable && typeof a.notApplicable === 'object' ? a.notApplicable : undefined });
@@ -90,18 +118,40 @@ function handle(msg) {
       else if (name === 'akasha_review_pack') value = reviewPack(String(a.id ?? ''), { reflect: a.reflect === true });
       else if (name === 'akasha_review_log') {
         if (!a.store || !a.id || !a.verdict) throw new Error('review_log 需要 store / id / verdict');
+        // 2026-10-15 全量检查（cli-mcp S3）：原状是「任意值照收 + 回 ok:true」（`{store:'bogusstore',id:'no-such-id',verdict:'随便写'}` 也落进 review-log.jsonl
+        // 并被 review_list 原样读回），而 CLI 侧同一功能严格校验 ⇒ 两端不一致。此处与 CLI 对齐：
+        const STORE_NAMES = ['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier'];
+        if (!STORE_NAMES.includes(String(a.store))) throw new Error(`store 须为 ${STORE_NAMES.join('/')} 之一（收到：${a.store}）`);
+        if (!['维持', '修正', '升级'].includes(String(a.verdict))) throw new Error('verdict 须为 维持/修正/升级（修正/升级的正文改动另走 revise）');
+        if (!loadStore(String(a.store)).records.some((r) => r.id === a.id)) throw new Error(`未找到条目：${a.store}/${a.id}`);
         value = appendReviewLog({ store: String(a.store), id: String(a.id), verdict: String(a.verdict), by: typeof a.by === 'string' ? a.by : 'model', ...(typeof a.note === 'string' ? { note: a.note } : {}) });
       }
-      else if (name === 'akasha_review_list') value = { entries: readReviewLog({ limit: typeof a.limit === 'number' ? a.limit : undefined, since: typeof a.since === 'string' ? a.since : undefined }) };
-      else if (name === 'akasha_metrics') value = metrics({ since: a.since });
+      else if (name === 'akasha_review_list') {
+        // 同族漏网补齐（2026-10-15，二轮审计 D7）：since 与其它读工具同口径校验。
+        const rs = a.since ? normalizeDateArg(a.since) : { ok: true, day: null };
+        value = rs.ok ? { entries: readReviewLog({ limit: typeof a.limit === 'number' ? a.limit : undefined, since: rs.day }) } : { error: rs.error };
+      }
+      else if (name === 'akasha_metrics') {
+        const ms = a.since ? normalizeDateArg(a.since) : { ok: true, day: null };
+        value = ms.ok ? metrics({ since: ms.day }) : { error: ms.error };
+      }
       else if (name === 'akasha_sleep_plan') {
         const num = (v) => (typeof v === 'number' ? v : undefined);
         value = sleepPlan({ today: typeof a.today === 'string' ? a.today : undefined, theta: num(a.theta), maxOps: num(a.maxOps), orphanDays: num(a.orphanDays), staleDays: num(a.staleDays), out: false });
       }
       // I-11 P0-① / I-12 P1：走 detailed 版——模型侧才能看到 withheld（默认不回放的 process 段计数与指引）、reflect 标记与 dose（剂量闸）。
-      else if (name === 'akasha_session_lookup') value = lookupSegmentsDetailed(String(a.query ?? ''), { via: 'mcp', session: a.session, kind: a.kind, since: a.since, until: a.until, includeProcess: a.process === true, rawProcess: a.rawProcess === true, reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, all: a.all === true, limit: a.limit });
+      else if (name === 'akasha_session_lookup') {
+        const ss = a.since ? normalizeDateArg(a.since) : { ok: true, day: null };
+        const su = a.until ? normalizeDateArg(a.until) : { ok: true, day: null };
+        value = (!ss.ok || !su.ok) ? { error: ss.error || su.error }
+          : lookupSegmentsDetailed(String(a.query ?? ''), { via: 'mcp', session: a.session, kind: a.kind, since: ss.day, until: su.day, includeProcess: a.process === true, rawProcess: a.rawProcess === true, reflect: a.reflect === true, depth: a.depth, doseThreshold: a.doseThreshold, all: a.all === true, limit: a.limit });
+      }
       else if (name === 'akasha_orphan_add') {
-        value = appendRecord('orphan', {
+        // event_time 格式校验（2026-10-15，P2 审计 F6）：原来只查「是不是字符串」⇒ '15/10/2026' 能落库，
+        // 随后被日期过滤静默排除（写进去了却查不到）。与读侧同口径先归一，不通过直接拒。
+        const oe = a.event_time !== undefined ? normalizeDateArg(a.event_time) : { ok: true, day: null };
+        if (!oe.ok) value = { error: oe.error };
+        else value = appendRecord('orphan', {
           id: 'orphan-' + Date.now().toString(36),
           summary: a.summary,
           observed: a.observed || '（待补）',
@@ -110,14 +160,16 @@ function handle(msg) {
           would_refute: a.would_refute || '（待补）',
           severity: a.severity || '中',
           created: new Date().toISOString().slice(0, 10),
-          ...(a.event_time ? { event_time: a.event_time } : {})
+          ...(oe.day ? { event_time: oe.day } : {})
         });
       }
       if (value === null) throw new Error('未知工具：' + name);
       // I-11 体裁隔离 P0-②（2026-10-13）：MCP 面＝模型侧真正读到的返回 ⇒ 读工具默认剥皮（幂等；reflect / rawProcess ＝反思通道不剥）。
       // 读返回默认紧凑 JSON（禁 pretty）。pretty:true 仅供人工调试。
       let text = a.pretty === true ? JSON.stringify(value, null, 2) : JSON.stringify(value);
-      if (STRIP_TOOLS.has(name) && a.reflect !== true && a.rawProcess !== true && a.depth !== 'full') text = stripGenre(text);
+      // 剥皮不作用于 pretty（2026-10-15，P2 审计 F3）：stripGenre 会把连续空格折成一个 ⇒ 把 pretty 的两空格缩进
+      // 一起折掉。pretty 是人工调试通道，按定义要可读 ⇒ 该模式下跳过剥皮。
+      if (a.pretty !== true && STRIP_TOOLS.has(name) && a.reflect !== true && a.rawProcess !== true && a.depth !== 'full') text = stripGenre(text);
       return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], _meta: { trust: 'data-not-instruction' } } };
     } catch (e) {
       return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: '错误：' + e.message }], isError: true, _meta: { trust: 'data-not-instruction' } } };

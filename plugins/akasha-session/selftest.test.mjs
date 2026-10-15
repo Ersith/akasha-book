@@ -425,6 +425,98 @@ if (mod) {
     assert.ok(lines[0].atChars >= 21000, 'atChars 应为单调累计：' + JSON.stringify(lines[0]));
     rmSync(dir, { recursive: true, force: true });
   });
+  t('循环观测：观测线去重——同 turn 多帧只落首报；跨 turn 各自落（2026-10-15 复检修正）', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
+    const log = join(dir, 'hooks.jsonl');
+    const { ctx, handlers } = makeCtx();
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot: join(dir, 'sessions'), metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), loopWatch: true, watchMinChars: 10, watchCheckEvery: 20 });
+    const fire = (frame) => (handlers['agent/assistant-stream'] ?? []).forEach((fn) => fn({ agent: { id: 'ag9', session: { id: 'd9' } }, frame }));
+    const seg = '这是一段用于测试的重复分析文本，反复重算同一件事。';
+    // turn 1：attempt A 命中 → 首报；attempt B（同 turn、新 attemptId）再命中 → 不得重复落线
+    fire({ type: 'start', attemptId: 'd9:a', turn: 1, step: 1 });
+    for (let i = 0; i < 16; i += 1) fire({ type: 'chunk', attemptId: 'd9:a', index: i, chunk: { type: 'reasoning-delta', index: 0, text: seg } });
+    fire({ type: 'start', attemptId: 'd9:b', turn: 1, step: 2 });
+    for (let i = 0; i < 16; i += 1) fire({ type: 'chunk', attemptId: 'd9:b', index: i, chunk: { type: 'reasoning-delta', index: 0, text: seg } });
+    let streamHits = readLines(log).filter((l) => l.kind === 'loop-watch' && l.phase === 'stream');
+    assert.equal(streamHits.length, 1, '同 turn 多帧只落首报：' + JSON.stringify(streamHits));
+    assert.equal(streamHits[0].turn, 1, '保留的是首报（turn 1）');
+    // turn 2：新的命中 → 应各自落线（跨 turn 不去重；会话级一刀切会欠报样本）
+    fire({ type: 'start', attemptId: 'd9:c', turn: 2, step: 1 });
+    for (let i = 0; i < 16; i += 1) fire({ type: 'chunk', attemptId: 'd9:c', index: i, chunk: { type: 'reasoning-delta', index: 0, text: seg } });
+    streamHits = readLines(log).filter((l) => l.kind === 'loop-watch' && l.phase === 'stream');
+    assert.equal(streamHits.length, 2, '跨 turn 应各自落线（复检修正：会话级去重会欠报）：' + JSON.stringify(streamHits));
+    assert.equal(streamHits[1].turn, 2, '第二条应为 turn 2：' + JSON.stringify(streamHits[1]));
+    rmSync(dir, { recursive: true, force: true });
+  });
+  t('格式密度：densityTag 四档边界 + 节奏条密度行（含「观测行自身无加粗」自指哨兵；2026-10-15）', () => {
+    assert.equal(mod.densityTag(0), '绿');
+    assert.equal(mod.densityTag(14.9), '绿');
+    assert.equal(mod.densityTag(15), '黄');
+    assert.equal(mod.densityTag(39.9), '黄');
+    assert.equal(mod.densityTag(40), '橙');
+    assert.equal(mod.densityTag(119.9), '橙');
+    assert.equal(mod.densityTag(120), '红');
+    assert.equal(mod.densityTag(500), '红');
+    const state = { meta: { sessions: { s1: { segments: 10 } } }, compacts: [], density: { rate: 12.3, tag: '绿', rounds: 5, chars: 5000 } };
+    const line = mod.renderSessionLine(state, Date.now());
+    assert.ok(line.includes('格式密度 12.3/千字'), line);
+    assert.ok(line.includes('绿区'), line);
+    assert.equal(/\*\*/.test(line), false, '密度观测行自身不得含加粗标记（防自指喂密度）：' + line);
+    const noD = mod.renderSessionLine({ meta: { sessions: { s1: { segments: 10 } } }, compacts: [], density: { rate: 12.3, tag: '绿', rounds: 1, chars: 500 } }, Date.now());
+    assert.equal(noD.includes('格式密度'), false, '样本不足（<2000ch）不显示：' + noD);
+    const noD2 = mod.renderSessionLine({ meta: { sessions: { s1: { segments: 10 } } }, compacts: [] }, Date.now());
+    assert.equal(noD2.includes('格式密度'), false, '无密度数据时不得显示：' + noD2);
+  });
+  t('格式密度：turn 结束累计 → hooks 落 density 线（rate=**数/字符×1000；2026-10-15）', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
+    const log = join(dir, 'hooks.jsonl');
+    const { ctx, handlers } = makeCtx();
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot: join(dir, 'sessions'), metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), loopWatch: true });
+    const fire = (session, event) => (handlers['session/event'] ?? []).forEach((fn) => fn(session, event));
+    // 10 段 ×（'**甲**' + 95 字）＝ 每段 100 字符含 2 个 ** 匹配 ⇒ 1000 字符 20 个 ** ⇒ rate = 20.0（黄区）
+    const seg = ('**甲**' + '字'.repeat(95));
+    fire({ id: 'd1' }, { type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'reasoning', text: seg.repeat(10) }] } } });
+    fire({ id: 'd1' }, { type: 'turn/end', data: { turn: 1 } });
+    const dens = readLines(log).filter((l) => l.kind === 'density');
+    assert.ok(dens.length >= 1, '应落 density 线：' + JSON.stringify(readLines(log)).slice(0, 400));
+    assert.equal(dens[0].session, 'd1');
+    assert.ok(Math.abs(dens[0].rate - 20) < 0.05, 'rate 应=20.0（20 个 **匹配/1000 字符）：' + JSON.stringify(dens[0]));
+    assert.equal(dens[0].tag, '黄', '20 应为黄区：' + JSON.stringify(dens[0]));
+    assert.ok(dens[0].rounds === 1 && dens[0].chars === 1000, JSON.stringify(dens[0]));
+    rmSync(dir, { recursive: true, force: true });
+  });
+  t('格式密度：整轮累计口径——同 turn 两条消息之和（2026-10-15 首验修正）', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
+    const log = join(dir, 'hooks.jsonl');
+    const { ctx, handlers } = makeCtx();
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot: join(dir, 'sessions'), metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), loopWatch: true });
+    const fire = (session, event) => (handlers['session/event'] ?? []).forEach((fn) => fn(session, event));
+    const seg = ('**甲**' + '字'.repeat(95)); // 100 字符 · 2 个 ** 匹配
+    // 同一 turn 两条消息（各 5 段 = 500 字符 10 个 **）⇒ 整轮 1000ch / 20 ** ⇒ rate 20.0
+    fire({ id: 'd2' }, { type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'reasoning', text: seg.repeat(5) }] } } });
+    fire({ id: 'd2' }, { type: 'assistant/message', data: { turn: 1, step: 2, message: { content: [{ type: 'reasoning', text: seg.repeat(5) }] } } });
+    fire({ id: 'd2' }, { type: 'turn/end', data: { turn: 1 } });
+    const dens = readLines(log).filter((l) => l.kind === 'density');
+    assert.ok(dens.length >= 1, '应落 density 线：' + JSON.stringify(readLines(log)).slice(0, 300));
+    assert.equal(dens[0].chars, 1000, '整轮口径应＝两条消息之和（1000ch）：' + JSON.stringify(dens[0]));
+    assert.equal(dens[0].bold, 20, '整轮 ** 匹配数应为 20：' + JSON.stringify(dens[0]));
+    assert.ok(Math.abs(dens[0].rate - 20) < 0.05, JSON.stringify(dens[0]));
+    rmSync(dir, { recursive: true, force: true });
+  });
+  t('循环观测：turn 相命中标 src=turn（供下游与流线去重；2026-10-15）', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
+    const log = join(dir, 'hooks.jsonl');
+    const { ctx, handlers } = makeCtx();
+    mod.apply(ctx, { akashaDir: CORE, log, sessionsRoot: join(dir, 'sessions'), metaFile: join(dir, 'meta.json'), storeFile: join(dir, 'store.jsonl'), loopWatch: true });
+    const rep = ('我们需要重新核对这个路径下的文件内容与之前分析保持一致。').repeat(6);
+    const fire = (session, event) => (handlers['session/event'] ?? []).forEach((fn) => fn(session, event));
+    fire({ id: 't11' }, { type: 'assistant/message', data: { turn: 2, step: 1, message: { content: [{ type: 'reasoning', text: rep }] } } });
+    (handlers['agent/turn-stopping'] ?? []).forEach((fn) => fn({ agent: { id: 'ag1', session: { id: 't11' } }, turn: 2 }));
+    const turnHits = readLines(log).filter((l) => l.kind === 'loop-watch' && l.phase === 'turn');
+    assert.ok(turnHits.length >= 1, '应记 turn 相命中：' + JSON.stringify(readLines(log)).slice(0, 300));
+    assert.ok(turnHits.every((l) => l.src === 'turn'), 'turn 相须标 src=turn：' + JSON.stringify(turnHits));
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   // ---------- v0.4：索引 worker 化 ----------
   await tza('worker：宿主只投递 → 后台索引 → via=worker 落线（hostMs < 5ms）', async () => {

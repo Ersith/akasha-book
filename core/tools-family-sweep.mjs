@@ -1,7 +1,7 @@
 // akasha/tools/family-sweep.mjs —— 阿卡夏全族「一次跑完」的检查器（2026-10-13，举一反三批）
 //
 // 起因：现有各检查是散的（plugin-src-drift 只管 5 个 @local 包的代码漂移），有三个盲区：
-//   ① 只对比**代码文件**，不扫**发布件里的机器路径**（本次 S6 清掉的 <LOCAL_PATH> 写死就属于这类）；
+//   ① 只对比**代码文件**，不扫**发布件里的机器路径**（本次 S6 清掉的 <workspace> 写死就属于这类）；
 //   ② 不检查**环境变量契约**（插件读 AKASHA_DIR / 核心读 AKASHA_ROOT+AKASHA_LOGS，两套并存）；
 //   ③ 不检查**README 里的版本漂移**（P3 的那类，靠人眼看不出来）。
 //
@@ -14,7 +14,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const H = '<LOCAL_PATH>';
+const H = '<workspace>';
 const PROFILE = join(H, 'official-home/profiles/desktop/node_modules');
 const quiet = process.argv.includes('--quiet');
 const noTests = process.argv.includes('--no-tests');
@@ -28,7 +28,7 @@ let actions = 0;
 const PKGS = [
   { name: '@akasha-book/akasha-gate', src: join(H, 'dsh-akasha-gate'), code: ['index.js', 'prompt-safety.js', 'cordis.patch.yml'] },
   { name: '@akasha-book/akasha-sleep', src: join(H, 'dsh-akasha-sleep'), code: ['lib/index.js', 'lib/prompt-safety.js'] },
-  { name: '@akasha-book/akasha-session', src: join(H, 'dsh-akasha-session'), code: ['lib/index.js'] },
+  { name: '@akasha-book/akasha-session', src: join(H, 'dsh-akasha-session'), code: ['lib/index.js', 'lib/index-worker.mjs'] },   // 2026-10-15：+index-worker（package.json.files 声明了它，原漂移面漏了 ⇒ 该文件漂移不会被发现）
   { name: '@akasha-book/akasha-hooks', src: join(H, 'dsh-akasha-hooks'), code: ['index.js'] },
   { name: '@akasha-book/mcp-akasha', src: join(H, 'dsh-mcp-akasha'), code: ['index.js', 'cordis.patch.yml'] },
   { name: '@akasha-book/mcp-rea', src: join(H, 'dsh-mcp-rea'), code: ['server.mjs', 'cordis.patch.yml'] },
@@ -59,7 +59,7 @@ say('  → ' + (codeDrift ? codeDrift + ' 个代码漂移 ✗' : '无代码漂�
 
 // ── 2. 发布件机器路径（注释行豁免；本机路径只许出现在注释/README/宿主 patch 配置里）──
 say('');
-say('══ 2. 发布件机器路径（JS 代码行不许写死 <LOCAL_PATH> / D:\\ 等）══');
+say('══ 2. 发布件机器路径（JS 代码行不许写死 H:\\Harness / D:\\ 等）══');
 const MACHINE_RE = /(H:[\\/]Harness|D:[\\/](ServerPackCreator|DSHHarness))/i;
 // 只扫 **JS 代码**：`cordis.patch.yml` 是「每台机器自己的 profile 配置」（按设计就是本机路径），
 // 扫它等于对着宿主的合法配置报警——**不是缺陷**（2026-10-13 首跑即踩：17 处全在 patch 里）。
@@ -119,19 +119,19 @@ for (const p of PKGS) {
 }
 if (readmeDrift) actions += readmeDrift;
 
-// ── 5. 子套件（可选）──
+  // ── 5. 子套件（可选；**自动发现**）──
+  // 2026-10-15 修（真盲区）：原先每个包**只列一个** selftest.test.mjs ⇒ sleep 的 stateful / preflight / gate
+  // 三套**从未进扫描面**，于是 7 条存量红藏了很久而扫描器天天报"全绿"（今天先由插件侧发现）。
+  // 现改为：按包目录**自动发现** `*.test.mjs` 与 `selftest.mjs`，新增套件无需再改本文件。
 if (!noTests) {
   say('');
-  say('══ 5. 子套件实跑 ══');
-  const SUITES = [
-    ['akasha/test.mjs', join(H, 'akasha/test.mjs')],
-    ['gate', join(H, 'dsh-akasha-gate/selftest.test.mjs')],
-    ['hooks', join(H, 'dsh-akasha-hooks/selftest.test.mjs')],
-    ['session', join(H, 'dsh-akasha-session/selftest.test.mjs')],
-    ['sleep', join(H, 'dsh-akasha-sleep/selftest.test.mjs')],
-    ['mcp-akasha', join(H, 'plugins/mcp-akasha/selftest.test.mjs')],
-    ['mcp-rea', join(H, 'dsh-mcp-rea/selftest.mjs')],
-  ];
+  say('══ 5. 子套件实跑（自动发现）══');
+  const SUITES = [['akasha/test.mjs', join(H, 'akasha/test.mjs')]];
+  for (const p of PKGS) {
+    if (!existsSync(p.src)) continue;
+    const files = readdirSync(p.src).filter((f) => f.endsWith('.test.mjs') || f === 'selftest.mjs').sort();
+    for (const f of files) SUITES.push([p.name.replace('@akasha-book/', '') + '/' + f, join(p.src, f)]);
+  }
   for (const [label, file] of SUITES) {
     if (!existsSync(file)) { loud('  ⚠ ' + label + '：找不到 ' + file); continue; }
     const r = spawnSync(process.execPath, [file], { cwd: join(file, '..'), encoding: 'utf8', timeout: 300000, env: { ...process.env, AKASHA_QUERY_LOG: 'off' } });   // 子套件＝机器检查，关查询侧线（防污染真日志）
