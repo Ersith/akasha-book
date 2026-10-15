@@ -15,7 +15,9 @@ node tools/gate.mjs close --task full-check-20261015 --out ./gate-out      # ④
 
 ## 1. 结果计数（全部可从产物复算）
 - **P0 机检：13 项，0 FAIL**（主套件 / 库校验 / 体检 / 全家扫描 / 语法 / 六库快照）——**而下面 29 个升级点全部逃过了这些脚本**。
-- 切片：**61 条**（5 个文件）· 升级：**29 点**（A1 28 / A2 1）· 自证包：完整=true（带证伪器 61/61）
+- 切片：**61 行**（5 个文件）＝按 (claim+anchor) 去重后 **29 条独立记录**（重复填充系数 2.10×；session-tools 的 8 条被逐字重复 5 遍）。
+- 升级：机检报 **29 点**（A1 28 / A2 1）；**按独立记录重算为 1 条**——⚠ **本报告初版把"行数当问题数"（写成 29），经外部复核已改正**。
+- 自证包：完整=true（带证伪器 61/61）
 - 升级按 risk_class：silent-skip 16 · false-fix 2 · coverage-gap 2 · false-green 7 · dataloss 1 · false-fix/crash（实证） 1
 - 机检裁决：**needs-slow**（含闭词表零容忍校验：非法取值当场判 `invalid-input` 并**拒绝报绿**）
 
