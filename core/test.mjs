@@ -1,9 +1,9 @@
 // 阿卡夏之书（Akasha）v0 自检。运行：node test.mjs
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
 import * as gateMod from '../plugins/akasha-gate/index.js';
@@ -12,22 +12,96 @@ import { runCheckerSelftest } from './tools-checker-selftest.mjs';
 // zstd 自 Node v23.8.0 / v22.15.0 起可用；旧 Node 上依赖 zstd 的用例记 SKIP（不计失败、不计通过），其余照跑。
 const zstdCompressSync = zlib.zstdCompressSync;
 const HAS_ZSTD = typeof zstdCompressSync === 'function';
+// SKIP 必须**可见且说清缺什么**（B-② 2026-10-17）：笼统一句「无 zstd」会让人分不清是压缩端还是解压端缺。
+const ZSTD_MISSING = ['zstdCompressSync', 'zstdDecompressSync'].filter((k) => typeof zlib[k] !== 'function');
+
+// ── B-②（2026-10-17）：等待语义的硬口径 ───────────────────────────────────────────────
+// 旧套件的假绿有两条通道：
+//   ① 用例体是 async，但 t()/tz() 是同步包装 ⇒ `fn()` 立刻返回 Promise，**断言还没跑就 passed++**；
+//      随后的 `process.exit()` 把未落定的 Promise 直接掐断 ⇒ 异步断言永远没执行过，却记 PASS。
+//   ② 等外部条件（子进程产物 / 文件落盘）时**没有等待**：条件尚未成立就断言"没有发生" ⇒ 空过。
+// 本块给出统一解法：有界轮询（超时 ⇒ 抛「等不到」= 红）+ 异步用例落定后才计数。
+// 等待上限**写死毫秒**，不做无限等；轮询间隔同样写死。
+const WAIT_TIMEOUT_MS = 5000;
+const WAIT_STEP_MS = 25;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * 有界等待：pred() 返回真值即返回该值；到 timeoutMs 仍不成立 ⇒ 抛「等不到」错误（用例红）。
+ * @param {string} label 等的是什么（写进错误消息：超时时一眼看出没等到哪一样）
+ */
+async function waitFor(label, pred, { timeoutMs = WAIT_TIMEOUT_MS, stepMs = WAIT_STEP_MS } = {}) {
+  // 2026-10-17 复核（VERIFY-B2 §②）：这个 helper 是**为杀假绿而生**的，它自己却有两个入口没堵：
+  //   ① 选项无校验 ⇒ `Infinity`/`NaN` 会死等（实测 600ms 仍不落定）；
+  //   ② 谓词返回 `Promise` 时被当 truthy ⇒ async 谓词 `Promise.resolve(false)` 会在 0ms 直接返回、不抛错（假绿）。
+  // 两句修死：选项必须有限正数；谓词结果一律 await 后再判真假。
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error(`waitFor 选项非法：timeoutMs=${timeoutMs}（须有限正数）`);
+  if (!Number.isFinite(stepMs) || stepMs <= 0) throw new Error(`waitFor 选项非法：stepMs=${stepMs}（须有限正数）`);
+  const started = Date.now();
+  let polls = 0;
+  for (;;) {
+    const v = await pred();
+    if (v) return v;
+    polls += 1;
+    if (Date.now() - started >= timeoutMs) {
+      const err = new Error(`等不到「${label}」：${timeoutMs}ms 内条件未成立（轮询 ${polls} 次；旧版在这里会直接 PASS）`);
+      err.code = 'EWAITTIMEOUT';
+      throw err;
+    }
+    await sleep(stepMs);
+  }
+}
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+/** 工具路径（2026-10-17 发版修）：活树布局是 `tools/<名>.mjs`；OSS 仓是**扁平**的 `tools-<名>.mjs`。
+ *  原用例直接拼 `join(ROOT,'tools',X)`，同步到 OSS 后三处挂 ENOENT（replay-audit / migrate / abstention-judge）。
+ *  ⇒ 两个布局都认。 */
+const toolPath = (name) => existsSync(join(ROOT, 'tools', name + '.mjs'))
+  ? join(ROOT, 'tools', name + '.mjs')
+  : join(ROOT, 'tools-' + name + '.mjs');
 const SCRATCH = join(ROOT, '..', '_scratch');
 mkdirSync(SCRATCH, { recursive: true });
 // I-02（2026-10-13 批次 1）：自测默认关查询侧线——**防测试污染真日志**（要测侧线时用显式 queryLog 路径）。
 process.env.AKASHA_QUERY_LOG = 'off';
 let passed = 0; const failures = []; const skipped = [];
-function t(name, fn) {
-  try { fn(); passed++; console.log('PASS', name); }
-  catch (e) { failures.push([name, e]); console.log('FAIL', name, '—', e.message); }
+// 复核（VERIFY-B2 §⑥）：async 用例 `throw '字符串'` 时 `e.message` 是 undefined ⇒ 失败消息丢成 "undefined"。
+// 统一取消息：对象且有 message 用 message，否则 String(e)。
+const errMsg = (e) => (e && typeof e === 'object' && 'message' in e) ? String(e.message) : String(e);
+// 异步用例先挂这里（B-②）：**落定后才** PASS/FAIL；收尾统一 await。旧实现在这里立刻 passed++ ⇒ 等不到也算绿。
+const pending = [];
+function finish(name, fn) {
+  let r;
+  try { r = fn(); }
+  catch (e) { failures.push([name, e]); console.log('FAIL', name, '—', errMsg(e)); return; }
+  if (r && typeof r.then === 'function') {
+    pending.push(Promise.resolve(r).then(
+      () => { passed++; console.log('PASS', name); },
+      (e) => { failures.push([name, e]); console.log('FAIL', name, '—', errMsg(e)); }
+    ));
+    return;
+  }
+  passed++; console.log('PASS', name);
 }
+function t(name, fn) { finish(name, fn); }
+function skip(name, reason) { skipped.push([name, reason]); console.log('SKIP', name, '—', reason); }
 /** 依赖 zstd 的用例：Node 不支持时 SKIP（显式留痕，不伪装成通过）。 */
 function tz(name, fn) {
-  if (HAS_ZSTD) return t(name, fn);
-  skipped.push(name); console.log('SKIP', name, `— Node ${process.version} 无 zstd（需 >=22.15 / >=23.8）`);
+  if (!HAS_ZSTD) { skip(name, `Node ${process.version} 缺 ${ZSTD_MISSING.join(' / ')}（需 >=22.15 / >=23.8）`); return; }
+  finish(name, fn);
 }
+
+// B-②（2026-10-17）元测试：把"等不到必须是红"钉进套件自身——谁把 waitFor 改成静默 PASS，这条先红。
+t('B-②：waitFor 有界等待——条件永不成立 ⇒ 抛「等不到」（上限写死毫秒 ⇒ 红，不是 PASS）', async () => {
+  let seen = null;
+  await assert.rejects(
+    () => waitFor('永不到来的哨兵', () => false, { timeoutMs: 150, stepMs: 20 }),
+    (e) => { seen = e; return !!e && e.code === 'EWAITTIMEOUT' && /等不到/.test(e.message); },
+    '条件不成立时 waitFor 必须抛「等不到」'
+  );
+  assert.ok(seen.message.includes('150ms'), '错误里必须带显式上限：' + seen.message);
+  const t0 = Date.now();
+  assert.equal(await waitFor('立即成立', () => 42, { timeoutMs: 150 }), 42, '条件成立即返回该值');
+  assert.ok(Date.now() - t0 < 150, '成立时不得白等满上限：' + (Date.now() - t0) + 'ms');
+});
 
 // ---- 1. 核心库
 let lib = null;
@@ -2637,8 +2711,9 @@ t('session 话题簇：跨会话持久 + 增量修缮 + 双时态 + 会话归属
   // 无会话层数据时无从构建话题簇 ⇒ 记 skip（活树有数据时照常全跑）。**这条守卫放在活树版里**，
   // 这样同步到 OSS 也自适应（core/ 未纳入 oss-sync，手工同步不能再把适配冲掉）。
   if (!built.list.length) {
-    skipped.push('session 话题簇（无会话层数据）');
-    console.log('SKIP session 话题簇 — 无会话层数据，无法构建话题簇');
+    // 复核（VERIFY-B2 §⑥）：原来裸 push 一个字符串，而底部清单按 `[name, reason]` 解构 ⇒ 会拆成「SKIP s — e」。
+    // 改走 skip()：与其它 SKIP 同格式、同计数。
+    skip('session 话题簇（跨会话持久 + 增量修缮 + 双时态 + 会话归属）', '无会话层数据（OSS 仓不带 session.jsonl）⇒ 无从构建话题簇');
     return;
   }
   assert.ok(typeof built.fingerprint === 'string' && built.fingerprint.length > 0, '有 fingerprint（幂等判据）');
@@ -2682,7 +2757,7 @@ t('⑥ L2 层可按标签精确过滤（--tag 抽象规则 只出带标条目）
   assert.ok(loose.hits.length >= r.hits.length, '不带过滤时命中数应 ≥ 过滤后');
 });
 t('⑤ 弃权评测：判分规则写死（一等错 / 一等对 / 半分）', async () => {
-  const judge = await import('./tools-abstention-judge.mjs');
+  const judge = await import(pathToFileURL(toolPath('abstention-judge')).href);
   const docs = judge.loadSuite();
   assert.ok(docs.length >= 8, '题库 ≥8 题：' + docs.length);
   assert.ok(docs.some((d) => d.expect === 'abstain') && docs.some((d) => d.expect === 'answer'), '两类题都要有');
@@ -2718,23 +2793,33 @@ t('③ 同构＝权重衰减：给出置信度与折扣，低置信时显式标�
 
 t('④ 历史回放：可运行且给出汇总（可预防/缺口）与纪律行', async () => {
   const { execFileSync } = await import('node:child_process');
-  const out = execFileSync(process.execPath, ['tools/replay-audit.mjs'], { cwd: process.cwd(), encoding: 'utf8', maxBuffer: 1 << 24 });
+  // B-②（2026-10-17）：改为 ROOT 绝对路径 + cwd:ROOT——旧写法依赖"在 akasha/ 下运行"（相对路径 + process.cwd()），
+  // 从仓库根跑 `node akasha/test.mjs` 会 MODULE_NOT_FOUND；此前靠假绿（本用例从未执行）掩盖。
+  const out = execFileSync(process.execPath, [toolPath('replay-audit')], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 24 });
   assert.ok(/历史回放/.test(out), '有标题行');
   assert.ok(/可预防\s*\d+\s*·\s*缺口\s*\d+/.test(out), '有汇总（可预防/缺口）：' + out.split('\n')[1]);
-  assert.ok(/不得.*裁决|须人工结合证据判定/.test(out), '有"机械不裁决"的纪律行');
+  // B-②（2026-10-17）：本用例曾是 async 却挂在同步 t() 上 ⇒ 从未执行过；复跑才发现纪律行已改成
+  // 「须人工结合**条目**证据判定」，旧正则漏了「条目」两字（断言腐烂被假绿掩盖）。放宽为可选中缀，判据本义不变。
+  assert.ok(/不得.*裁决|须人工结合(?:条目)?证据判定/.test(out), '有"机械不裁决"的纪律行');
 });
 t('inbox 候选三类统一带样本（sleep.distillHooks + buildTodos）', async () => {
   const sleepMod = await import('./sleep.mjs');
   const lines = [
     JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, message: 'old_string was not found' }),
     JSON.stringify({ kind: 'gate-denied', tool: 'write', message: '拒绝直写 data/canon.jsonl' }),
-    JSON.stringify({ kind: 'agent-error', message: 'tool input is invalid JSON' }),
+    // B-②（2026-10-17）：夹具改用带**具体锚点**的 agent 错误（unknown tool "…"）——A2（2026-10-13）起
+    // 候选按"样本是否具体"分道：`tool input is invalid JSON` 不含路径/unknown tool/exit N 等锚点 ⇒ aggregate（不转正），
+    // 旧夹具写于 A2 之前、且本用例从未执行过 ⇒ 一直在按旧口径期待 orphan-candidate。
+    JSON.stringify({ kind: 'agent-error', message: 'unknown tool "ops_read_many"' }),
   ];
   const c = sleepMod.distillHooks(lines);
   assert.ok(c.samples && c.samples['tool-error'].length === 1, 'tool-error 有样本：' + JSON.stringify(c.samples));
   assert.ok(c.samples['gate-denied'].length === 1, 'gate-denied 有样本');
   assert.ok(c.samples['agent-error'].length === 1, 'agent-error 有样本');
-  const todos = sleepMod.buildTodos(c, c.samples['tool-error'], null, null, c.samples).filter((t) => t.kind === 'orphan-candidate');
+  // B-②（2026-10-17）：同一病灶——本用例 async 却从未执行；复跑才暴露调用口径错了。
+  // `distillHooks` 返回的是 { counters, notes, probeNotes, samples, recall } 包装体，buildTodos 要的是内层 counters。
+  // 旧写法把包装体当 counters 传入 ⇒ 计数全 undefined ⇒ 候选恒为空（若被 await 就是红；此前被假绿掩盖）。
+  const todos = sleepMod.buildTodos(c.counters, c.notes, null, null, c.samples).filter((t) => t.kind === 'orphan-candidate');
   for (const code of ['tool-error', 'gate-denied', 'agent-error']) {
     const item = todos.find((t) => t.code === code);
     assert.ok(item, '应有 ' + code + ' 候选');
@@ -2751,33 +2836,39 @@ t('inbox 候选三类统一带样本（sleep.distillHooks + buildTodos）', asyn
 //   若给 topic 编 id，与实况不符（本文件的例 1/2/3 均未用到 topic id ✓）。
 t('#32 摘要引摘要 ⇒ summary-cites-summary（守卫能红）', () => {
   const d = mkdtempSync(join(SCRATCH, 'akasha32-'));
-  const p = join(d, 'session.jsonl');
-  writeFileSync(p, [
-    { kind: 'conclusion', id: 'seg-a', gist: '叶段' },
-    { kind: 'node', id: 'node-x', gist: '摘要A', children: ['seg-a'] },
-    { kind: 'node', id: 'node-y', gist: '摘要B', based_on: ['node-x'] },   // ← 违规
-  ].map((x) => JSON.stringify(x)).join('\n') + '\n', 'utf8');
-  const codes = lib.checkPromotions({}, p).map((e) => e.code);
-  assert.ok(codes.includes('summary-cites-summary'), '摘要引摘要必须被抓，实得：' + JSON.stringify(codes));
+  try {
+    const p = join(d, 'session.jsonl');
+    writeFileSync(p, [
+      { kind: 'conclusion', id: 'seg-a', gist: '叶段' },
+      { kind: 'node', id: 'node-x', gist: '摘要A', children: ['seg-a'] },
+      { kind: 'node', id: 'node-y', gist: '摘要B', based_on: ['node-x'] },   // ← 违规
+    ].map((x) => JSON.stringify(x)).join('\n') + '\n', 'utf8');
+    const codes = lib.checkPromotions({}, p).map((e) => e.code);
+    assert.ok(codes.includes('summary-cites-summary'), '摘要引摘要必须被抓，实得：' + JSON.stringify(codes));
+  } finally { rmSync(d, { recursive: true, force: true }); }   // #32 清理（2026-10-17 批次12 H3-N3 立；批次13 H4-N4：改 try/finally —— 断言失败/进程被杀也清）
 });
 t('#32 promoted_from → 摘要 ⇒ promotion-source-not-leaf（旧口径的洞）', () => {
   const d = mkdtempSync(join(SCRATCH, 'akasha32-'));
-  const p = join(d, 'session.jsonl');
-  writeFileSync(p, JSON.stringify({ kind: 'node', id: 'node-x', gist: '摘要A' }) + '\n', 'utf8');
-  // node 的 id 也在 segIds 里 ⇒ "存在"不足以证明"是叶" ⇒ 必须有专门判据
-  const loaded = { canon: [{ id: 'canon-t', claim: 'x', promoted_from: { id: 'node-x' } }] };
-  const codes = lib.checkPromotions(loaded, p).map((e) => e.code);
-  assert.ok(codes.includes('promotion-source-not-leaf'), '指向摘要必须报 not-leaf，实得：' + JSON.stringify(codes));
+  try {
+    const p = join(d, 'session.jsonl');
+    writeFileSync(p, JSON.stringify({ kind: 'node', id: 'node-x', gist: '摘要A' }) + '\n', 'utf8');
+    // node 的 id 也在 segIds 里 ⇒ "存在"不足以证明"是叶" ⇒ 必须有专门判据
+    const loaded = { canon: [{ id: 'canon-t', claim: 'x', promoted_from: { id: 'node-x' } }] };
+    const codes = lib.checkPromotions(loaded, p).map((e) => e.code);
+    assert.ok(codes.includes('promotion-source-not-leaf'), '指向摘要必须报 not-leaf，实得：' + JSON.stringify(codes));
+  } finally { rmSync(d, { recursive: true, force: true }); }   // #32 清理（批次13 H4-N4：try/finally）
 });
 t('#32 children 结构不算引用（守卫不许乱红）', () => {
   const d = mkdtempSync(join(SCRATCH, 'akasha32-'));
-  const p = join(d, 'session.jsonl');
-  writeFileSync(p, [
-    { kind: 'node', id: 'node-p', level: 2, children: ['node-c1'] },
-    { kind: 'node', id: 'node-c1', level: 1, children: ['seg-a'] },
-  ].map((x) => JSON.stringify(x)).join('\n') + '\n', 'utf8');
-  const codes = lib.checkPromotions({}, p).map((e) => e.code);
-  assert.ok(!codes.includes('summary-cites-summary'), 'children 是结构不是引用，不许误报');
+  try {
+    const p = join(d, 'session.jsonl');
+    writeFileSync(p, [
+      { kind: 'node', id: 'node-p', level: 2, children: ['node-c1'] },
+      { kind: 'node', id: 'node-c1', level: 1, children: ['seg-a'] },
+    ].map((x) => JSON.stringify(x)).join('\n') + '\n', 'utf8');
+    const codes = lib.checkPromotions({}, p).map((e) => e.code);
+    assert.ok(!codes.includes('summary-cites-summary'), 'children 是结构不是引用，不许误报');
+  } finally { rmSync(d, { recursive: true, force: true }); }   // #32 清理（批次13 H4-N4：try/finally）
 });
 
 // ── #22 凭据补齐（2026-10-11 立）：URL 内嵌凭据 + Authorization 非 Bearer ──
@@ -5079,6 +5170,15 @@ tz('I-15 G1：老 id 段 + --full 重扫不得重复落库（迁移安全去重�
   const r2 = sessionMod.indexSession({ file: fx, session: 'sMig', storeFile: store, metaFile: meta, full: true });
   assert.equal(r2.added, 0, '内容相同的段不得重复落库（内容键去重，与 id 形状解耦）：' + JSON.stringify(r2));
   assert.equal(readFileSync(store, 'utf8').split('\n').filter(Boolean).length, 1, '整体行数不得翻倍');
+  // 2026-10-16（GPT 第二批·② 的正解；S6 早就判定"判据自身不具备判别力"）：以上两条**对新旧两种实现都会通过** ✗ ——
+  // 去重若坏成"内容键恒等"（把不同内容也判重），r2.added 依然是 0、行数依然是 1 ⇒ **误删测不出来**。
+  // ⇒ 补**阳性对照**：不同内容必须落库（"防误删"的正题是这一条，不是上面那两条）。
+  const fx2 = join(dir, 'fx2.jsonl.zstd');
+  const recs2 = [{ seq: 2, time: 1791312001000, type: 'user/message', data: { content: [{ type: 'text', text: '同一会话里内容不同的另一条段' }] } }];
+  writeFileSync(fx2, zstdCompressSync(Buffer.from(recs2.map((r) => JSON.stringify(r)).join('\n') + '\n')));
+  const r3 = sessionMod.indexSession({ file: fx2, session: 'sMig', storeFile: store, metaFile: meta });
+  assert.ok(r3.added >= 1, '**不同内容必须落库**——去重把不同内容也判重就是误删：' + JSON.stringify(r3));
+  assert.equal(readFileSync(store, 'utf8').split('\n').filter(Boolean).length, 2, '同会话不同内容 ⇒ 段数必须为 2（不得被去重吞掉）');
   rmSync(dir, { recursive: true, force: true });
 });
 t('I-15 G2：MCP 读工具的 until 侧同样必须校验（能红）', () => {
@@ -5275,11 +5375,156 @@ t('I-19 CLI 侧入参闸（今天四套新检测器只 spawn mcp.mjs ⇒ CLI 面
   rmSync(dir, { recursive: true, force: true });
 });
 
-console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped（Node ${process.version} 无 zstd）` : ''}`);
+// ── I-20（2026-10-15 GPT 清单清尾批）：core N1/N2 · session N1/N2/N4/N5 · 回归固化 ──────────────
+t('I-20 N1：summary 必须把 opts.files 注入**贯穿**到 stats/audit/pulse（空注入不得漏出默认库状态）（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i20n1-'));
+  try {
+    const files = {};
+    for (const s of ['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier']) { const f = join(dir, `${s}.jsonl`); writeFileSync(f, ''); files[s] = f; }
+    writeFileSync(files.canon, JSON.stringify({ id: 'canon-i20n1', claim: '注入哨兵', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-01-01', event_time: '2026-01-01' }) + '\n');
+    writeFileSync(files.frontier, JSON.stringify({ id: 'front-i20n1', claim: '注入哨兵', url: 'https://u.test/x', status: '待验证', next_review: '2026-01-01', event_time: '2026-01-01' }) + '\n');
+    const sum = lib.summary({ files, today: '2026-08-08' });
+    assert.equal(sum.stores.canon.total, 1, 'canon 主计数必须来自注入（原修复只接了一半）：' + JSON.stringify(sum.stores.canon));
+    assert.deepEqual(sum.stores.frontier.by_status, { 待验证: 1 }, 'by_status 必须来自注入（N1 的核心残留）：' + JSON.stringify(sum.stores.frontier.by_status));
+    const due = (sum.audit.findings || []).find((f) => f.code === 'frontier-due');
+    assert.ok(due && due.count === 1, 'audit 必须看到注入库的到期项（且只有它）：' + JSON.stringify(sum.audit));
+    assert.ok(!sum.newest || String(sum.newest.id ?? '').includes('i20n1'), 'newest 不得来自默认库：' + JSON.stringify(sum.newest));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+t('I-20 N1b：migrate 的 AKASHA_ROOT 口径＝数据目录本身（不再追加 /data）；--apply 备份随目标走（能红）', async () => {
+  // B-②（2026-10-17）：旧用例只跑 dry-run，却在标题里宣称"--apply 备份随目标走"——备份**永不出现**也不影响
+  // 它通过 ⇒ 典型的"等不到就 PASS"。这里补上真正的 --apply 段，并用**有界等待**等备份文件出现：
+  // 等不到（回归/只在别处备份）⇒ waitFor 抛「等不到」⇒ 红，而不是空过。
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i20mig-'));
+  const store = join(dir, 'session.jsonl');
+  const original = JSON.stringify({ kind: 'conclusion', session: 's1', seq: 1, gist: 'g', id: 'seg-i20-1' }) + '\n';
+  const env = { ...process.env, AKASHA_ROOT: dir };
+  delete env.AKASHA_BAK;   // 备份默认路径必须自己"随目标走"，不得靠外部覆盖
+  try {
+    writeFileSync(store, original);
+    // ① dry-run：口径（AKASHA_ROOT 若被再拼 /data 会 ENOENT）且**不落任何备份**
+    const r = spawnSync(process.execPath, [toolPath('migrate-20261015-compact-session')], { encoding: 'utf8', env });
+    assert.equal(r.status, 0, 'dry-run 必须成功（原实现把 AKASHA_ROOT 再拼 /data ⇒ ENOENT）：' + (r.stderr || '').slice(0, 160));
+    assert.ok(/原：1 行/.test(r.stdout || ''), '必须读 AKASHA_ROOT 指的目录：' + (r.stdout || '').slice(0, 120));
+    assert.ok(!existsSync(join(dir, '_rollback-20261015-compact')), 'dry-run 不得产生备份（预演就该是只读）');
+    // ② --apply：真的执行一次（旧用例缺的就是这一段）
+    const a = spawnSync(process.execPath, [toolPath('migrate-20261015-compact-session'), '--apply'], { encoding: 'utf8', env });
+    assert.equal(a.status, 0, '--apply 必须成功：' + (a.stderr || '').slice(0, 160));
+    // ③ 有界等待：备份文件必须在 WAIT_TIMEOUT_MS 内出现（超时 ⇒ 红且报「等不到」）
+    const bakDir = join(dir, '_rollback-20261015-compact');
+    const bakFile = await waitFor('--apply 备份文件出现（随 AKASHA_ROOT 目标走）', () => {
+      if (!existsSync(bakDir)) return null;
+      const name = readdirSync(bakDir).filter((n) => /^session\.jsonl\.pre-compact-/.test(n)).sort().pop();
+      return name ? join(bakDir, name) : null;
+    });
+    assert.equal(readFileSync(bakFile, 'utf8'), original, '备份必须是压缩前原文（备份随目标走，且内容不少）');
+    const printed = ((a.stdout || '').match(/已备份 →\s*(.+)/) || [])[1] || '';
+    const norm = (s) => s.replace(/\\/g, '/');
+    assert.ok(printed && norm(printed).startsWith(norm(dir)), '备份路径必须落在 AKASHA_ROOT 指的目录内（不得写回固定真回滚目录）：' + printed.slice(0, 160));
+    // ④ 写回结果：内容无重复 ⇒ 原样一行；原子写不留 .tmp
+    assert.equal(readFileSync(store, 'utf8'), original, '内容无重复时写回必须仍是原样一行');
+    assert.ok(!existsSync(store + '.tmp'), '原子写不得留 .tmp 残留');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+t('I-20 N2：非法 event_time 在**公共写层**被拒（appendRecord / revise 两路径都过 validateRecord）（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i20n2-'));
+  const f = join(dir, 'orphan.jsonl');
+  const base = { summary: 's', observed: 'o', hypothesis: 'h', would_confirm: 'wc', would_refute: 'wr', severity: '中', created: '2026-10-15' };
+  try {
+    writeFileSync(f, JSON.stringify({ id: 'orphan-i20b', ...base, event_time: '2026-10-15' }) + '\n');
+    assert.ok(lib.validateRecord('orphan', { id: 'orphan-x', ...base, event_time: '15/10/2026' }).some((e) => e.includes('event_time')), '非法格式必须被 validateRecord 拒');
+    assert.equal(lib.validateRecord('orphan', { id: 'orphan-x', ...base, event_time: '2026-10-15' }).length, 0, '合法日期不得误伤：' + JSON.stringify(lib.validateRecord('orphan', { id: 'orphan-x', ...base, event_time: '2026-10-15' })));
+    let threw = false;
+    try { lib.appendRecord('orphan', { id: 'orphan-i20a', ...base, event_time: '9999-13-45' }, { file: f }); } catch { threw = true; }
+    assert.ok(threw, 'appendRecord（通用 add 同层）不得落非法 event_time（原来 write/check 全绿、日期查询静默排除）');
+    let threw2 = false;
+    try { lib.revise('orphan', 'orphan-i20b', { event_time: '15/10/2026' }, { file: f }); } catch { threw2 = true; }
+    assert.ok(threw2, 'revise（MCP 同层）不得把 event_time 改成非法值');
+    assert.equal(readFileSync(f, 'utf8').trim().split('\n').length, 1, '拒绝路径不得写入任何内容');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+t('I-20 N2b：混形会话归一——动作版本归并 / 节点代次 / 话题归属 / 短 id 展开（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i20n2b-'));
+  try {
+    const rows = [
+      { id: 'seg-p1', kind: 'action', session: 'session-abcd-1111', seq: 5, gist: 'pwsh：x（无结果）', logged_at: '2026-10-15T01:00:00Z', ptr: { callSeq: 5 } },
+      { id: 'seg-b1', kind: 'action', session: 'abcd-1111', seq: 6, gist: 'pwsh：x ↳ ok', logged_at: '2026-10-15T02:00:00Z', ptr: { callSeq: 5 } },
+    ];
+    const acts = sessionMod.collapseActionVersions(rows).filter((r) => r.kind === 'action');
+    assert.equal(acts.length, 1, '同一调用的两形态版本必须只回一版：' + JSON.stringify(acts.map((x) => x.id)));
+    assert.ok(String(acts[0].gist).includes('↳'), '应保留完成版');
+    const onlyPrefix = [{ session: 'session-abcd1234-0000-0000-0000-000000000000', id: 'seg-x' }];
+    assert.equal(sessionMod.resolveSessionPrefix(onlyPrefix, 'abcd1234'), 'session-abcd1234-0000-0000-0000-000000000000', '裸短串应经归一展开到前缀形态唯一键');
+    const st = join(dir, 'nodes.jsonl');
+    const n = (id, sess, tg) => JSON.stringify({ kind: 'node', session: sess, id, treegen: tg, level: 1, seq: 1, gist: '弧线节点夹具', time_from: '2026-10-15', time_to: '2026-10-15' });
+    writeFileSync(st, [n('n-old-1', 'session-abcd-1111', 1), n('n-new-1', 'abcd-1111', 2)].join('\n') + '\n');
+    const hits = sessionMod.lookupSegmentsDetailed('弧线节点夹具', { storeFile: st, session: 'abcd-1111', level: 'nodes', limit: 10 });
+    assert.ok(hits.hits.length && hits.hits.every((h) => h.id === 'n-new-1'), '旧代节点（另一形态）不得参与检索：' + JSON.stringify(hits.hits.map((h) => h.id)));
+    const st2 = join(dir, 'topics.jsonl');
+    writeFileSync(st2, JSON.stringify({ kind: 'topic', treegen: 1, fingerprint: 'f', clusters: [{ term: '记忆', count: 1, sessions: { 'session-abcd-1111': 2 } }], logged_at: 'x' }) + '\n');
+    assert.equal(sessionMod.lookupTopics({ storeFile: st2, term: '记忆', session: 'abcd-1111' }).length, 1, '裸短串必须命中前缀形态的话题归属');
+    assert.equal(sessionMod.lookupTopics({ storeFile: st2, session: 'session-abcd-1111' }).length, 1, '前缀形态同样命中');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+t('I-20 N4：内容键（shape/migrate 共用同一函数）——两代 topic / 不同 promotion 不得同键（能红）', async () => {
+  const { contentKeyOf } = await import('./tools-session-key.mjs');
+  const t1 = { kind: 'topic', treegen: 1, fingerprint: 'fp1' };
+  const t2 = { kind: 'topic', treegen: 2, fingerprint: 'fp1' };
+  assert.notEqual(contentKeyOf(t1), contentKeyOf(t2), '两代话题不得同键（旧实现把后一代当重复删）');
+  assert.equal(contentKeyOf(t1), contentKeyOf({ kind: 'topic', treegen: 1, fingerprint: 'fp1' }), '同代同指纹才是重复');
+  assert.notEqual(contentKeyOf({ kind: 'promotion', id: 'promo-a' }), contentKeyOf({ kind: 'promotion', id: 'promo-b' }), '不同升格目标不得同键');
+  assert.equal(contentKeyOf({ kind: 'action', session: 'session-x', seq: 3, gist: 'g', tools: [] }), contentKeyOf({ kind: 'action', session: 'x', seq: 3, gist: 'g', tools: [] }), '混形会话的机械段是同一条（与索引跳过口径一致）');
+});
+tz('I-20 N5：单帧负载含 `28 B5`（两字节）不得误报截断；三字节残缺帧头仍必须报（能红）', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-i20n5-'));
+  try {
+    let frame = null;
+    for (let seed = 0; seed < 512 && !frame; seed += 1) {
+      const body = Buffer.alloc(16384);
+      let x = (seed + 1) * 2654435761 >>> 0;
+      for (let i = 0; i < body.length; i += 1) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; x >>>= 0; body[i] = x & 0xff; }
+      const payload = Buffer.concat([body, Buffer.from('\n{"ok":1}')]);   // 尾行＝合法 JSON（否则会被"尾行解析失败"那条规则置截断，替本用例背锅）
+      const f0 = zstdCompressSync(payload);
+      let two = false; let three = false;
+      // 注意从 i=1 起（i=0 是帧头自身魔数，会污染"三字节前缀"判定）
+      for (let i = 1; i + 1 < f0.length; i += 1) { if (f0[i] === 0x28 && f0[i + 1] === 0xb5) { two = true; if (i + 2 < f0.length && f0[i + 2] === 0x2f) three = true; } }
+      if (two && !three) frame = f0;
+    }
+    assert.ok(frame, '夹具：未能造出「含 28 B5 不含 28 B5 2F」的完整帧');
+    const p1 = join(dir, 'cand.zstd'); writeFileSync(p1, frame);
+    const r1 = sessionMod.readSessionArchive(p1);
+    assert.equal(r1.frameTruncated, 0, '完整内容不得因负载里的两字节命中报截断（GPT N5 假红）：' + JSON.stringify({ t: r1.frameTruncated, cand: r1.frameMagicCandidates }));
+    assert.ok((r1.frameMagicCandidates ?? 0) > 0, '候选计数应保留（可观测）：' + JSON.stringify(r1));
+    const line = (x) => Buffer.from(JSON.stringify({ seq: 1, time: 1791312000000, type: 'user/message', data: { content: [{ type: 'text', text: x }] } }) + '\n');
+    const p2 = join(dir, 'half.zstd');
+    writeFileSync(p2, Buffer.concat([zstdCompressSync(line('第一帧')), Buffer.from([0x28, 0xb5, 0x2f, 0xfe]), zstdCompressSync(line('第二帧')).subarray(4)]));
+    assert.equal(sessionMod.readSessionArchive(p2).frameTruncated, 1, '残缺第二帧（28 B5 2F FE）仍必须报截断');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// B-②（2026-10-17）：异步用例必须**全部落定**后才统计——旧实现在这里直接 exit，
+// 未落定的 Promise 被掐断 ⇒ 那些断言从未执行却已记 PASS（假绿的主通道）。
+// 全局死线（复核 VERIFY-B2 §⑥）：**一个永不落定的 async 用例会把整轮挂住**（进程不退出、CI 卡死）。
+//   ⇒ 有界等待；超时记一条 FAIL 后继续收尾——不假装绿，也不无限等。
+const DEADLINE_MS = 120000;
+{
+  let timer = null;
+  const guard = new Promise((res) => { timer = setTimeout(() => res('TIMEOUT'), DEADLINE_MS); if (timer.unref) timer.unref(); });
+  const outcome = await Promise.race([Promise.all(pending).then(() => 'DONE'), guard]);
+  clearTimeout(timer);
+  if (outcome === 'TIMEOUT') {
+    failures.push(['全局死线', new Error(`${DEADLINE_MS}ms 内仍有异步用例未落定（悬挂；已落定 ${passed} 条）`)]);
+    console.log('FAIL', '全局死线', `— ${DEADLINE_MS}ms 内仍有异步用例未落定（悬挂）`);
+  }
+}
+console.log(`\n${passed} passed, ${failures.length} failed, ${skipped.length} skipped`);
+// SKIP 必须可见且计入统计（不计通过）：逐条打印原因，避免"静默跳过"被读成绿。
+if (skipped.length) {
+  console.log('SKIP 清单（不计通过；原因如下）：');
+  for (const [name, reason] of skipped) console.log(' - SKIP', name, '—', reason);
+}
 if (failures.length) {
   console.log('失败清单：');
-  for (const [name, e] of failures) 
-
-console.log(' -', name, ':', e.message);
+  for (const [name, e] of failures) console.log(' -', name, ':', errMsg(e));
 }
 process.exit(failures.length ? 1 : 0);

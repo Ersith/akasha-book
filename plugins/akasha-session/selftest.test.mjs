@@ -12,9 +12,22 @@ mkdirSync(SCRATCH, { recursive: true });
 try { for (const d of readdirSync(SCRATCH)) if (d.startsWith('akasha-sesplug-')) rmSync(join(SCRATCH, d), { recursive: true, force: true }); } catch { /* 静默 */ }
 
 let passed = 0; const failures = []; const skipped = [];
+// 2026-10-17：这个 `t()` 原来是**同步包装**——async 用例体不被 await ⇒ 断言还没跑就先记 PASS
+//   （和核心 test.mjs 以前那个假绿同一类；是写 N4 异步用例时当场撞见的）。
+//   改为：async 体压进 pending，落定后才 PASS/FAIL，收尾统一 await。
+const pendingT = [];
 function t(name, fn) {
-  try { fn(); passed++; console.log('PASS', name); }
-  catch (e) { failures.push([name, e]); console.log('FAIL', name, '—', e.message); }
+  let r;
+  try { r = fn(); }
+  catch (e) { failures.push([name, e]); console.log('FAIL', name, '—', e && e.message); return; }
+  if (r && typeof r.then === 'function') {
+    pendingT.push(Promise.resolve(r).then(
+      () => { passed++; console.log('PASS', name); },
+      (e) => { failures.push([name, e]); console.log('FAIL', name, '—', e && e.message); }
+    ));
+    return;
+  }
+  passed++; console.log('PASS', name);
 }
 // zstd 自 Node v23.8.0 / v22.15.0 起可用；旧 Node 上依赖 zstd 的用例记 SKIP（显式留痕，不伪装成通过）。
 // （2026-10 wave1：合并批丢了这层，Node 20 上 4 项 FAIL；与核心 test.mjs 的 tz 口径对齐。）
@@ -91,7 +104,7 @@ if (mod) {
     assert.equal(contexts.length, 1);
     assert.equal(contexts[0].name, 'akasha:session');
     assert.equal(contexts[0].order, 134);
-    assert.equal(contexts[0].text(), null, '空库应静默');
+    assert.equal(contexts[0].text(), '', '空库应静默');
     rmSync(dir, { recursive: true, force: true });
   });
   t('纯函数：shouldIndex 去抖', () => {
@@ -197,11 +210,11 @@ if (mod) {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-sesplug-'));
     const { ctx, contexts } = makeCtx();
     mod.apply(ctx, { akashaDir: CORE, log: join(dir, 'hooks.jsonl'), sessionsRoot: join(dir, 'sessions'), metaFile: join(dir, 'missing.json'), storeFile: join(dir, 'store.jsonl') });
-    assert.equal(contexts[0].text(), null);
+    assert.equal(contexts[0].text(), '');
     writeFileSync(join(dir, 'meta2.json'), '{bad json');
     const { ctx: c2, contexts: k2 } = makeCtx();
     mod.apply(c2, { log: join(dir, 'h2.jsonl'), sessionsRoot: join(dir, 'sessions'), metaFile: join(dir, 'meta2.json'), storeFile: join(dir, 'store.jsonl') });
-    assert.equal(k2[0].text(), null);
+    assert.equal(k2[0].text(), '');
     rmSync(dir, { recursive: true, force: true });
   });
   t('接缝：inject 声明覆盖 apply 触碰的服务（systemPrompt / timer）', () => {
@@ -590,6 +603,58 @@ if (mod) {
     assert.equal(mod.effectiveThrottle(1024, 30000), 30000);
   });
 }
+
+// N4（2026-10-17 复核）：h8 那个"压缩后补索引改判"修复此前**没有任何自动化用例**（selftest mtime 早于 h8）。
+//   这里补 4 条：settle 双向 + 幂等、59/61s 边界、N2 后缀、子代理目录识别。
+if (mod) {
+  t('N4：settleCompactsIn 形式无关（裸↔带前缀）+ 幂等', () => {
+    const a = [{ session: 'session-AAAA', ts: Date.now(), indexed: false, reason: 'queued' }];
+    assert.equal(mod.settleCompactsIn(a, 'AAAA').length, 1, '裸 uuid 调用应改判带前缀条目');
+    assert.equal(a[0].indexed, true);
+    assert.equal(mod.settleCompactsIn(a, 'AAAA').length, 0, '已改判的条目不得重复改判（幂等）');
+    const b = [{ session: 'BBBB', ts: Date.now(), indexed: false, reason: 'queued' }];
+    assert.equal(mod.settleCompactsIn(b, 'session-BBBB').length, 1, '带前缀调用应改判裸条目');
+    const c = [{ session: 'CCCC', ts: Date.now(), indexed: false, reason: 'queued' }];
+    assert.equal(mod.settleCompactsIn(c, 'DDDD').length, 0, '不同 uuid 不得误伤');
+  });
+
+  t('N4：queued 59s ⇒ 排队中（无 ⚠）/ 61s ⇒ ⚠', () => {
+    const now = Date.now();
+    const base = { meta: { sessions: { AAAA: { segments: 12, conclusions: 3 } } }, density: null };
+    const at = (ms) => mod.renderSessionLine({ ...base, compacts: [{ session: 'session-AAAA', ts: now - ms, indexed: false, reason: 'queued' }] }, now);
+    assert.ok(!at(59000).includes('⚠'), '59s 内应说"排队中"而不是 ⚠');
+    assert.ok(at(61000).includes('⚠'), '61s 后应转 ⚠');
+  });
+
+  t('N1/N2：已收入行不带 ⚠，且按归一化 id 找到 meta（带「已索引 N 段」）', () => {
+    const now = Date.now();
+    const line = mod.renderSessionLine({
+      meta: { sessions: { AAAA: { segments: 12, conclusions: 3 } } }, density: null,
+      compacts: [{ session: 'session-AAAA', ts: now - 5000, indexed: true, reason: 'recovered' }],
+    }, now);
+    assert.ok(!line.includes('⚠'), 'N1：已收入不该挂 ⚠：' + line);
+    assert.ok(line.includes('已索引 12 段'), 'N2：应带上 meta 统计后缀：' + line);
+  });
+
+  t('子代理：resolveSessionArchive 认出裸 uuid 目录并标 child', async () => {
+    const root = mkdtempSync(join(SCRATCH, 'akasha-sesproot-'));
+    mkdirSync(join(root, 'session-MAIN'), { recursive: true });
+    mkdirSync(join(root, 'CHILD1'), { recursive: true });
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(join(root, 'session-MAIN', 'session.v4.jsonl.zstd'), 'x');
+    writeFileSync(join(root, 'CHILD1', 'session.v4.jsonl.zstd'), 'x');
+    const coreUrl = 'file:///' + join(CORE, 'session.mjs').replace(/\\/g, '/');
+    const core = await import(coreUrl);
+    const main = core.resolveSessionArchive(root, 'MAIN');
+    const child = core.resolveSessionArchive(root, 'CHILD1');
+    assert.equal(main.child, false, '主会话目录（session- 前缀）应 child:false');
+    assert.equal(child.child, true, '裸 uuid 目录应 child:true（子代理）');
+    assert.equal(core.resolveSessionFile(root, 'CHILD1').endsWith('session.v4.jsonl.zstd'), true, '旧 API 现在也应能找到子代理档案');
+  });
+}
+
+// 2026-10-17：异步用例必须**落定后**才统计（否则又是"断言没跑就先记 PASS"的假绿）。
+await Promise.all(pendingT);
 
 console.log(`\n${passed} passed, ${failures.length} failed${skipped.length ? `, ${skipped.length} skipped` : ''}`);
 if (failures.length) {

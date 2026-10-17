@@ -224,7 +224,12 @@ export function validateRecord(store, r) {
   if (!r || typeof r !== 'object') return ['记录不是对象'];
   const e = [];
   if (!isStr(r.id)) e.push('缺少 id');
-  if (r.event_time !== undefined && !isStr(r.event_time)) e.push('event_time 须为非空字符串（YYYY-MM-DD 或 ISO）');
+  // 2026-10-15（GPT 复核 core N2）：**格式**也要校——只查「非空字符串」时 '15/10/2026' 能经通用 `add` / MCP `revise`
+  // 落库（专门入口修了、公共写层没修 ⇒ 写进去却按日期查不到）。与读侧 normalizeDateArg 同口径；存量真库实测 0 条受影响。
+  if (r.event_time !== undefined) {
+    if (!isStr(r.event_time)) e.push('event_time 须为非空字符串（YYYY-MM-DD 或 ISO）');
+    else if (!normalizeDateArg(r.event_time).ok) e.push('event_time 格式非法（应为 YYYY-MM-DD 或 ISO 8601）：' + r.event_time);
+  }
   if (r.logged_at !== undefined && !isStr(r.logged_at)) e.push('logged_at 须为非空字符串（ISO）');
   // revokes（2026-10-14 SCHEMA §P4 落地）：撤销记录指向被撤的墓碑 id。
   if (r.revokes !== undefined && !isStr(r.revokes)) e.push('revokes 须为墓碑 id（非空字符串）');
@@ -2193,10 +2198,12 @@ export function summary(opts = {}) {
       }))
     };
   }
-  const s = stats();
+  // 2026-10-15（GPT 复核 core N1）：三个子调用也必须吃**同一注入**——否则「空库却有待验证状态/到期项/newest」
+  // 自相矛盾（stats/audit/pulse 各自读默认库 ⇒ summary 的注入只接了一半）。
+  const s = stats(opts);
   stores.frontier.by_status = s.frontier.by_status;
-  const a = audit({ today });
-  const p = pulse();
+  const a = audit({ ...opts, today });
+  const p = pulse(opts);
   return {
     at: new Date().toISOString(),
     today,
@@ -3688,13 +3695,13 @@ export function ageText(ms) {
 
 // 库脉搏（纯读）：六库计数 / 当前版本数 / 每库最后一条 id / 全库最近写入（含相对时间）。
 // 「写→可见」通道的数据源：任何会话/脚本写入后，条子下一回合即可命名新内容（可立即 lookup/brief）。
-export function pulse() {
+export function pulse(opts = {}) {   // 2026-10-15（GPT N1）：吃 opts.files 注入——summary 的注入面必须贯穿到 newest/mtime
   const stores = {};
   let newest = null;
   const now = Date.now();
   for (const name of STORES) {
-    const file = storePath(name);
-    const { records } = loadStore(name);
+    const file = (opts.files && opts.files[name]) || storePath(name);
+    const { records } = loadStore(name, file);
     let mtime = null;
     try { mtime = statSync(file).mtimeMs; } catch { /* 容缺 */ }
     const last = records.length ? records[records.length - 1] : null;

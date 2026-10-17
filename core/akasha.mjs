@@ -645,6 +645,8 @@ switch (cmd) {
   case 'add': {
     try {
       const obj = JSON.parse(flags.data || '{}');
+      // 2026-10-15（GPT 复核 core N2）：通用 `add` 也要过日期闸——否则非法 event_time 仍能经此入库（只有 orphan add 有闸 ✗）
+      if (obj && obj.event_time !== undefined) obj.event_time = dayArg(obj.event_time, 'event_time');
       const r = appendRecord(flags.store, obj);
       const c = committedOf(r);   // #23：写入回执统一（committed=true 才说「已追加」）
       print(c, '已追加：' + c.id + '（committed=' + c.committed + '）');

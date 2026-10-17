@@ -23,6 +23,10 @@ const MAP = [
   [/'\.\.\/tools\/([a-z0-9-]+)\.mjs'/g, "'./tools-$1.mjs'"],
   [/"\.\.\/tools\/([a-z0-9-]+)\.mjs"/g, '"./tools-$1.mjs"'],
   [/(from\s+['"])\.\.\/(lib|session|sleep|mcp|loop-detect)\.mjs(['"])/g, '$1./$2.mjs$3'],   // 扁平化后同目录引用（tools-X.mjs 的 '../lib.mjs' → './lib.mjs'）
+  // 2026-10-17 发版：`tools/migrate-20261015-compact-session.mjs` 依赖同目录 `session-key.mjs`；
+  //   OSS 侧 tools 全部扁平成 `core/tools-<名>.mjs` ⇒ 该 import 必须跟着改名（否则 ERR_MODULE_NOT_FOUND）。
+  [/from '\.\/session-key\.mjs'/g, "from './tools-session-key.mjs'"],
+  [/from "\.\/session-key\.mjs"/g, 'from "./tools-session-key.mjs"'],
   [/([A-Za-z]):[\\]{1,4}Harness[\\]{1,4}akasha/g, '<AKASHA_DIR>'],
   [/([A-Za-z]):[\\/]+Harness[\\/]+akasha/g, '<AKASHA_DIR>'],
   [/([A-Za-z]):[\\]{1,4}DSHHarness([\\]{1,4}[^\s"'`)?]*)?/g, '<DSH_INSTALL>'],
@@ -40,7 +44,11 @@ const MAP = [
 
 if (!existsSync(OSS_CORE)) mkdirSync(OSS_CORE, { recursive: true });
 let copied = 0, checked = 0, bad = [];
+// 2026-10-17 发版：`tools/oss-scrub-paths.mjs` 的整体就是「给本机路径做替换用的正则字面量」，
+//   经下面这张 MAP 再映射一次必被改坏（实测 `];` 处 Unexpected token）⇒ 跳过。OSS 侧不需要这个清洗器。
+const SKIP = new Set(['tools/oss-scrub-paths.mjs']);
 for (const f of FILES) {
+  if (SKIP.has(f)) continue;
   let text;
   try { text = readFileSync(LIVE + '/' + f, 'utf8'); } catch { continue; }
   let out = text;
@@ -54,7 +62,9 @@ for (const f of FILES) {
 }
 // tools/*.mjs → core/tools-<name>.mjs（同一映射）
 let tools = 0;
-for (const t of readdirSync(LIVE + '/tools').filter((x) => x.endsWith('.mjs'))) {
+for (const t of readdirSync(LIVE + '/tools').filter((x) => x.endsWith('.mjs') && x !== 'oss-scrub-paths.mjs')) {
+  // 2026-10-17 发版：跳过 `oss-scrub-paths.mjs`——它整份就是"给本机路径做替换的正则字面量"，
+  //   再经 MAP 映射一次必被改坏（实测 `];` 处 Unexpected token）。OSS 侧不需要这个清洗器。
   let out = readFileSync(LIVE + '/tools/' + t, 'utf8');
   for (const [re, to] of MAP) out = out.replace(re, to);
   const dst = OSS_CORE + '/tools-' + t;

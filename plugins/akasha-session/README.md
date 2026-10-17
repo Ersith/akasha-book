@@ -1,5 +1,8 @@
 # @akasha-book/session
 
+> 2026-10-17 本地兼容修复（0.3.5-h7）：runtime context 在无内容或降级时统一返回空字符串，避免 Harness 提示词渲染出现 null/indexOf 错误；纯函数和内部状态的 null 含义保持原样。
+
+
 阿卡夏之书会话层插件 —— **自动增量索引 + 压缩事件行 + 节奏条 + 循环观测 P0（dry 干跑）+ 弧线树**（核心逻辑归 `<AKASHA_DIR>/session.mjs` 与 `akasha\loop-detect.mjs`；手动用法 `node akasha.mjs session …` 与 `node akasha.mjs session loopwatch`）。
 
 > **版本（单一真值）**：以本包 `package.json` 的 `version` 为准 —— 打包时由 npm 写入 tgz 文件名与包元数据，本 README **不再复述版本号**（2026-10-13 审计 P3：此处曾写 v0.2.3 而实际已到 0.3.2-h4，差出两个功能代；同族漂移在 gate / sleep / hooks 的 README 里也都出现过，故统一改为「指真值」而不是「抄版本」）。

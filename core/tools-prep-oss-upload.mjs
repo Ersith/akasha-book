@@ -39,6 +39,8 @@ for (const [src, dst] of [
   ['tools/gate.mjs', 'core/tools-gate.mjs'],
   ['tools/akasha-shape.mjs', 'core/tools-akasha-shape.mjs'],
   ['tools/family-sweep.mjs', 'core/tools-family-sweep.mjs'],
+  // 2026-10-17 发版：`tools/oss-scrub-paths.mjs` 内含**给本机路径做替换用的正则字面量**，
+  //   经同步映射后语法被改坏（`];` 处 Unexpected token）⇒ 排除。它本身是"清洗器"，OSS 侧不需要。
   ['GATE.md', 'docs/GATE.md'],
   ['FULLCHECK-20261015.md', 'docs/FULLCHECK-20261015.md'],
 ]) {

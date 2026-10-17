@@ -5,9 +5,16 @@
 //     · expect=answer 且带出处 ⇒ **一等对**；无出处但可用 ⇒ 半分（可用未标源）；错 ⇒ 一等错
 //   用法：node tools/abstention-judge.mjs <作答 JSON 路径>
 //   作答 JSON 形状：[{ id, stance: 'known'|'uncertain'|'unknown', cites: ['canon-…'], text? }]
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const SUITE = '<AKASHA_DIR>/tests/abstention.jsonl';
+// 2026-10-17 发版修：原为活树绝对路径 `<AKASHA_DIR>/tests/abstention.jsonl`，
+//   同步到 OSS 后被换成字面量 `<AKASHA_DIR>/tests/abstention.jsonl`（ENOENT）。
+//   改为相对本文件解析，并兼容两种布局：活树 `tools/X.mjs → ../tests`；OSS `core/tools-X.mjs → ./tests`。
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SUITE = [join(HERE, 'tests', 'abstention.jsonl'), join(HERE, '..', 'tests', 'abstention.jsonl')]
+  .find((p) => existsSync(p)) ?? join(HERE, '..', 'tests', 'abstention.jsonl');
 
 export function loadSuite(path = SUITE) {
   return readFileSync(path, 'utf8').split('\n')

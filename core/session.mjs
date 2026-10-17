@@ -1,16 +1,18 @@
 // 阿卡夏之书 · 会话层（session layer）—— 单会话记忆（读取 / 抽取 / 索引 / 检索）。
 // 设计稿：docs\superpowers\specs\2026-10-07-session-akasha-design.md（v0.4）
 // 计划：docs\superpowers\plans\2026-10-07-session-layer-v0.md（阶段 1）
-// 读取器移植自 ..\tools\session-scan.mjs（多帧 zstd 容器：按魔数 28 B5 2F FD 逐帧解压）。
+// 读取器移植自 ..\tools\session-scan.mjs（多帧 zstd 容器：按**帧结构**逐帧解压；2026-10-17 B-⑤ 起不再用魔数扫边界）。
 import { readFileSync, appendFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
-import { ROOT, STORES, loadStore, storePath, tokenize, scoreTokens, redact, writeFileAtomic, appendRecord, retiredIds, withFileLock, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary, recordQuery, readDepthOf, projectText, agePrefix, READ_TIER, genreRenderOf } from './lib.mjs';
+import { ROOT, DATA, STORES, loadStore, storePath, tokenize, scoreTokens, redact, writeFileAtomic, appendRecord, retiredIds, withFileLock, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary, recordQuery, readDepthOf, projectText, agePrefix, READ_TIER, genreRenderOf } from './lib.mjs';
 
 export const SESSION_DEFAULTS = {
-  storeFile: join(ROOT, 'data', 'session.jsonl'),
-  metaFile: join(ROOT, 'data', 'session-meta.json'),
+  // 2026-10-15（GPT 复核 session N1）：默认值必须与核心**同口径**——`AKASHA_ROOT` 指向放 jsonl 的目录本身；
+  // 原先写 join(ROOT,'data') 只认源码树 ⇒ 「指沙箱跑」时读面默认仍开真库（环境隔离失效）。默认布局下与旧值等价。
+  storeFile: join(DATA, 'session.jsonl'),
+  metaFile: join(DATA, 'session-meta.json'),
   sessionsRoot: '<LOCAL_PATH>\\official-home\\sessions'
 };
 
@@ -25,79 +27,162 @@ function zstdDecompressSync(buf) {
   return zlib.zstdDecompressSync(buf);
 }
 
-/** 读会话档案（多帧 zstd 拼接容器；单帧兼容）。坏容器抛错。 */
+/** 解析一帧的**结构边界**（帧头 + 块头；只读结构、不解压）。返回 `{ end, reason }`，end<0 表示结构性失败。
+ *  依据 RFC 8878：Magic(4) + Frame_Header_Descriptor(1) + [Window_Descriptor] + [Dictionary_ID] +
+ *  [Frame_Content_Size] + 若干 Block(3B 头 + 数据) + [Content_Checksum(4)]。
+ *  块头：bit0=Last_Block，bit1-2=Type(0 Raw/1 RLE/2 Compressed/3 Reserved)，bit3-23=Block_Size。 */
+function zstdFrameEnd(buf, start) {
+  let p = start + 4;
+  if (p >= buf.length) return { end: -1, reason: 'header' };
+  const desc = buf[p++];
+  if ((desc & 0x18) !== 0) return { end: -1, reason: 'reserved' };        // bit4 unused / bit3 reserved 必须为 0
+  const fcsFlag = desc >>> 6, single = (desc >>> 5) & 1, checksum = (desc >>> 2) & 1, dictFlag = desc & 3;
+  if (!single) p += 1;                                                    // Window_Descriptor
+  p += [0, 1, 2, 4][dictFlag];                                            // Dictionary_ID
+  p += fcsFlag === 0 ? (single ? 1 : 0) : [0, 2, 4, 8][fcsFlag];          // Frame_Content_Size
+  if (p > buf.length) return { end: -1, reason: 'header' };
+  let last = 0;
+  while (!last) {
+    if (p + 3 > buf.length) return { end: -1, reason: 'block-header' };
+    const h = buf[p] | (buf[p + 1] << 8) | (buf[p + 2] << 16);
+    last = h & 1;
+    const type = (h >>> 1) & 3, size = h >>> 3;
+    p += 3;
+    if (type === 3) return { end: -1, reason: 'block-reserved' };
+    p += type === 1 ? 1 : size;                                           // RLE=1B；Raw/Compressed=size B
+    if (p > buf.length) return { end: -1, reason: 'block-overrun' };
+  }
+  if (checksum) p += 4;
+  if (p > buf.length) return { end: -1, reason: 'checksum' };
+  return { end: p, reason: 'ok' };
+}
+
+/** skippable frame（magic 0x184D2A50..0x184D2A5F）的结束偏移；不是则 -1。合法容器允许它夹在帧之间。 */
+function skippableFrameEnd(buf, p) {
+  if (p + 8 > buf.length) return -1;
+  const magic = buf.readUInt32LE(p);
+  if (magic < 0x184d2a50 || magic > 0x184d2a5f) return -1;
+  return p + 8 + buf.readUInt32LE(p + 4);
+}
+
+/** 读会话档案（多帧 zstd 拼接容器；单帧兼容）。坏容器抛错。
+ *
+ *  2026-10-17（B-⑤，审核「合法 zstd 帧被误报截断」）：帧边界改为**按帧结构走**，不再拿负载里的魔数当边界。
+ *  旧实现的两处魔数启发式都能被**完全合法**的帧打红，且各自丢数据：
+ *   ① 多帧分支把负载中出现的 `28 B5 2F FD` 当成新帧起点 ⇒ 合法单帧被切成两段：首段解压失败/半解、尾段必失败，
+ *      既报 frameFails/frameTruncated，又把后半内容静默丢掉（实测：21 字节负载只读出前 8 字节）；
+ *   ② 单帧分支把 `28 B5 2F` 前缀当「残缺第二帧」——但 raw block 可原样携带任意字节 ⇒ 合法负载命中即假红。
+ *  启发式无法区分「压缩数据里的字节」与「真帧头」；唯一可靠判据是结构化证据。
+ *  新口径：帧头/块头解析不出，或解压**真的**失败，才算坏（frameFails）；
+ *  截断末帧照旧容错——不炸、能收多少内容收多少（v24.19 部分解压），置 frameTruncated=1，下游按 parseFails 丢半行。
+ *  `frameMagicCandidates` 保留为纯观测计数（裸 `28 B5`），**不参与任何判定**。 */
 export function readSessionArchive(filePath) {
   const buf = readFileSync(filePath);
-  const hits = [];
-  for (let i = 0; i <= buf.length - 4; i++) {
-    if (buf[i] === ZSTD_MAGIC[0] && buf[i + 1] === ZSTD_MAGIC[1] && buf[i + 2] === ZSTD_MAGIC[2] && buf[i + 3] === ZSTD_MAGIC[3]) {
-      hits.push(i);
-      i += 3;
-    }
-  }
+  const hasMagic = (p) => p + 4 <= buf.length
+    && buf[p] === ZSTD_MAGIC[0] && buf[p + 1] === ZSTD_MAGIC[1] && buf[p + 2] === ZSTD_MAGIC[2] && buf[p + 3] === ZSTD_MAGIC[3];
+  // 观测计数：裸两字节命中（含负载里的巧合），仅供诊断；判定一律走结构。
+  let magicCandidates = 0;
+  for (let i = 1; i + 1 < buf.length; i += 1) if (buf[i] === 0x28 && buf[i + 1] === 0xb5) magicCandidates += 1;
   if (!hasZstd()) zstdDecompressSync(buf); // 能力缺失 → 抛清楚的版本错误（不被下面的「不是有效容器」吞掉）
-  if (hits.length <= 1) {
+
+  let firstMagic = -1;
+  for (let i = 0; i + 4 <= buf.length; i += 1) if (hasMagic(i)) { firstMagic = i; break; }
+  if (firstMagic < 0 && skippableFrameEnd(buf, 0) < 0) {
+    // 一个完整魔数都没有、且**也不是**以 skippable 帧打头 ⇒ 整档当单帧解（空文件 ⇒ 空文本；非容器 ⇒ 抛错）。
+    // 2026-10-17 复核 H1（低危真洞）：原来只看 `firstMagic < 0`，于是一个**只含 skippable**的容器会掉进这条遗留分支，
+    //   绕过全部结构校验——声明 100B 实际 10B 的截断 skippable（18B 文件）仍报 trunc=0。补上第二个条件后走结构循环。
     let text = '';
     try {
       text = zstdDecompressSync(buf).toString('utf8');
     } catch (e) {
       throw new Error('不是有效的 zstd 会话容器：' + filePath + '（' + e.message + '）');
     }
-    // 单帧分支的尾部完整性检查（2026-10-15，E 题审计确证：此前【结构性缺失】——多帧分支有、单帧分支没有，
-    // 于是「半写单帧」在部分 Node 版本上解出截断文本却零旗标 ⇒ 下游把半行当完整内容吃进去（静默丢数据）。
-    // 口径与多帧分支一致：末尾非空且 JSON 解析不出的 tail ⇒ frameTruncated=1（下游据此丢弃半行）。
-    const tail1 = text.slice(text.lastIndexOf('\n') + 1).trim();
-    let frameTruncated1 = 0;
-    if (tail1) { try { JSON.parse(tail1); } catch { frameTruncated1 = 1; } }
-    // 近似魔数扫描（2026-10-15，二轮审计 D4）：多帧容器的**第二个帧头不完整/受损**时 hits 计数不到、落回本分支，
-    // 于是 zstd 只解第一帧、尾部被静默丢弃且零旗标。务实修法：扫描 zstd 魔数的前两字节 `28 B5`——完整魔数之外的
-    // 任何命中都说明「后面还有（残缺的）帧」（并发半写与帧损坏在本机行为上不可区分，故只置信号、不抛错）。
-    let nearMagic = 0;
-    for (let i = 0; i + 1 < buf.length; i += 1) {
-      if (i !== 0 && buf[i] === 0x28 && buf[i + 1] === 0xb5) nearMagic += 1;
-    }
-    if (nearMagic > 0) frameTruncated1 = 1;
-    return { text, frames: hits.length || 1, frameFails: nearMagic, frameTruncated: frameTruncated1 };
+    const tail = text.slice(text.lastIndexOf('\n') + 1).trim();
+    let frameTruncated = 0;
+    if (tail) { try { JSON.parse(tail); } catch { frameTruncated = 1; } }
+    return { text, frames: 1, frameFails: 0, frameTruncated, frameMagicCandidates: magicCandidates };
   }
+
+  // 从腐烂区之后找回下一个「结构可解析且真能解码」的帧（不把负载里孤立的魔数当真边界）。
+  const findNextFrame = (from) => {
+    for (let i = from; i + 4 <= buf.length; i += 1) {
+      if (!hasMagic(i)) continue;
+      const { end } = zstdFrameEnd(buf, i);
+      if (end < 0) continue;
+      try { zstdDecompressSync(buf.subarray(i, end)); return i; } catch { /* 假候选：结构像帧但解不开 */ }
+    }
+    return -1;
+  };
+
   const parts = [];
+  let frames = 0;
   let frameFails = 0;
-  for (let k = 0; k < hits.length; k++) {
-    const end = k + 1 < hits.length ? hits[k + 1] : buf.length;
-    try {
-      parts.push(zstdDecompressSync(buf.slice(hits[k], end)));
-    } catch {
-      frameFails += 1; // 半写/损坏帧：跳过不中断（Review Focus #1）
-    }
-  }
-  if (!parts.length) throw new Error('不是有效的 zstd 会话容器：' + filePath + '（全部帧解压失败）');
-  const text = Buffer.concat(parts).toString('utf8');
-  // 截断帧信号（2026-10-07；跨 node 版本稳健）：zstdDecompressSync 对「末尾截断帧」不抛错——
-  // v24.19 返回部分字节（尾行非空且不可解析 ⇒ 文本完整性测）；v24.21 静默只回已完整帧（帧数不匹配 ⇒ 计数测）。
-  // 两路任一命中 ⇒ frameTruncated=1；下游按 parseFails 丢弃半行。
-  const tail = text.slice(text.lastIndexOf('\n') + 1).trim();
-  const missingFrames = parts.length < hits.length; // 帧数不匹配：截断/损坏帧未产出内容（跨 node 稳健信号）
   let frameTruncated = 0;
-  if (missingFrames) frameTruncated = 1;
-  else if (tail) {
-    try { JSON.parse(tail); } catch { frameTruncated = 1; }
+  let p = 0;
+  while (p < buf.length) {
+    const skipEnd = skippableFrameEnd(buf, p);
+    if (skipEnd > 0) {
+      if (skipEnd > buf.length) { frameFails += 1; frameTruncated = 1; break; }
+      p = skipEnd; continue;
+    }
+    if (!hasMagic(p)) {
+      // 帧与帧之间的残渣（例：帧1 + `28 B5 2F FE` + 帧2去头）⇒ 该区确实无法解码。
+      frameFails += 1; frameTruncated = 1;
+      const next = findNextFrame(p + 1);
+      if (next < 0) break;
+      p = next; continue;
+    }
+    frames += 1;
+    const { end } = zstdFrameEnd(buf, p);
+    if (end < 0) {
+      // 结构截断（半写末帧）：不炸；v24.19 对截断帧会返回部分解压字节，收下它（v24.21 只回完整帧/抛错则可收为空）。
+      frameFails += 1; frameTruncated = 1;
+      try { const partial = zstdDecompressSync(buf.subarray(p)); if (partial.length) parts.push(partial); } catch { /* 无可用内容 */ }
+      const next = findNextFrame(p + 1);
+      if (next < 0) break;
+      p = next; continue;
+    }
+    try {
+      parts.push(zstdDecompressSync(buf.subarray(p, end)));
+    } catch {
+      frameFails += 1; frameTruncated = 1; // 结构完整但解压失败（损坏）：跳过不中断（Review Focus #1）
+    }
+    p = end;
   }
-  return { text, frames: hits.length, frameFails, frameTruncated };
+
+  const text = Buffer.concat(parts).toString('utf8');
+  if (!frameTruncated) {
+    // 文本完整性兜底：末行非空且 JSON 解析不出 ⇒ 截断（跨 node 版本稳健，v24.19 部分解压时用它兜底）。
+    const tail = text.slice(text.lastIndexOf('\n') + 1).trim();
+    if (tail) { try { JSON.parse(tail); } catch { frameTruncated = 1; } }
+  }
+  return { text, frames: frames || 1, frameFails, frameTruncated, frameMagicCandidates: magicCandidates };
 }
 
-/** 按会话 id 在 sessionsRoot 递归找档案（`session-<id>` 目录下第一个 *.zstd）；未命中 null。
- *  两种 id 形态都收：`session-<id>`（宿主事件里常见）与裸 `<id>`——目录名恒为 `session-<id>`。 */
-export function resolveSessionFile(sessionsRoot, sessionId) {
+/** 按会话 id 在 sessionsRoot 递归找档案，并回报**布局类型**：`{ file, child }`；未命中 null。
+ *
+ *  2026-10-17 修（session-index-error「未找到会话档案」全是子代理）：宿主有**两种**目录布局——
+ *    ① 主会话：`session-<uuid>/session.v4.jsonl.zstd`（带前缀）
+ *    ② 子代理：`<uuid>/session.v4.jsonl.zstd`（**裸 uuid，无前缀**）
+ *  原实现假设"目录名恒为 `session-<id>`"，对子代理恒返回 null ⇒ 每回合刷一条错误。
+ *  实测（<LOCAL_PATH>\official-home\sessions\--H-Harness--）：176 目录 = 157 带前缀（主）+ 19 裸 uuid（今日子代理）。
+ *  `child:true` 表示命中的是裸名目录 ⇒ 调用方据此**跳过**（子代理转录不是"我的会话"，不该进小阿卡夏）。 */
+export function resolveSessionArchive(sessionsRoot, sessionId) {
   const needle = String(sessionId ?? '');
   if (!needle) return null;
-  const dirName = needle.startsWith('session-') ? needle : 'session-' + needle;
+  const bare = needle.startsWith('session-') ? needle.slice('session-'.length) : needle;
+  const names = ['session-' + bare, bare];   // ① 主会话布局 ② 子代理布局
   const walk = (dir) => {
     let entries = [];
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return null; }
     for (const e of entries) {
       const p = join(dir, e.name);
       if (!e.isDirectory()) continue;
-      if (e.name === dirName) {
-        try { for (const f of readdirSync(p)) if (f.endsWith('.zstd')) return join(p, f); } catch { return null; }
+      const idx = names.indexOf(e.name);
+      if (idx !== -1) {
+        try {
+          for (const f of readdirSync(p)) if (f.endsWith('.zstd')) return { file: join(p, f), child: idx === 1 };
+        } catch { return null; }
       }
       const deeper = walk(p);
       if (deeper) return deeper;
@@ -105,6 +190,11 @@ export function resolveSessionFile(sessionsRoot, sessionId) {
     return null;
   };
   return walk(sessionsRoot);
+}
+
+/** 兼容旧调用：只要文件路径。 */
+export function resolveSessionFile(sessionsRoot, sessionId) {
+  return resolveSessionArchive(sessionsRoot, sessionId)?.file ?? null;
 }
 
 /** 折叠空白（纯函数）。 */
@@ -203,7 +293,7 @@ function makeSeg(sid, sid8, { seq, time, turn, step, kind, gist, why, keywords, 
   rec.keywords = (keywords ?? []).map((k) => redact(k));
   rec.tools = tools ?? [];
   rec.ptr = ptr ?? {};
-  rec.id = `seg-${sid8}-${seq}-${fp8([rec.kind, rec.gist, rec.why ?? '', rec.tools.join(',')].join('|'))}`;
+  rec.id = `seg-${sid8}-${seq}-${fp8(JSON.stringify([rec.kind, rec.gist, rec.why ?? '', rec.tools]))}`;   // 2026-10-15（GPT 复核 session N3）：指纹原先用 `|` 裸拼接 ⇒ gist 里带分隔符即边界位移、可撞；改为与内容键同口径的转义
   return rec;
 }
 
@@ -368,7 +458,9 @@ export function collapseActionVersions(records) {
   const rest = [];
   for (const r of records) {
     if (r.kind !== 'action') { rest.push(r); continue; }
-    const key = `${r.session}|${r.ptr?.callSeq ?? r.ptr?.seq ?? r.seq}`;
+    // 2026-10-15（GPT 复核 session N2）：版本归并键必须**归一**——裸 / `session-` 前缀两形态并存时，
+    // 同一次调用的两版会落进两个桶（「优先完成版、只回一版」的读取契约失效）。
+    const key = `${normalizeSid(r.session)}|${r.ptr?.callSeq ?? r.ptr?.seq ?? r.seq}`;
     const prev = actions.get(key);
     if (!prev) { actions.set(key, r); continue; }
     const better = done(r) > done(prev) || (done(r) === done(prev) && String(r.logged_at ?? '') >= String(prev.logged_at ?? ''));
@@ -391,7 +483,10 @@ export function resolveSessionPrefix(records, session) {
   const normMatches = [...ids].filter((id) => normalizeSid(id) === ns);
   if (normMatches.length === 1) return normMatches[0];
   const matches = [...ids].filter((id) => id.startsWith(s));
-  return matches.length === 1 ? matches[0] : s;
+  if (matches.length === 1) return matches[0];
+  // 2026-10-15（GPT 复核 session N2·短 id 展开遗漏）：历史库只含 `session-<短>` 形态时裸短串前缀匹配不到 ⇒ 归一后再试。
+  const normPrefix = [...ids].filter((id) => normalizeSid(id).startsWith(ns));
+  return normPrefix.length === 1 ? normPrefix[0] : s;
 }
 
 export function lookupSegments(query, opts = {}) {
@@ -429,17 +524,18 @@ export function lookupSegmentsDetailed(query, { storeFile = SESSION_DEFAULTS.sto
   const view = all ? records : collapseActionVersions(records);
   let genBy = null;
   if (kinds.includes('node')) {
-    genBy = new Map(); // 各会话各取最新代——跨会话查询不得互相遮挡（终局复核 F1）
+    genBy = new Map(); // 各会话各取最新代——跨会话查询不得互相遮挡（终局复核 F1）；键归一（GPT N2：混形旧树不得各算一代）
     for (const r of records) {
       if (r.kind !== 'node' || (sess && !sessionMatches(r.session, sess))) continue;
-      genBy.set(r.session, Math.max(genBy.get(r.session) ?? -1, Number(r.treegen) || 0));
+      const gk = normalizeSid(r.session);
+      genBy.set(gk, Math.max(genBy.get(gk) ?? -1, Number(r.treegen) || 0));
     }
   }
   const hits = [];
   for (const r of view) {
     if (sess && !sessionMatches(r.session, sess)) continue;
     if (!kinds.includes(r.kind)) continue;
-    if (r.kind === 'node' && (Number(r.treegen) || 0) !== genBy.get(r.session)) continue; // 旧代不参与检索
+    if (r.kind === 'node' && (Number(r.treegen) || 0) !== genBy.get(normalizeSid(r.session))) continue; // 旧代不参与检索（键归一：GPT N2）
     if (since || until) {
       const day = String((r.kind === 'node' ? r.time_from : r.time) || '').slice(0, 10);
       if (!day) continue;
@@ -705,10 +801,11 @@ export function buildTopics({ storeFile = SESSION_DEFAULTS.storeFile } = {}) {
     if (!segKinds.has(r.kind)) continue;
     const t = Date.parse(String(r.time || '')) || null;
     if (!t) continue;
-    const w = win.get(r.session) ?? { lo: Infinity, hi: -Infinity };
+    const sid0 = normalizeSid(r.session);   // GPT N2：话题归属按归一键聚合（混形会话不得分家）
+    const w = win.get(sid0) ?? { lo: Infinity, hi: -Infinity };
     if (t < w.lo) w.lo = t;
     if (t > w.hi) w.hi = t;
-    win.set(r.session, w);
+    win.set(sid0, w);
   }
   const clusters = new Map();
   for (const [sid, w] of win) {
@@ -748,7 +845,8 @@ export function lookupTopics({ storeFile = SESSION_DEFAULTS.storeFile, term, ses
   const list = latest ? (latest.clusters ?? []) : [];
   return list.filter((c) => {
     if (term && !String(c.term).includes(String(term).toLowerCase())) return false;
-    if (session && !Object.keys(c.sessions || {}).some((s) => s.startsWith(String(session)))) return false;
+    // GPT N2：两种合法写法（裸 / 前缀）都必须命中同一归属；归一后按前缀匹配（短 id 场景保留）。
+    if (session && !Object.keys(c.sessions || {}).some((s) => normalizeSid(s).startsWith(normalizeSid(session)))) return false;
     if (since && c.lastEvent && c.lastEvent < String(since).slice(0, 10)) return false;   // 双时态：事件轴为主，logged 轴兜底
     if (until && c.firstEvent && c.firstEvent > String(until).slice(0, 10)) return false;
     return true;
@@ -914,7 +1012,7 @@ export function buildTree({ session, storeFile = SESSION_DEFAULTS.storeFile, chu
     const seq1 = Math.max(...items.map((x) => x.seq ?? 0));
     const gist = pickNodeText(items, NODE_GIST_CAP);
     const extra = pickNodeText(items, NODE_EXTRA_CAP);
-    const fp = fp8([`L${level}`, children.join(','), gist].join('|'));
+    const fp = fp8(JSON.stringify([`L${level}`, children, gist]));   // 同上：节点指纹也改转义口径
     return {
       id: `node-${sid8}-L${level}-${seq0}-${seq1}-${fp}-${sidFp}`,
       store: 'session',

@@ -15,7 +15,15 @@ node tools/gate.mjs close --task full-check-20261015 --out ./gate-out      # ④
 
 ## 1. 结果计数（全部可从产物复算）
 - **P0 机检：13 项，0 FAIL**（主套件 / 库校验 / 体检 / 全家扫描 / 语法 / 六库快照）——**而下面 29 个升级点全部逃过了这些脚本**。
-- 切片：**61 条**（5 个文件）· 升级：**29 点**（A1 28 / A2 1）· 自证包：完整=true（带证伪器 61/61）
+- 切片：**61 行**（5 个文件）。
+- 升级：机检报 **29 点**（A1 28 / A2 1）。
+
+> ### ⚠ 计数不可靠（初版错处 + 外部复核）
+> 初版本把"行数"当"问题数"写成 **29**。外部复核指出去重后应是 **16 A1 + 1 A2**；
+> 我用两种键重算又得到不同数：按 `(claim,anchor)` 去重 **29**、按 `(file,id)` 去重 **11**。
+> **四组数字互不相同，根因是切片没有全局唯一键**（id 只在本单元内唯一，跨文件会重号；且同一单元内被逐字重复填充）。
+> ⇒ **"问题数"目前不可信**；下一批第一件事＝切片加**全局唯一键 + 内容级去重**，并在裁决里**分别报**「行数 / 独立记录 / 升级点」。
+- 自证包：完整=true（带证伪器 61/61）
 - 升级按 risk_class：silent-skip 16 · false-fix 2 · coverage-gap 2 · false-green 7 · dataloss 1 · false-fix/crash（实证） 1
 - 机检裁决：**needs-slow**（含闭词表零容忍校验：非法取值当场判 `invalid-input` 并**拒绝报绿**）
 
@@ -40,7 +48,20 @@ node tools/gate.mjs close --task full-check-20261015 --out ./gate-out      # ④
 
 ## 3. 被慢层**证伪**的条目（不许照修——审计请重点看这一节）
 
-- **cli-mcp.jsonl S2** —— 证伪（对当前 HEAD）；对切片时点为真：切片时点（Lead 亦复核）exit=0 属实。lib.mjs 于 20:32:35 加入 dayArg 下沉（lib.mjs:3836/2182/4004 + akasha.mjs 顶层收口）。我把 falsifier 原样重跑：node akasha.mjs audit --today bogus --json → exit=1，单行 today 必须是 YYYY-MM-DD（或可归一的日期）：bogus；kit --today b
+> `verdict-b.json` 落盘时含断字，无法机读 ⇒ **以下 8 条按 B 路回执逐条转录**（内容未改写）。
+
+| 文件 | id | 判定 | 一句话证据 |
+|---|---|---|---|
+| session-tools | S1 | **部分确认（原判成立；现态已修）** | 裸/前缀两写法 CLI 同命中「作用域内 3246」；`!== sess` 零残留；test.mjs 有回归 |
+| session-tools | S3 | **证伪** | 前缀对不撞、末字符最狠对不撞；极端条件（同 seq+同内容+同子节点 id）现态不撞 / **旧公式会撞** ⇒ sidFp 是承重件 |
+| session-tools | S4 | **证伪** | 真库 both=0（620/1340/30120）；沙箱 4 行 craft 精确分离 2/2、0 误判 |
+| plugins | S1 | **部分确认（源码已修✓ / 生产未生效✗）** | mock 出话「[门档]…」+ 沙箱实写 gate-reminder 行；回退哨兵即红（exit=1）；**安装副本仍 null** |
+| plugins | S3 | **部分确认** | 36/0 但 `pass += 2` 无条件计数、`:98` 欠计 1 条 ⇒ 自报虚 1（已修）；注册面覆盖已补 |
+| plugins | S4 | **确认** | 安装副本 01a6d274c140 ≠ 源码 b5a7c4df3777；版本号却同为 1.10.11-h1；安装副本 grep「排查/体检/审一下」=0 |
+| plugins | S5 | **确认** | `gate-reminder`=0 vs `stateful-reminder`=21（5.2MB 文件仍在写）；根因=S1 |
+| plugins | S6 | **确认** | session lib `:551-556` 外层 catch 无 log ⇒ 降级无观测线（已补） |
+
+- **A 路 cli-mcp.jsonl S2** —— 证伪（对当前 HEAD）；对切片时点为真：切片时点（Lead 亦复核）exit=0 属实。lib.mjs 于 20:32:35 加入 dayArg 下沉（lib.mjs:3836/2182/4004 + akasha.mjs 顶层收口）。我把 falsifier 原样重跑：node akasha.mjs audit --today bogus --json → exit=1，单行 today 必须是 YYYY-MM-DD（或可归一的日期）：bogus；kit --today b
 
 > 其中 `cli-mcp S2`/`S5` 的"证伪"是**"对当前 HEAD 证伪"**：原判与复核在各自时点都属实，是**Lead 在慢层裁决期间并发打补丁**改变了工作树。⇒ 见第 5 节流程教训。
 

@@ -25,6 +25,18 @@ for (const [tag, file] of [['A', 'verdict.json'], ['B', 'verdict-b.json']]) {
 }
 const escIds = new Set(esc.escalations.map((e) => `${e.file ?? ''}#${e.id}`));
 
+// B 路（工具族+插件面）8 条裁决——原文见 B 路回执（verdict-b.json 落盘断字无法机读，此处逐条转录、内容未改）
+const B_ROWS = [
+  ['session-tools', 'S1', '部分确认（原判成立；现态已修）', '裸/前缀两写法 CLI 同命中「作用域内 3246」；`!== sess` 零残留；test.mjs 有回归'],
+  ['session-tools', 'S3', '**证伪**', '前缀对不撞、末字符最狠对不撞；极端条件（同 seq+同内容+同子节点 id）现态不撞 / **旧公式会撞** ⇒ sidFp 是承重件'],
+  ['session-tools', 'S4', '**证伪**', '真库 both=0（620/1340/30120）；沙箱 4 行 craft 精确分离 2/2、0 误判'],
+  ['plugins', 'S1', '部分确认（源码已修✓ / 生产未生效✗）', 'mock 出话「[门档]…」+ 沙箱实写 gate-reminder 行；回退哨兵即红（exit=1）；**安装副本仍 null**'],
+  ['plugins', 'S3', '部分确认', '36/0 但 `pass += 2` 无条件计数、`:98` 欠计 1 条 ⇒ 自报虚 1（已修）；注册面覆盖已补'],
+  ['plugins', 'S4', '确认', '安装副本 01a6d274c140 ≠ 源码 b5a7c4df3777；版本号却同为 1.10.11-h1；安装副本 grep「排查/体检/审一下」=0'],
+  ['plugins', 'S5', '确认', '`gate-reminder`=0 vs `stateful-reminder`=21（5.2MB 文件仍在写）；根因=S1'],
+  ['plugins', 'S6', '确认', 'session lib `:551-556` 外层 catch 无 log ⇒ 降级无观测线（已补）'],
+];
+
 // ── 我的修复清单（手工维护：确证后逐条补；只列已修且有验证的）──────────────
 const FIXES = [
   ['会话层读面被切成两半', 'session.mjs（`!== sess` 族 4 处 + `sessionMatches` 只归一一边）', '真库两种写法"作用域内" 2028/1089 → **3211**（统一）；test.mjs I-18', '本轮最重'],
@@ -40,6 +52,17 @@ const FIXES = [
   ['紧凑化工具不认 `AKASHA_ROOT`', 'tools/migrate-20261015-compact-session.mjs', '指向沙箱跑不再真读真库（原会）', '安全相关'],
   ['family-sweep 漂移面漏 `lib/index-worker.mjs`', 'tools/family-sweep.mjs', '该文件现纳入漂移比对', '覆盖缺口'],
 ];
+
+// 2026-10-15 修正（GPT 复核指出）：切片**行数 ≠ 不同问题数**——session-tools 的 8 条被逐字重复 5 遍。
+// 按 (claim+anchor) 去重后才是独立记录数；升级数也要按独立记录重算。
+const uniqKey = (s) => `${String(s.claim ?? '').slice(0, 80)}|${s.anchor ?? ''}`;
+const uniqSlices = new Map();
+for (const s of slices) if (!uniqSlices.has(uniqKey(s))) uniqSlices.set(uniqKey(s), s);
+const uniqEsc = new Map();
+for (const e of esc.escalations) { const k = `${e.file ?? '?'}|${e.id}`; if (!uniqEsc.has(k)) uniqEsc.set(k, e); }
+const a1 = esc.escalations.filter((e) => e.reason === 'A1' || String(e.reason ?? '').includes('A1')).length;
+const uniqA1 = [...uniqEsc.values()].filter((e) => e.reason === 'A1' || String(e.reason ?? '').includes('A1')).length;
+const dupFactor = slices.length && uniqSlices.size ? (slices.length / uniqSlices.size).toFixed(2) : '—';
 
 const lines = [];
 lines.push('# 阿卡夏全量检查报告（2026-10-15 · 门档 C 档端到端首跑）');
@@ -59,7 +82,15 @@ lines.push('铁律：只读被审对象；脚本只写自己的 `runs/`；**每�
 lines.push('');
 lines.push('## 1. 结果计数（全部可从产物复算）');
 lines.push(`- **P0 机检：13 项，0 FAIL**（主套件 / 库校验 / 体检 / 全家扫描 / 语法 / 六库快照）——**而下面 29 个升级点全部逃过了这些脚本**。`);
-lines.push(`- 切片：**${slices.length} 条**（5 个文件）· 升级：**${esc.escalations.length} 点**（A1 ${esc.counts?.a1 ?? '?'} / A2 ${esc.counts?.a2 ?? '?'}）· 自证包：完整=${esc.certificate?.complete}（带证伪器 ${esc.certificate?.withFalsifier}/${esc.certificate?.slices}）`);
+lines.push(`- 切片：**${slices.length} 行**（5 个文件）。`);
+lines.push(`- 升级：机检报 **${esc.escalations.length} 点**（A1 ${esc.counts?.a1 ?? '?'} / A2 ${esc.counts?.a2 ?? '?'}）。`);
+lines.push('');
+lines.push('> ### ⚠ 计数不可靠（初版错处 + 外部复核）');
+lines.push('> 初版本把"行数"当"问题数"写成 **29**。外部复核指出去重后应是 **16 A1 + 1 A2**；');
+lines.push(`> 我用两种键重算又得到不同数：按 \`(claim,anchor)\` 去重 **${uniqSlices.size}**、按 \`(file,id)\` 去重 **${uniqEsc.size}**。`);
+lines.push('> **四组数字互不相同，根因是切片没有全局唯一键**（id 只在本单元内唯一，跨文件会重号；且同一单元内被逐字重复填充）。');
+lines.push('> ⇒ **"问题数"目前不可信**；下一批第一件事＝切片加**全局唯一键 + 内容级去重**，并在裁决里**分别报**「行数 / 独立记录 / 升级点」。');
+lines.push(`- 自证包：完整=${esc.certificate?.complete}（带证伪器 ${esc.certificate?.withFalsifier}/${esc.certificate?.slices}）`);
 const byClass = {};
 for (const e of esc.escalations) byClass[e.risk_class] = (byClass[e.risk_class] ?? 0) + 1;
 lines.push(`- 升级按 risk_class：${Object.entries(byClass).map(([k, v]) => `${k} ${v}`).join(' · ')}`);
@@ -75,8 +106,14 @@ lines.push('**修复后全量回归**：主套件 270/0 · 体检 51/51 · 库�
 lines.push('');
 lines.push('## 3. 被慢层**证伪**的条目（不许照修——审计请重点看这一节）');
 lines.push('');
+lines.push('> `verdict-b.json` 落盘时含断字，无法机读 ⇒ **以下 8 条按 B 路回执逐条转录**（内容未改写）。');
+lines.push('');
+lines.push('| 文件 | id | 判定 | 一句话证据 |');
+lines.push('|---|---|---|---|');
+for (const r of B_ROWS) lines.push(`| ${r[0]} | ${r[1]} | **${String(r[2]).replace(/\*\*/g, '')}** | ${r[3]} |`);
+lines.push('');
 for (const [k, v] of Object.entries(verdicts)) {
-  if (String(v.verdict ?? '').includes('证伪')) lines.push(`- **${v.file ?? ''} ${v.id}** —— ${v.verdict}：${String(v.evidence ?? '').slice(0, 220)}`);
+  if (String(v.verdict ?? '').includes('证伪')) lines.push(`- **A 路 ${v.file ?? ''} ${v.id}** —— ${v.verdict}：${String(v.evidence ?? '').slice(0, 220)}`);
 }
 lines.push('');
 lines.push('> 其中 `cli-mcp S2`/`S5` 的"证伪"是**"对当前 HEAD 证伪"**：原判与复核在各自时点都属实，是**Lead 在慢层裁决期间并发打补丁**改变了工作树。⇒ 见第 5 节流程教训。');

@@ -6,7 +6,7 @@
 // 口径：**读命令**在真库跑（只读）；**写命令**在临时副本跑（AKASHA_ROOT/AKASHA_DIR/AKASHA_LOGS 指向 temp）——
 //   真库一字不写。每项判据：退出码 + 输出非空 + 无 error/异常字样 + （关键的）断言具体语义。
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, writeFileSync, copyFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -58,8 +58,47 @@ for (const [name, args, assert] of RO) {
   // （否则体检的探询会混进真 logs/query-log.jsonl——首跑即实测到 3 条）。
   const r = spawnSync(NODE, [join(H, "akasha/akasha.mjs"), ...args], { cwd: H, encoding: "utf8", timeout: 120000, env: { ...process.env, AKASHA_QUERY_LOG: "off" } });
   const out = ((r.stdout || "") + (r.stderr || "")).trim();
-  const bad = /Cannot find module|TypeError|ReferenceError|SyntaxError|ENOENT/.test(out);
-  ok("CLI " + name, r.status === 0 && !bad && assert(out), `exit=${r.status}${bad ? " 含异常字样" : ""} :: ${out.slice(0, 110).replace(/\n/g, " ⏎ ")}`);
+  // ── 崩溃判据 v2（2026-10-16 批次8 收窄；修 `CLI session context` 结构性假红）──────────────
+  // 旧版把 stdout+stderr 合并后对**任意位置**做关键字匹配；而读面命令**会回显库/会话原文**
+  //   ——`session context` 的"最近结论" = 会话段 gist 拼接，库里天然存在讨论 ENOENT/TypeError 的段落
+  //   ⇒ 窗口滑进即红、滑出即绿（实测：真命令 `session context --session … --budget 4000`
+  //     输出 7975B 含 2 处 ENOENT；600 预算下窗口回退 1 段亦命中、回退 7 段不命中）。
+  //   红绿随库内容漂移 = **判据缺陷**，不是数据问题。新版分域（真崩溃仍必红）：
+  //   ① spawn 级失败 r.error（超时/二进制缺失）；
+  //   ② stderr 任意位置——Node 崩溃栈 / 模块加载失败（`Error: Cannot find module`）
+  //      与 akasha.mjs 顶层兜底（uncaughtException ⇒ console.error + exit 1）的通道；
+  //      只读面 33/33 项实测：正常命令 stderr 恒为空（见 landing/probe-ro-streams.json）；
+  //   ③ stdout 仅认**行首**异常形态（`XxxError: ` / `Error: ` / `Cannot find module` / `node:internal/`）——
+  //      命令自己 catch 后 `print(null, e.message)` 的崩因从行首开始；回显文本里的异常词在句中，不再误判。
+  //   v2.1（2026-10-17 批次10 · MIX#2 收口两处"仅文本可判"的残余盲区——批次9 §5-2 的 E1/E2）：
+  //     追加 `^(?:ENOENT|EACCES|EPERM): ` 与 `^ERR_[A-Z_]+`（**仍只认无前导空白的行首**）。
+  //     闭合：stdout 行首 errno + exit 0（旧判绿）；`ERR_MODULE_NOT_FOUND:` 行首 + exit 0（两版皆盲）。
+  //     依据＝33 项只读面**全量 stdout 逐行**画像（landing/logs/ro-stdout-profile.json，重跑
+  //       scripts/probe-ro-stdout.mjs）：现行 / 追加后 / 含缩进容忍 三套判据在本库现况命中均为 **0**
+  //       （33/33 项 stderr 空、首行无空白）⇒ 追加不引入假红。库内容漂移后复跑该脚本即可复测。
+  //   v2.2（2026-10-17 批次11 · VERIFY-H2 §1.4 / §5-④）两处收口：
+  //     ① **收紧** `^ERR_[A-Z_]+` → `^ERR_[A-Z_]+: `。依据＝库文本全量行首扫描（session.jsonl 49868 行）：
+  //        裸行首命中 **34** 条、缩进形态 **0** 条，且 34 条**全部**是 `$.keywords[N]` 里的 `ERR_*` 无冒号裸码
+  //        （无渲染器单独打印它 ⇒ 潜伏漂移质量，今天不可达）。收紧后 C 用例（`ERR_MODULE_NOT_FOUND: …` 有
+  //        冒号）仍判红，而 34 个词元**一次抹掉**。代价＝纯码无冒号不再判红——那恰是**回显形态**（词元列表）
+  //        而非崩溃渲染形态，且另有 exit / stderr 两条车道兜底。
+  //     ② **缩进边界的理由改写**（旧理由"缩进是 markdown 回显的常见形态"与本库数据相反，已作废；边界本身
+  //        保留——仍只认行首无前导空白）。站得住的是**两条理由 + 一条风险提示（附反向收益）**：
+  //        (a) 它不是**类别区分**：markdown 里列 0 的 fenced code block 同样是回显形态，产出的正是**裸行首**
+  //            行，恰恰是本判据会命中的形态——批次8 的"判据 ↔ 库内容耦合"没有被类别性切断，只是概率收窄；
+  //        (b) 承重的是另外两条车道（exit≠0 / stderr 任意位置），本判据只在"命令自己 catch 后照常 exit 0"
+  //            的窄缝里补刀 ⇒ 放宽的边际收益低；
+  //        (c) **风险提示（附反向收益）**——放宽缩进容忍会把「缩进行回显」（缩进代码块 / 列表续行 / 引用）拉进
+  //            命中面：这是**前向判断**而非实测（本库今天缩进形态存量 0，两侧皆 0 ⇒ 今天放宽与不放宽覆盖率相同，
+  //            取收窄者是零成本的保守默认）。但它**不是纯风险**：`Command failed: …` + 下一行缩进的
+  //            `  ERR_MODULE_NOT_FOUND: …` 是**真实的嵌套崩溃渲染**（子进程错误内嵌进父错误消息，常见形态）
+  //            ⇒ 缩进容忍同样能把真信号召回（批次11 VERIFY-H3 §3-(c) 反例 N；复现见 batch12
+  //            landing/work/n5-indent-case.mjs：现行判绿 / 缩进容忍判红）。故本条只作风险提示，不单独承重。
+  //        复测入口：`runs/audit-1016-batch10/seg-health/verify/scripts/probe-ro-2.mjs`（含 indentTol 对照列）。
+  const CRASH_ERR = /Cannot find module|TypeError|ReferenceError|SyntaxError|ENOENT|node:internal/;
+  const CRASH_HEAD = /^(?:TypeError|ReferenceError|SyntaxError|RangeError|EvalError|URIError|Error): |^Cannot find module |^node:internal\/|^(?:ENOENT|EACCES|EPERM): |^ERR_[A-Z_]+: /;
+  const crash = !!r.error || CRASH_ERR.test(r.stderr || "") || String(r.stdout || "").split("\n").some((l) => CRASH_HEAD.test(l));
+  ok("CLI " + name, r.status === 0 && !crash && assert(out), `exit=${r.status}${crash ? " 含异常字样" + (r.error ? "(spawn:" + r.error.message + ")" : "") : ""} :: ${out.slice(0, 110).replace(/\n/g, " ⏎ ")}`);
 }
 
 // ── B. 写命令（临时副本库；真库零写入）──
@@ -116,15 +155,59 @@ const SANDBOX = mkdtempSync(join(tmpdir(), "akasha-health-"));
 
 // ── C. MCP 桥（真进程；用仓库既有夹具 spawn 服务器 —— 不依赖 @modelcontextprotocol/sdk）──
 {
-  const r = spawnSync(NODE, [join(H, "dsh-mcp-akasha/selftest.test.mjs")], { cwd: H, encoding: "utf8", timeout: 300000, env: { ...process.env, AKASHA_QUERY_LOG: "off" } });   // 同上：夹具探测不落真侧线
-  const out = ((r.stdout || "") + (r.stderr || "")).trim();
-  ok("MCP 桥：夹具端到端（真起服务器 + 真调工具）", r.status === 0 && /all assertions passed/.test(out), out.split("\n").filter(Boolean).slice(-2).join(" ⏎ ").slice(0, 200));
+  // 2026-10-16 批次8：夹具第一步是 `cpSync(CORE → 临时)`，而 CORE=akasha/ 里有"复制地雷"——
+  //   ① `gate-out/gate-selffix/runs`（143MB 产物树；其中 audit-1016-batch6/seg-sleep/verify/derived/akasha
+  //      是 **junction → <AKASHA_DIR>**）⇒ Node cpSync 顺着它**无限自嵌套**，副本膨胀到 GB 级；
+  //   ② `data/session.jsonl`（91MB 会话原档；`akasha_check` 自述"不读会话原档"）。
+  //   实测（2026-10-16 23:0x 单独重跑）：42s 崩在 `cpSync`（selftest.test.mjs:65）——
+  //     `EINPROGRESS, There is not enough space on the disk`（Windows errno 112＝磁盘满），
+  //     桥代码**从未执行**（所以不是端口/宿主 env/桥故障）；历史残留 9 个副本 ≈ 67.6GB（D 盘 8.3→1.41GB）。
+  //   修法：给夹具喂**等价的最小可执行核心**（用它的第一候选 `AKASHA_CORE`，selftest.test.mjs:13）：
+  //     核心 *.mjs + data 六库 *.jsonl（跳过 session.jsonl 与 _trash/）⇒ 复制量 292MB→∞ 降到 ~3.6MB，
+  //     15s 跑完 `all assertions passed`（实测含 22 工具注册 / akasha_check 实调 ok:true / node 回退 / 畸形输入回归）。
+  //     **测试语义不变**：仍是仓库既有夹具、真起服务器、真调工具；这里只把"复制什么"收窄到可执行面。
+  // 2026-10-17 批次10 · MIX#3：构造 **fail-closed**。旧版对每个源件 `existsSync` 过滤后复制 ⇒ 源件缺失时
+  //   会**静默**产出一个残缺 core-min；而夹具的 CORE 候选链（selftest.test.mjs:12-19）在 AKASHA_CORE
+  //   不满足 `lib.mjs+mcp.mjs` 时会**继续往下找**，最终落到 `join(HERE,'..','akasha')` = **真核**
+  //   ⇒ 体检表面「✓ 端到端通过」，实际测的是真核（点错对象），且真核里再出现自嵌套链接就重演
+  //   errno 112 爆盘事故（见 selftest.test.mjs 顶部链接守卫）。现改为：先校验源件齐全，
+  //   缺一件即**判红并拒绝 spawn**——绝不回退真核（本项失败时体检整体 exit 1）。
+  const CORE_MIN_FILES = ["akasha.mjs", "lib.mjs", "mcp.mjs", "session.mjs", "sleep.mjs", "init-example.mjs", "json-redaction.mjs", "loop-detect.mjs"];
+  const CORE_MIN_STORES = ["canon", "mirror", "orphan", "pricing", "lexicon", "frontier"];
+  const coreMinMissing = [
+    ...CORE_MIN_FILES.filter((f) => !existsSync(join(H, "akasha", f))).map((f) => "akasha/" + f),
+    ...CORE_MIN_STORES.filter((s) => !existsSync(join(H, "akasha/data", s + ".jsonl"))).map((s) => "akasha/data/" + s + ".jsonl"),
+  ];
+  if (coreMinMissing.length) {
+    ok("MCP 桥：夹具端到端（真起服务器 + 真调工具）", false, "core-min 构造失败（fail-closed：拒绝回退真核，未 spawn）—— 缺 " + coreMinMissing.join(" / "));
+  } else {
+    const coreMin = join(SANDBOX, "core-min");
+    mkdirSync(join(coreMin, "data"), { recursive: true });
+    for (const f of CORE_MIN_FILES) copyFileSync(join(H, "akasha", f), join(coreMin, f));
+    for (const f of readdirSync(join(H, "akasha/data"))) {
+      if (f === "session.jsonl" || !f.endsWith(".jsonl")) continue;   // 跳过会话原档（夹具不读）与 _trash/ 等子目录
+      copyFileSync(join(H, "akasha/data", f), join(coreMin, "data", f));
+    }
+    const r = spawnSync(NODE, [join(H, "dsh-mcp-akasha/selftest.test.mjs")], { cwd: H, encoding: "utf8", timeout: 300000, env: { ...process.env, AKASHA_QUERY_LOG: "off", AKASHA_CORE: coreMin } });   // 同上：夹具探测不落真侧线
+    const out = ((r.stdout || "") + (r.stderr || "")).trim();
+    // 诊断面（2026-10-16）：失败时旧版只截最后两行 —— 恰是 `⏎ Node.js v24.19.0`（零诊断价值）。
+    //   改为优先取含错误信号的行（崩因/断言失败都在头部）。
+    const errLine = out.split("\n").find((l) => /Error|错误|失败|✗|not enough space/.test(l)) ?? "";
+    const detail = r.status === 0
+      ? out.split("\n").filter(Boolean).slice(-1)[0] ?? ""
+      : (errLine || out.split("\n").filter(Boolean).slice(-2).join(" ⏎ "));
+    ok("MCP 桥：夹具端到端（真起服务器 + 真调工具）", r.status === 0 && /all assertions passed/.test(out), detail.slice(0, 200));
+  }
 }
 
 // ── D. 插件面 ──
 {
   const log = join(H, "akasha/logs/hooks.jsonl");
-  const lines = readFileSync(log, "utf8").trim().split("\n").slice(-4000).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  // 2026-10-17 批次12 修（批次11 VERIFY-H3 §4/§5-N1）：活动计数仍只看**末 4000 行窗口**（近况语义），
+  //   但 `gate-armed` 判定不得绑在同一窗口上——窗口是"活库推进即翻"的环境脆弱：末条 gate-armed 曾落到
+  //   倒数第 4261 行（本轮复现时更推到倒数第 4519 行，窗口外）⇒ 体检自伤·假红。gate-armed 改**尾部下钻**。
+  const all = readFileSync(log, "utf8").trim().split("\n");
+  const lines = all.slice(-4000).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
   const kinds = {};
   for (const l of lines) kinds[l.kind] = (kinds[l.kind] || 0) + 1;
   const now = Date.now();
@@ -132,9 +215,21 @@ const SANDBOX = mkdtempSync(join(tmpdir(), "akasha-health-"));
   ok("hooks：tool 线活跃", fresh("tool") > 0, "tool=" + fresh("tool"));
   ok("hooks：preflight 线活跃", fresh("preflight") > 0, "preflight=" + fresh("preflight"));
   ok("hooks：usage/session-worker 线存在", (kinds["usage"] || 0) + (kinds["session-worker"] || 0) > 0, JSON.stringify(kinds).slice(0, 120));
-  const armed = lines.filter((l) => l.kind === "gate-armed").pop();
+  // gate-armed：尾部下钻取最近一条（硬上限 30 万行防病态大文件）。
+  //   2026-10-17 批次13 采纳（batch12 VERIFY-H4 §5-N3）：原上限 6 万＝悬崖（近速率 2.5–3.4 天即达；+5万行/天 26.3h），
+  //   且达上限与"压根没有 gate-armed"输出**不可区分**（都 `{}`）；成本实测为零（全文件 parse 8.9ms ≈ 上限内 9.6ms）
+  //   ⇒ 抬到 300000（≈13 天余量@近速率）并显式标 `capped`（达上限时明说"可能超窗"）。
+  let armed = null, scanned = 0, capped = false;
+  for (let i = all.length - 1, n = 0; i >= 0 && n < 300000; i--, n++) {
+    scanned = n + 1;
+    let o; try { o = JSON.parse(all[i]); } catch { continue; }
+    if (o.kind === "gate-armed") { armed = o; break; }
+  }
+  if (!armed && all.length > 300000) capped = true;
   // 版本口径：接受 2026-10-13 系列任意小版（重启后才会换成最新；不把断言写死成单版，免得每次提版就假红）
-  ok("gate：启动线含新规则版本", !!armed && /gate-rules\/2026-10-13\.\d+/.test(armed.rulesVersion || ""), JSON.stringify(armed || {}).slice(0, 120));
+  ok("gate：启动线含新规则版本", !!armed && /gate-rules\/2026-10-13\.\d+/.test(armed.rulesVersion || ""),
+    armed ? JSON.stringify(armed).slice(0, 120)
+          : `未找到 gate-armed（已扫描 ${scanned} 行${capped ? "，达上限 ⇒ 可能超窗" : "，已到文件头"}）`);
   const st = JSON.parse(readFileSync(join(H, "akasha/logs/sleep-state.json"), "utf8"));
   ok("sleep：状态水位线推进", Number(st.processedBytes) > 0 && !!st.lastRunAt, `bytes=${st.processedBytes} last=${st.lastRunAt}`);
   const sess = readFileSync(join(H, "akasha/data/session.jsonl"), "utf8");

@@ -13,11 +13,13 @@ const REPO = '<LOCAL_PATH>\\dist\\akasha-oss';
 const DST_ROOT = join(REPO, 'plugins');
 
 const PACKS = [
-  { src: 'dsh-akasha-gate',    dst: 'akasha-gate',    name: '@akasha-book/gate',    ver: '1.3.0' },
-  { src: 'dsh-akasha-hooks',   dst: 'akasha-hooks',   name: '@akasha-book/hooks',   ver: '1.2.4' },
-  { src: 'dsh-akasha-session', dst: 'akasha-session', name: '@akasha-book/session', ver: '0.3.2' },
-  { src: 'dsh-akasha-sleep',   dst: 'akasha-sleep',   name: '@akasha-book/sleep',   ver: '1.6.5' },
-  { src: 'dsh-mcp-akasha',     dst: 'mcp-akasha',     name: '@akasha-book/mcp',     ver: '1.1.2' },
+  // 2026-10-17 对齐：OSS/npm 用无后缀 semver；本地带 -hN 后缀（如 1.4.2-h1）⇒ 发布版取主干号。
+  // 旧值（1.3.0/1.2.4/0.3.2/1.6.5/1.1.2）已落后于 npm 已发版本（1.3.2/1.2.6/0.3.4/1.7.3），故一并前移。
+  { src: 'dsh-akasha-gate',    dst: 'akasha-gate',    name: '@akasha-book/gate',    ver: '1.4.2' },
+  { src: 'dsh-akasha-hooks',   dst: 'akasha-hooks',   name: '@akasha-book/hooks',   ver: '1.2.8' },
+  { src: 'dsh-akasha-session', dst: 'akasha-session', name: '@akasha-book/session', ver: '0.3.5' },
+  { src: 'dsh-akasha-sleep',   dst: 'akasha-sleep',   name: '@akasha-book/sleep',   ver: '1.10.22' },
+  { src: 'dsh-mcp-akasha',     dst: 'mcp-akasha',     name: '@akasha-book/mcp',     ver: '1.1.4' },
 ];
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'logs', '_ab']);

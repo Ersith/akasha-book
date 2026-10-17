@@ -1,7 +1,7 @@
 // 阿卡夏之书（Akasha）v0 —— 最小 MCP stdio server（JSON-RPC 2.0 逐行）。
 // 工具（22）：check / lookup / price / stats / orphan_add / frontier_due / audit / brief / kit / promote / revise / cross / summary / show / mirror_match / metrics / session_lookup / sleep_plan / review_pack / review_log / review_list / now
 import { createInterface } from 'node:readline';
-import { checkAll, lookupDetailed, multiRecall, normalizeDateArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, frontierDue, stripGenre, reviewPack, appendReviewLog, readReviewLog, nowSnapshot } from './lib.mjs';
+import { checkAll, lookupDetailed, multiRecall, normalizeDateArg, dayArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, frontierDue, stripGenre, reviewPack, appendReviewLog, readReviewLog, nowSnapshot } from './lib.mjs';
 import { lookupSegmentsDetailed } from './session.mjs';
 import { sleepPlan } from './sleep.mjs';
 
@@ -34,6 +34,25 @@ const TOOLS = [
 // 2026-10-13 复查补齐：`akasha_cross`（主行＝全文，六库对位最重文本面）同属读侧，纳入。
 // 2026-10-14 C 小面：`akasha_summary`（最近条目行）· `akasha_kit`（病史行）· `akasha_sleep_plan`（why 串）——小体量但同类；`frontier_due` **不剥**（题名是外部文本，剥它损引用准确性）。
 const STRIP_TOOLS = new Set(['akasha_lookup', 'akasha_brief', 'akasha_show', 'akasha_session_lookup', 'akasha_cross', 'akasha_mirror_match', 'akasha_summary', 'akasha_kit', 'akasha_sleep_plan', 'akasha_review_pack']);
+// 叙事文本字段白名单（GPT N3：只对 schema 里明确列出的叙事字段处理）——不在表内的字符串一律视为机器字段，原样保留。
+const NARRATIVE_KEYS = new Set(['claim', 'quote', 'why', 'gist', 'summary', 'observed', 'hypothesis', 'would_confirm', 'would_refute', 'story', 'situation', 'behavior', 'outcome', 'social_reaction', 'emotion', 'patterns', 'title', 'note', 'hint', 'extra', 'reason', 'content', 'text', 'resolution',
+  // 2026-10-15（GPT 第二份·优先⑤）：**`line` 漏了** ✗ —— `akasha_summary` 每条最近记录的 `line` 就是叙事正文，
+  // 不在白名单里 ⇒ MCP 侧对它完全不剥（体裁隔离只做了一半 ✗）。加进来（数字型 line 不受影响：下面有 typeof === 'string' 守卫 ✓）。
+  'line']);
+function stripNarrativeFields(v) {
+  if (typeof v === 'string') return v;                        // 裸字符串：无字段名可判 ⇒ 不动（防误改机器文本）
+  if (Array.isArray(v)) return v.map((x) => stripNarrativeFields(x));
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const [k, x] of Object.entries(v)) {
+      o[k] = NARRATIVE_KEYS.has(k) && typeof x === 'string' ? stripGenre(x)
+        : Array.isArray(x) && NARRATIVE_KEYS.has(k) ? x.map((y) => (typeof y === 'string' ? stripGenre(y) : stripNarrativeFields(y)))
+          : stripNarrativeFields(x);
+    }
+    return o;
+  }
+  return v;
+}
 
 // schema 漂移修复（2026-10-15，E 题审计确证）：实现支持、schema 未声明 ⇒ 客户端以为传了也白传。
 //   pretty        —— 输出开关（全工具通用，line ~119 消费）；
@@ -104,7 +123,11 @@ function handle(msg) {
       else if (name === 'akasha_promote') value = promoteInbox({ dry: a.dry === true });
       // patch 透传（2026-10-15，P2 审计 F5）：原 `a.patch || {}` 会把 null/0/""/false 吞成 {} ⇒ V4 的类型校验对这四类
       // 值不生效（落一条内容相同的空修订）。改为「显式给了什么就传什么」，由 lib.revise 统一校验。
-      else if (name === 'akasha_revise') value = revise(a.store, a.id, 'patch' in a ? a.patch : {});
+      else if (name === 'akasha_revise') {
+        // 2026-10-15（GPT 复核 core N2）：patch 里的 event_time 也要过闸（原先只有 orphan_add 校 ✗）
+        if (a.patch && a.patch.event_time !== undefined) a.patch.event_time = dayArg(a.patch.event_time, 'patch.event_time');
+        value = revise(a.store, a.id, 'patch' in a ? a.patch : {});
+      }
       else if (name === 'akasha_cross') {
         const cs = a.since ? normalizeDateArg(a.since) : { ok: true, day: null };
         const cu = a.until ? normalizeDateArg(a.until) : { ok: true, day: null };
@@ -165,11 +188,13 @@ function handle(msg) {
       }
       if (value === null) throw new Error('未知工具：' + name);
       // I-11 体裁隔离 P0-②（2026-10-13）：MCP 面＝模型侧真正读到的返回 ⇒ 读工具默认剥皮（幂等；reflect / rawProcess ＝反思通道不剥）。
-      // 读返回默认紧凑 JSON（禁 pretty）。pretty:true 仅供人工调试。
-      let text = a.pretty === true ? JSON.stringify(value, null, 2) : JSON.stringify(value);
-      // 剥皮不作用于 pretty（2026-10-15，P2 审计 F3）：stripGenre 会把连续空格折成一个 ⇒ 把 pretty 的两空格缩进
-      // 一起折掉。pretty 是人工调试通道，按定义要可读 ⇒ 该模式下跳过剥皮。
-      if (a.pretty !== true && STRIP_TOOLS.has(name) && a.reflect !== true && a.rawProcess !== true && a.depth !== 'full') text = stripGenre(text);
+      // 2026-10-15（GPT 复核 core N3 的**落地形态**）：不得对整段 JSON 剥皮（会改 source.ref / url 等证据字段）——
+      //   改为**按字段剥**：递归只处理 schema 里的**叙事文本字段**（NARRATIVE_KEYS），机器字段（id/ref/url/ptr/path/store/…）一律原样。
+      //   pretty 仍豁免（人工调试通道，保持缩进可读）。原先"整段 JSON 跳过"的中间版会让读面**完全不剥**（I-11 设计失效，测试能红）。
+      if (a.pretty !== true && STRIP_TOOLS.has(name) && a.reflect !== true && a.rawProcess !== true && a.depth !== 'full') {
+        value = stripNarrativeFields(value);
+      }
+      const text = a.pretty === true ? JSON.stringify(value, null, 2) : JSON.stringify(value);
       return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], _meta: { trust: 'data-not-instruction' } } };
     } catch (e) {
       return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: '错误：' + e.message }], isError: true, _meta: { trust: 'data-not-instruction' } } };

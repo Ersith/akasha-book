@@ -5,17 +5,22 @@
 // 纪律：① 先备份；② dry-run 出对照（保留/丢弃/按会话分布）；③ 原子写（.tmp → rename）；④ 写后验（行数/键唯一/check）。
 // 用法：node tools/migrate-20261015-compact-session.mjs [--apply]
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'node:fs';
+import { contentKeyOf, normSid as norm } from './tools-session-key.mjs';
 
-// 2026-10-15 全量检查（session-tools 单元实证）：原先把 ROOT 写死 ⇒ **不认 AKASHA_ROOT**，
-// 任何"指向沙箱跑"的验证其实都在真读真库（`--apply` 也只能动真库）。改成与 CLI 同口径：吃 AKASHA_ROOT。
-const ROOT = process.env.AKASHA_ROOT ? String(process.env.AKASHA_ROOT) : '<AKASHA_DIR>/data';
-const STORE = ROOT.endsWith('.jsonl') ? ROOT : `${ROOT.replace(/\/data\/?$/, '')}/data/session.jsonl`;
-const BAK = '<LOCAL_PATH>/_rollback-20261015-compact';
+// 2026-10-15（GPT 复核 session N1 收尾）：`AKASHA_ROOT` 与核心**同口径**＝放 jsonl 的目录本身（不再自作主张追加 /data）；
+// 原实现 `ROOT.replace(/\/data\/?$/,'')+'/data/session.jsonl'` 对 `custom-store` 这类根会拼错（Windows 反斜杠也不匹配该去尾正则）。
+const DATA_ROOT = process.env.AKASHA_ROOT ? String(process.env.AKASHA_ROOT) : '<AKASHA_DIR>/data';
+const STORE = DATA_ROOT.endsWith('.jsonl') ? DATA_ROOT : `${DATA_ROOT.replace(/[\\/]+$/, '')}/session.jsonl`;
+// 备份**随目标走**且带时间戳（原先是固定真回滚目录 ⇒ 指向沙箱 `--apply` 也会碰真实回滚件 ✗）；可用 AKASHA_BAK 覆盖。
+const STORE_DIR = STORE.replace(/[\\/][^\\/]+$/, '');
+const STAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+const BAK = process.env.AKASHA_BAK ? String(process.env.AKASHA_BAK) : `${STORE_DIR}/_rollback-20261015-compact`;
 const APPLY = process.argv.includes('--apply');
 
-const norm = (s) => String(s ?? '').replace(/^session-/, '');
 const isNode = (r) => r.kind === 'node';
-const key = (r) => JSON.stringify([norm(r.session), r.seq, r.kind, r.gist, r.why ?? '', Array.isArray(r.tools) ? r.tools : String(r.tools ?? '')]);
+// 2026-10-15（GPT 复核 P1/N4）：内容键**抽到 tools/session-key.mjs**（shape 与 migrate 共用同一函数——两边必须给出同一
+// "什么是重复"口径；首版两处各写一套、对 topic/promotion 相反）。topic 按代次+指纹、promotion 按 id、机械段按内容、其余 id/整行。
+const key = (r) => contentKeyOf(r);
 
 const raw = readFileSync(STORE, 'utf8');
 const lines = raw.split('\n').filter(Boolean);
@@ -61,8 +66,9 @@ console.log(`其中 node 行 ${nodes}（全部保留，不参与去重）`);
 if (!APPLY) { console.log('\n[预演] 加 --apply 才执行。备份目标：' + BAK); process.exit(0); }
 
 if (!existsSync(BAK)) mkdirSync(BAK, { recursive: true });
-copyFileSync(STORE, `${BAK}/session.jsonl.pre-compact`);
-console.log('已备份 →', `${BAK}/session.jsonl.pre-compact`);
+const BAK_FILE = `${BAK}/session.jsonl.pre-compact-${STAMP}`;
+copyFileSync(STORE, BAK_FILE);
+console.log('已备份 →', BAK_FILE);
 
 writeFileSync(`${STORE}.tmp`, out, 'utf8');
 renameSync(`${STORE}.tmp`, STORE);

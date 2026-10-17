@@ -84,17 +84,46 @@ export function renderSessionLine(state, now) {
   const compacts = (state?.compacts ?? []).filter((c) => Number.isFinite(c?.ts) && now - c.ts <= 10 * 60 * 1000);
   if (compacts.length) {
     const last = compacts[compacts.length - 1];
-    const s = state?.meta?.sessions?.[last?.session];
+    // N2（2026-10-17）：meta 的键是**裸 uuid**，而压缩条目记的是带 `session-` 前缀的原始 id ⇒
+    //   原来精确查找永远落空，那截「已索引 N 段」后缀从来没出现过。这里按归一化 id 找。
+    const metaSessions = state?.meta?.sessions ?? {};
+    const want = String(last?.session ?? '').replace(/^session-/, '');
+    const s = metaSessions[last?.session]
+      ?? metaSessions['session-' + want]
+      ?? Object.entries(metaSessions).find(([k]) => String(k).replace(/^session-/, '') === want)?.[1];
     const counts = s ? `（该会话已索引 ${Number(s.segments ?? 0)} 段 · 结论 ${Number(s.conclusions ?? 0)} 条）` : '';
     if (last?.indexed === true) {
-      lines.push(`⚠ 近期发生压缩（${compacts.length} 次）——本段历史已收入会话层${counts}；细节查 akasha_session_lookup`);
+      // N1（2026-10-17）：这行说的是"已收入"，不该挂 ⚠（⚠ 只留给真失败，否则两类信息混在一起）。
+      lines.push(`· 近期发生压缩（${compacts.length} 次）——本段历史已收入会话层${counts}；细节查 akasha_session_lookup`);
     } else {
-      const why = COMPACT_FAIL_REASON[last?.reason] ?? '补索引未确认';
-      lines.push(`⚠ 近期发生压缩（${compacts.length} 次），但压缩后补索引未成功（${why}）——这段历史可能未进会话层；` +
-        `勿凭会话层断言「查无此事」，回看请查原始会话档案，或手动 node akasha.mjs session index <会话id>`);
+      // 2026-10-17：区分「排队中」与「真失败」——压缩后索引是**异步投递**的，下一条消息渲染时可能还没落地
+      //   （实测：compact 13:07:38 → index 13:07:40 成功）。原来两者共用一句"未成功"，读者无法区分。
+      const queued = last?.reason === 'queued' || last?.reason === 'debounced';
+      if (queued && now - (last?.ts ?? 0) < 60 * 1000) {
+        lines.push(`· 近期发生压缩（${compacts.length} 次）——补索引已排队，通常几秒内落地；若 1 分钟后仍未落地，回看请查原始会话档案（akasha session index <会话id>）`);
+      } else {
+        const why = COMPACT_FAIL_REASON[last?.reason] ?? '补索引未确认';
+        lines.push(`⚠ 近期发生压缩（${compacts.length} 次），但压缩后补索引未成功（${why}）——这段历史可能未进会话层；` +
+          `勿凭会话层断言「查无此事」，回看请查原始会话档案，或手动 node akasha.mjs session index <会话id>`);
+      }
     }
   }
   return lines.join('\n');
+}
+
+/** N4（2026-10-17）：**纯函数版改判**，供自测直接用（不必起完整插件）。
+ *  把 compacts 里与该会话匹配、且尚未 indexed 的条目改判为已收入；返回被改判的条目。
+ *  - id 比较**形式无关**（两边都剥 `session-` 前缀）——这正是 h8 修的那个洞；
+ *  - 已 `indexed:true` 的**不重复改**（幂等）。 */
+export function settleCompactsIn(compacts, sid) {
+  const n = String(sid ?? '').replace(/^session-/, '');
+  const hit = [];
+  for (const c of compacts ?? []) {
+    if (String(c?.session ?? '').replace(/^session-/, '') !== n) continue;
+    if (c.indexed === true) continue;
+    c.indexed = true; c.reason = 'recovered'; hit.push(c);
+  }
+  return hit;
 }
 
 /** 循环观测 P0（dry）：chunk 归类——真值对 @deepseek-ai/dsh-llm StreamChunk（text-delta / reasoning-delta / tool-call-delta）。 */
@@ -356,8 +385,19 @@ export function apply(ctx, config = {}) {
   };
 
   // 某会话索引成功 → 该会话窗口内「补索引未确认」的压缩条目改记为已收入（档案是全量的，后补成功即真收入）。
+  // 2026-10-17 修（告警虚警）：**两处 id 形式不一致** —— `session-compact` 记的是宿主原始 id（带 `session-` 前缀），
+  //   而 worker 回传的 `msg.session` 是裸 uuid（实测 logs/hooks.jsonl：compact=`session-d6c6c428-…` / index=`d6c6c428-…`）。
+  //   原来用 `c.session === sid` 精确相等 ⇒ 永远匹配不上 ⇒ 12-10 分钟窗口内一直显示"补索引未成功"，
+  //   而实际上 2 秒后索引就成功了（同类日志：13:07:40 added 2 / frameFails 0）。
+  //   修法：比较前两边都剥掉 `session-` 前缀（形式无关）；命中就落一条 `session-compact-settled` 观测线。
+  const normSid = (v) => String(v ?? '').replace(/^session-/, '');
+  const childSkipped = new Set();   // 子代理会话（裸 uuid 目录）：每个只记一条 skip 线
   const settleCompacts = (sid, trigger) => {
-    for (const c of compacts) if (c.session === sid && c.indexed !== true) { c.indexed = true; c.reason = 'recovered'; c.recoveredBy = trigger; }
+    const hit = settleCompactsIn(compacts, sid);   // 纯函数（可直测，见文件头导出）
+    for (const c of hit) {
+      c.recoveredBy = trigger;
+      log({ kind: 'session-compact-settled', session: c.session, by: trigger });   // 观测线：证明"后补成功"真的改判了
+    }
   };
 
   // ---------- 索引 worker（v0.4）：宿主只投递任务，重活在后台线程串行跑 ----------
@@ -389,11 +429,11 @@ export function apply(ctx, config = {}) {
     pendingJobs.delete(msg.id);
     const extra = p?.extra ?? {};
     if (msg.error) {
-      lastFailAt.set(msg.session, Date.now());
+      lastFailAt.set(normSid(msg.session), Date.now());
       log({ kind: 'session-index-error', session: msg.session, trigger: msg.trigger, message: msg.error, workerMs: msg.ms, hostMs: p?.hostMs ?? null, via: 'worker' });
       return;
     }
-    if (p?.stat) lastStat.set(msg.session, { size: p.stat.size, mtimeMs: p.stat.mtimeMs }); // 只记成功：失败后同档可重试
+    if (p?.stat) lastStat.set(normSid(msg.session), { size: p.stat.size, mtimeMs: p.stat.mtimeMs }); // 只记成功：失败后同档可重试
     workerFails = 0; // 「连续失败」语义：任何一次成功都回零（2026-10-10 复查修正）
     log({ kind: 'session-index', session: msg.session, trigger: msg.trigger, turn: extra.turn ?? null, added: msg.added, skipped: msg.skipped, parseFails: msg.parseFails, frameFails: msg.frameFails ?? 0, ms: msg.ms, hostMs: p?.hostMs ?? null, lagMs: loopLagMs, via: 'worker' });
     if (msg.ms > 1500) log({ kind: 'session-index-slow', session: msg.session, trigger: msg.trigger, ms: msg.ms, lagMs: loopLagMs, added: msg.added, via: 'worker' });
@@ -466,21 +506,31 @@ export function apply(ctx, config = {}) {
     try {
       if (!sid) return { ok: false, reason: 'no-session' }; // 空 id：静默跳过（正常路径不出现；见 README 降级节）
       const now = Date.now();
-      if (!opts.force && now - (lastFailAt.get(sid) ?? 0) < FAIL_BACKOFF_MS) return { ok: false, reason: 'backoff' }; // 失败背压：窗口内静默
-      const file = core().resolveSessionFile(cfg.sessionsRoot, sid);
-      if (!file) { lastFailAt.set(sid, now); log({ kind: 'session-index-error', session: sid, trigger, message: '未找到会话档案' }); return { ok: false, reason: 'not-found' }; }
-      lastFailAt.delete(sid);
+      if (!opts.force && now - (lastFailAt.get(normSid(sid)) ?? 0) < FAIL_BACKOFF_MS) return { ok: false, reason: 'backoff' }; // 失败背压：窗口内静默（N3：键统一归一化）
+      // 2026-10-17：先问"带类型"的解析器——子代理会话用**裸 uuid 目录**（无 session- 前缀），
+      //   原实现只拼 'session-<id>' ⇒ 对子代理恒 not-found，每回合刷一条错误（今日 5 条全是它）。
+      const arc = typeof core().resolveSessionArchive === 'function' ? core().resolveSessionArchive(cfg.sessionsRoot, sid) : null;
+      const file = arc?.file ?? core().resolveSessionFile(cfg.sessionsRoot, sid);
+      if (!file) { lastFailAt.set(normSid(sid), now); log({ kind: 'session-index-error', session: sid, trigger, message: '未找到会话档案' }); return { ok: false, reason: 'not-found' }; }
+      if (arc?.child) {
+        // 认得出，但**不入小阿卡夏**：子代理转录是"派出去的活"，不是我的会话（也不该占段数/污染检索）。
+        //   每个子代理只记一条 skip 观测线，避免刷屏。
+        const k = normSid(sid);
+        if (!childSkipped.has(k)) { childSkipped.add(k); log({ kind: 'session-index-skip-child', session: sid, trigger }); }
+        return { ok: false, reason: 'child' };
+      }
+      lastFailAt.delete(normSid(sid));
       let st = null;
       try { st = statSync(file); } catch { /* stat 失败 → 走全量 */ }
-      if (!opts.force && !shouldIndex(lastIndexedAt.get(sid) ?? 0, now, effectiveThrottle(st?.size ?? 0, cfg.minIndexIntervalMs))) {
+      if (!opts.force && !shouldIndex(lastIndexedAt.get(normSid(sid)) ?? 0, now, effectiveThrottle(st?.size ?? 0, cfg.minIndexIntervalMs))) {
         log({ kind: 'session-index-skip', session: sid, trigger, sinceMs: now - (lastIndexedAt.get(sid) ?? 0) });
         return { ok: null, reason: 'debounced' };
       }
       // 设计：去抖标记先置位——索引失败后 30s 内不重试（错误背压）；统一失败窗口见 lastFailAt
-      lastIndexedAt.set(sid, now);
+      lastIndexedAt.set(normSid(sid), now);   // N3：这三个 map 统一用**归一化键**（worker 回调写的是裸 uuid）
       // 廉价快路：字节与 mtime 都没变 → 没有新内容，跳过重读（省一次全量解压）
       if (st) {
-        const prev = lastStat.get(sid);
+        const prev = lastStat.get(normSid(sid));
         if (prev && prev.size === st.size && prev.mtimeMs === st.mtimeMs) {
           log({ kind: 'session-index-skip', session: sid, trigger, reason: 'unchanged' });
           settleCompacts(sid, trigger);
@@ -495,7 +545,7 @@ export function apply(ctx, config = {}) {
       }
       // 回退：inline 旧路径（indexMode:'inline' / worker 不可用 / 连续失败降级）
       const r = core().indexSession({ file, session: sid, storeFile: cfg.storeFile, metaFile: cfg.metaFile });
-      if (st) lastStat.set(sid, { size: st.size, mtimeMs: st.mtimeMs }); // 只记成功：失败后同档可重试
+      if (st) lastStat.set(normSid(sid), { size: st.size, mtimeMs: st.mtimeMs }); // 只记成功：失败后同档可重试
       const dur = Date.now() - t0;
       log({ kind: 'session-index', session: sid, trigger, turn: extra.turn ?? null, added: r.added, skipped: r.skipped, parseFails: r.parseFails, frameFails: r.frameFails ?? 0, ms: dur, lagMs: loopLagMs, via: 'inline' });
       if (dur > 1500) log({ kind: 'session-index-slow', session: sid, trigger, ms: dur, lagMs: loopLagMs, added: r.added, via: 'inline' }); // >1.5s 告警线（2026-10-07 补4）
@@ -504,7 +554,7 @@ export function apply(ctx, config = {}) {
     } catch (error) {
       const msg = String(error?.message ?? error);
       const hint = /not yet fully loaded|does not provide an export named|Cannot find module/.test(msg) ? '（疑似宿主模块代缓存——重启桌面端后恢复）' : '';
-      lastFailAt.set(sid, Date.now());
+      lastFailAt.set(normSid(sid), Date.now());
       log({ kind: 'session-index-error', session: sid, trigger, message: (msg + hint).slice(0, 300) });
       return { ok: false, reason: 'error' };
     }
@@ -569,8 +619,8 @@ export function apply(ctx, config = {}) {
     name: 'akasha:session',
     order: cfg.contextOrder,
     text: () => {
-      try { return renderSessionLine({ meta: readMeta(), compacts, density: latestDensity() }, Date.now()); }
-      catch { return null; }
+      try { return renderSessionLine({ meta: readMeta(), compacts, density: latestDensity() }, Date.now()) ?? ''; }
+      catch { return ''; }
     }
   });
 

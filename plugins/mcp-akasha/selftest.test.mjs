@@ -1,10 +1,10 @@
 // @akasha-book/mcp 自测：Bundle Patch 契约（STORE 硬门）+ 注册桥端到端（桩 ctx + 真实 MCP 服务器）
 // 运行：node selftest.test.mjs（退出码 0 = 全过）；不碰真实 profile、不读任何密钥、不写真实库。
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -18,6 +18,93 @@ const CORE_CANDIDATES = [
 ].filter(Boolean);
 const CORE = CORE_CANDIDATES.find((d) => existsSync(join(d, 'lib.mjs')) && existsSync(join(d, 'mcp.mjs')));
 assert.ok(CORE, '找不到 akasha 核心 lib.mjs/mcp.mjs；候选：' + CORE_CANDIDATES.join(' | '));
+
+// —— ④-1 源树链接守卫：复制之前的一次性 reparse 检测（只读、绝不跟进）——
+// 事故（2026-10-16）：核心目录内一颗 junction（…/derived/akasha → <AKASHA_DIR>）被下面那段
+//   全量 cpSync 跟进 ⇒ 无限自嵌套 ⇒ 临时副本涨到 GB 级 ⇒ Windows errno 112「磁盘已满」（42s 崩）；
+//   D:\dsh-temp 留下 62.5GB / 163 万文件残骸（D 盘一度只剩 1.41GB）。
+// 白名单复制（batch7-B）已让深层链接不再被触碰；本守卫再补一道：复制**之前**扫一遍源树，命中
+//   「指向 Core 内 / 包含 Core / 就是 Core」的链接（自嵌套类）⇒ 立即报错退出，一个字节都不复制。
+// 代价：dirent 扫描 + 逐目录 realpath 交叉校验，实测 ≈0.5s / 1 万条目 / 3.4 千目录（不读文件内容）。
+//   AKASHA_LINK_GUARD=strict ⇒ 连「非自嵌套链接」也判红（默认只判自嵌套类：派生副本里的
+//   node_modules junction 属正常布局，只点名不拦）。
+const LINK_GUARD_STRICT = process.env.AKASHA_LINK_GUARD === 'strict';
+const COPY_WHITELIST = ['lib.mjs', 'json-redaction.mjs', 'mcp.mjs', 'session.mjs', 'sleep.mjs', 'loop-detect.mjs', 'akasha.mjs', 'init-example.mjs'];
+
+// 内联最小示例库（MIX#4·2026-10-17）：源 core 没有 init-example.mjs 时，用它就地播种数据面，
+//   让「注册桥端到端」段默认执行而不是整段 SKIP。字段形状取自 init-example.mjs 的同名字段，
+//   写入走核心自有 CLI（`add --store <s> --data <json>`，见 `akasha.mjs help`）⇒ 经过与生产同源的校验。
+const SEED_EXAMPLE = [
+  { store: 'canon', data: { id: 'canon-fixture-seed', claim: '自足夹具最小示例库：由 dsh-mcp-akasha/selftest.test.mjs 内联播种（不依赖 core 的 init-example.mjs）。', source: { type: '复现', ref: 'selftest.test.mjs（内联播种）' }, last_reviewed: '2026-10-17' } },
+  { store: 'mirror', data: { id: 'mirror-fixture-seed', story: '示例：夹具自足播种', situation: '夹具缺少 init-example.mjs', behavior: '由 selftest 内联播种最小示例库', outcome: '守卫段不再整段 SKIP', social_reaction: '覆盖度恢复', emotion: '踏实' } },
+  { store: 'orphan', data: { id: 'orphan-fixture-seed', summary: '夹具自足播种的孤案示例', observed: '夹具缺失示例初始化脚本', hypothesis: '内联最小示例库即可恢复本段', would_confirm: '本段断言全绿', would_refute: '本段仍被跳过', severity: '低', created: '2026-10-17' } },
+  { store: 'pricing', data: { id: 'price-fixture-seed', behavior: '夹具自足播种的定价示例', valence: -1, severity_default: 3, note: '示例' } },
+  { store: 'lexicon', data: { id: 'lex-fixture-seed', term: '自足夹具', trigger: '夹具缺少 core 自带示例脚本', behavior: '内联最小示例库', resolution: '不再因缺 init-example 而整段 SKIP', source: '示例' } },
+];
+const normPath = (p) => String(p).replace(/^\\\\\?\\/, '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+// —— ④-0 回退告警（批次11 · VERIFY-H2 §5-①）：堵"全绿但测错树"的**其它调用方** ——
+// 缺陷形态：候选链第一项是 AKASHA_CORE，但它**只有 lib.mjs+mcp.mjs 都在才被选中**；不满足就继续往下找，
+//   最坏落到仓布局里的真核（`join(HERE,'..','akasha')`）——全程**一声不响**（批次10 实测：残缺 core-min
+//   ⇒ 守卫扫到 11163 条目＝真核，且 `all assertions passed`）。
+// 真暴露面＝`akasha/tools/family-sweep.mjs` §5：它**继承 process.env** 跑本文件 ⇒ shell 里残留一个坏/
+//   过期的 AKASHA_CORE，扫描器照报 ✓ 全绿，实际测的是真核。health-check §C 另有显式传值 + fail-closed 前置校验。
+// 口径（三态）：合法（选中了指定值）静默；非法（发生了回退）**告警但照常跑**（默认不硬失败——继承环境的调用方
+//   会因别人 shell 里的历史变量整片变红，误伤面大于收益）；CI 想 fail-closed 就带 `AKASHA_CORE_STRICT=1`。
+if (process.env.AKASHA_CORE && CORE && normPath(CORE) !== normPath(process.env.AKASHA_CORE)) {
+  const _msg = '⚠ 指定的 AKASHA_CORE 不可用（缺 lib.mjs/mcp.mjs）——已回退到 ' + CORE + '；静默回退会「测错树」，请核对。';
+  if (process.env.AKASHA_CORE_STRICT === '1') { console.error(_msg); process.exit(1); }
+  console.warn(_msg);
+}
+function scanSourceLinks(root, mustCheck = [], cap = 60000) {
+  let rootReal = root; try { rootReal = realpathSync(root); } catch { /* 读不到就用字面路径 */ }
+  const r = normPath(rootReal);
+  const selfNesting = (p) => { const t = normPath(p); return t === r || t.startsWith(r + '/') || r.startsWith(t + '/'); };
+  const fatal = [], warn = [], seen = new Set();
+  let entries = 0, dirs = 0, capped = false;
+  const t0 = Date.now();
+  // probe：链接判定 —— lstat/readlink 为主，realpath 兜底（部分 node 版本对 junction 的 lstat 失明）；
+  //   返回 descend=false 者一律不下钻，保证扫描自身永不进入链接（否则守卫自己就会自嵌套）。
+  const probe = (p) => {
+    let st; try { st = lstatSync(p); } catch { return null; }                      // 不在/不可读 ⇒ 跳过
+    if (st.isSymbolicLink()) {
+      let t = null; try { t = readlinkSync(p); } catch { /* 保留 null */ }
+      let real = null; try { real = realpathSync(p); } catch { /* 断链 */ }
+      return { link: t, real, descend: false };
+    }
+    if (!st.isDirectory()) return { link: null, real: null, descend: false };      // 普通文件：无复制放大面
+    dirs += 1;
+    let real = null; try { real = realpathSync(p); } catch { /* 读不到 */ }
+    // 与「按 rootReal 推出的应有路径」比（而非与字面 p 比）：root 自己就是链接时不误报
+    const expect = join(rootReal, relative(root, p));
+    if (!real || normPath(real) !== normPath(expect)) return { link: real, real, descend: false };  // junction 盲区兜底
+    return { link: null, real, descend: true };
+  };
+  const note = (p, info) => {
+    if (seen.has(normPath(p))) return;
+    seen.add(normPath(p));
+    const abs = info.link ? (isAbsolute(info.link) ? info.link : resolve(dirname(p), info.link)) : null;
+    const target = info.real || abs || '(未解析)';
+    (selfNesting(target) ? fatal : warn).push({ path: p, target });
+  };
+  for (const rel of mustCheck) {                                                   // ① 将被复制的条目：优先必查
+    const p = join(root, rel); const info = probe(p);
+    if (info && info.link) note(p, info);
+  }
+  (function walk(dir) {                                                            // ② 全树只读扫（不跟进链接）
+    if (capped) return;
+    let es; try { es = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of es) {
+      if (++entries > cap) { capped = true; return; }
+      const p = join(dir, e.name);
+      const info = probe(p);
+      if (!info) continue;
+      if (info.link) note(p, info);
+      if (info.descend) walk(p);
+    }
+  })(root);
+  return { rootReal, fatal, warn, entries, dirs, capped, cap, ms: Date.now() - t0 };
+}
+
 const PATCH = join(HERE, 'cordis.patch.yml');
 const patch = readFileSync(PATCH, 'utf8');
 const packageName = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8')).name;
@@ -36,6 +123,19 @@ assert.ok(!/command:\s*['"][^'"]*[;&|]/.test(patch), 'command 不得含 shell �
 
 // —— ③ 纯函数：公开名规范化（与官方同类规则：非法字符→_；改写或超长 → 截断 + 12 位哈希）——
 const { apply, publicToolName, renderText } = await import('./index.js');
+
+// 兜底（2026-10-16 加；2026-10-17 修）：任何未捕获拒绝 ⇒ **先清理 SCRATCH 再退出**，杜绝"进程被掀翻、
+// finally 没跑到"造成的 dsh-temp 残骸（实测历史残骸成因正是这个；9 个残留 62.5GB/163 万文件）。
+// ⚠ 2026-10-17 独立复核查出原版**结构性失效**：handler 在模块顶层，而当时的 `const SCRATCH` 在下方
+//   `else` 块内 ⇒ 词法作用域取不到 ⇒ `rmSync` 抛 ReferenceError 被 `catch{}` 吞掉 ⇒ **清理是空操作，
+//   却照打"已尽力清理"**（比不做更糟）。修法＝`let SCRATCH = null` 提到这里（仍惰性创建，见下），
+//   并在此判空后再清。
+let SCRATCH = null;
+process.on('unhandledRejection', (e) => {
+  try { if (SCRATCH) rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
+  console.error('未处理拒绝（已尽力清理 SCRATCH）：' + (e?.message ?? e));
+  process.exit(1);
+});
 assert.equal(publicToolName('akasha', 'akasha_check'), 'mcp__akasha__akasha_check', '常规名不改写');
 assert.match(publicToolName('akasha', 'a b/c'), /^mcp__akasha__a_b_c_[0-9a-f]{12}$/, '名被改写时加 12 位哈希后缀（与官方同类规则一致）');
 {
@@ -46,25 +146,70 @@ assert.match(publicToolName('akasha', 'a b/c'), /^mcp__akasha__a_b_c_[0-9a-f]{12
 assert.equal(renderText([{ type: 'text', text: 'a' }, { type: 'image', data: 'x' }]), 'a\n[image]', '非文本块降级为占位符（不丢值）');
 
 // —— ④ 注册桥端到端：临时 core 副本 + 真实 MCP 服务器（stdio）→ 注册 → 真调一个工具 ——
-//   前提门：初始化脚本必须位于所选 core 根，随后从同一根复制并在临时副本运行。
-//   不再以另一个布局中存在 init-example 为据，误判当前复制源可执行端到端测试。
+//   前提门（2026-10-17 批次10 MIX#4 改）：**运行时所必需的核心件必须在所选 core 根存在**
+//   （= mcp.mjs 的静态导入闭包，grep 实测：mcp→lib/session/sleep，lib→json-redaction）。
+//   旧门是「必须存在 init-example.mjs」——把完整性代理挂在**示例脚本**上，于是任何裁剪掉该脚本的
+//   core 根（复核夹具、OSS 树）都会让整段 SKIP（含 21/32 条断言），批次9 复核正是这样把守卫段
+//   跳过去了（差点漏检）。现在示例库**自足**：源有 init-example 就用它；没有就用文件内联的
+//   最小示例库就地播种（只用核心自有 CLI 面 `add --store/--data`，不碰 lib.mjs 内部 API）。
 let skipCount = 0;
-const INIT_CANDIDATES = [join(CORE, 'init-example.mjs')];
-const INIT_EXAMPLE = INIT_CANDIDATES.find((p) => existsSync(p)) || null;
-if (!INIT_EXAMPLE) {
+const REQUIRED_CORE = ['lib.mjs', 'json-redaction.mjs', 'mcp.mjs', 'session.mjs', 'sleep.mjs'];
+const missingCore = REQUIRED_CORE.filter((f) => !existsSync(join(CORE, f)));
+const INIT_EXAMPLE = existsSync(join(CORE, 'init-example.mjs')) ? join(CORE, 'init-example.mjs') : null;
+if (missingCore.length) {
   skipCount += 1;
   console.log('');
-  console.log('  ⚠⚠ SKIP 注册桥端到端 —— 候选里都没有 init-example.mjs：' + INIT_CANDIDATES.join(' | '));
+  console.log('  ⚠⚠ SKIP 注册桥端到端 —— core 根缺运行时必需件：' + missingCore.join(' | '));
+  console.log('     CORE = ' + CORE);
   console.log('     覆盖度损失：本段含 21/32 条断言（含真起 MCP 服务器 + 真调工具），跳过即等于套件只剩 11 条断言');
-  console.log('     这不是放水而是缺口：应补一个自足夹具（不依赖 core 的示例数据）后恢复本段。已记入待办。');
+  console.log('     这不是放水而是缺口：把 CORE（AKASHA_CORE / 候选链）指到完整核心，或补齐上面列出的文件。');
   console.log('');
 } else {
-const SCRATCH = mkdtempSync(join(tmpdir(), 'mcp-akasha-selftest-'));
+SCRATCH = mkdtempSync(join(tmpdir(), 'mcp-akasha-selftest-'));   // 2026-10-17：由 const 改赋值（SCRATCH 已在顶层 let 声明）
 try {
   const coreCopy = join(SCRATCH, 'core');
-  cpSync(CORE, coreCopy, { recursive: true });
-  // 初始化示例库（数据面），让 akasha_check 有东西可校验
-  execFileSync(process.execPath, [join(coreCopy, 'init-example.mjs')], { cwd: coreCopy, stdio: 'pipe', timeout: 60000 });
+  // PATCH(batch7-B)：白名单复制——原实现 `cpSync(CORE, coreCopy, {recursive:true})` 把 Core 整锅复制
+  //   （含 gate-out/ 审计产物海 138MB+/5600+ 文件、真库 data/ 130MB + 86MB 会话数据），Windows 下对
+  //   「小文件海」递归复制 >260s 未完成（对照：data 大文件 330ms ⇒ 慢因＝小文件海）。
+  //   本测试需要的只是「可运行的核心」：8 个 .mjs + 空六库（由 init-example 播种）+ tools/review-lag.mjs。
+  // PATCH(batch9-A)：动手复制之前先过链接守卫（见文件上方 scanSourceLinks）——自嵌套链接 ⇒ 当场红。
+  {
+    const g = scanSourceLinks(CORE, [...COPY_WHITELIST, 'tools', 'tools/review-lag.mjs', 'data']);
+    const hits = LINK_GUARD_STRICT ? g.fatal.concat(g.warn) : g.fatal;
+    if (hits.length) {
+      console.error('');
+      console.error('  ✗ 源树链接守卫（batch9-A）：' + CORE + ' 内存在' + (LINK_GUARD_STRICT ? '' : '指向自身/包含自身的') + '链接 —— 全量复制会靠它自嵌套（原事故＝errno 112 磁盘满）。已中止，未复制任何文件：');
+      for (const h of hits.slice(0, 10)) console.error('      · ' + h.path + '\n        → ' + h.target);
+      if (hits.length > 10) console.error('      … 另有 ' + (hits.length - 10) + ' 条');
+      console.error('      你是建了 junction 吗？拆除（只删链接、不删目标）：cmd /c rmdir "<上面的那条路径>"');
+      console.error('      事故存档：canon-junction-disk-incident-20261016（errno 112 / D 盘 62.5GB 残骸）。');
+      console.error('');
+      throw new Error('源树链接守卫：Core 含 ' + hits.length + ' 条' + (LINK_GUARD_STRICT ? '' : '自嵌套') + '链接，拒绝复制（防 errno 112 复发）');
+    }
+    if (g.warn.length) console.log('  · 链接守卫：' + g.warn.length + ' 条非自嵌套链接（不跟进、不进副本，仅点名）：' + g.warn.slice(0, 2).map((h) => h.path).join(' | '));
+    console.log('  · 链接守卫：源树 ' + g.entries + ' 条目 / ' + g.dirs + ' 目录 / ' + g.ms + 'ms' + (g.capped ? '（达上限 ' + g.cap + ' 未扫完）' : '') + '；自嵌套链接 0 条');
+  }
+  mkdirSync(coreCopy, { recursive: true });
+  for (const f of COPY_WHITELIST) {
+    const s = join(CORE, f);
+    if (existsSync(s)) cpSync(s, join(coreCopy, f));
+  }
+  mkdirSync(join(coreCopy, 'data'), { recursive: true });
+  for (const s of ['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier']) writeFileSync(join(coreCopy, 'data', s + '.jsonl'), '');
+  mkdirSync(join(coreCopy, 'tools'), { recursive: true });
+  if (existsSync(join(CORE, 'tools', 'review-lag.mjs'))) cpSync(join(CORE, 'tools', 'review-lag.mjs'), join(coreCopy, 'tools', 'review-lag.mjs'));
+  // 初始化示例库（数据面）：源有 init-example.mjs ⇒ 用它（原口径不变）；
+  //   没有 ⇒ 内联最小示例库自足播种（MIX#4：本段不再因缺该脚本而整段 SKIP）。
+  if (INIT_EXAMPLE) {
+    execFileSync(process.execPath, [join(coreCopy, 'init-example.mjs')], { cwd: coreCopy, stdio: 'pipe', timeout: 60000 });
+  } else if (existsSync(join(coreCopy, 'akasha.mjs'))) {
+    for (const { store, data } of SEED_EXAMPLE) {
+      execFileSync(process.execPath, [join(coreCopy, 'akasha.mjs'), 'add', '--store', store, '--data', JSON.stringify(data)], { cwd: coreCopy, stdio: 'pipe', timeout: 60000 });
+    }
+    console.log('  · 自足夹具（MIX#4）：源 core 无 init-example.mjs ⇒ 内联最小示例库播种 ' + SEED_EXAMPLE.length + ' 条（' + [...new Set(SEED_EXAMPLE.map((r) => r.store))].join('/') + '）');
+  } else {
+    console.log('  · 自足夹具（MIX#4）：源 core 既无 init-example.mjs 又无 akasha.mjs ⇒ 不播种（空六库仍可校验）');
+  }
 
   const registered = new Map();
   const logs = [];
@@ -74,7 +219,7 @@ try {
     logger: { info: (m) => logs.push(String(m)), error: (m) => logs.push('ERROR ' + String(m)) },
     effect(fn) { disposer = fn(); },
   };
-  apply(ctx, {
+  await apply(ctx, {
     serverName: 'akasha',
     transport: 'stdio',
     command: process.execPath,
@@ -83,6 +228,10 @@ try {
     toolCallTimeoutMs: 60000,
     failOnStartupError: true,
   });
+  // ↑ 2026-10-16 修（残骸真因）：原为裸 `apply(...)`＝不 await ⇒ 一旦 reject 即 unhandledRejection
+  //   ⇒ 进程直接终止 ⇒ **跳过文件尾 finally 的 rmSync(SCRATCH)** ⇒ 在 dsh-temp 留下成GB残骸
+  //   （实测 9 个残留 62.5GB/163 万文件，D 盘一度只剩 1.41GB）。加 await 后：失败会正常抛进 try，
+  //   走 finally 清理并以非零码报错（它本就该成功）。
 
   for (let i = 0; i < 60 && registered.size === 0; i++) await new Promise((r) => setTimeout(r, 500));
   assert.ok(registered.size > 0, '应从真实 MCP 服务器注册到工具（实际 ' + registered.size + ' 个；日志：' + logs.slice(-2).join(' | ') + '）');

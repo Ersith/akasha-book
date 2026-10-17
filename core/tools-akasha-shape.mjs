@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { contentKeyOf } from './session-key.mjs';
 
 const TOOLS = dirname(fileURLToPath(import.meta.url));
 const AK = join(TOOLS, '..');
@@ -45,11 +46,10 @@ const idForms = { newOwner: 0, fp4: 0, legacy: 0 };
 for (const r of segs) { if (isNew(r.id)) idForms.newOwner += 1; else if (isFp4(r.id)) idForms.fp4 += 1; else idForms.legacy += 1; }
 const norm = (s) => String(s ?? '').replace(/^session-/, '');
 // 口径（2026-10-15 修）：**node 行不参与重复统计**——同 id 多代是设计（跨代留档），不是重复。
-// 本口径必须与 `tools/migrate-20261015-compact-session.mjs` 完全一致，否则两边会给出相反的结论（本工具首版即踩此坑：
-// 报 6588 而紧凑化脚本报 0，差额正是 node 行）。
-const ck = (r) => (Number.isInteger(r.seq)
-  ? JSON.stringify([norm(r.session), r.seq, r.kind, r.gist, r.why ?? '', Array.isArray(r.tools) ? r.tools : String(r.tools ?? '')])
-  : `id:${r.id}`);
+// 2026-10-15（GPT N4 收尾）：内容键与 `tools/migrate-20261015-compact-session.mjs` **共用同一函数**
+// （tools/session-key.mjs）——原先两处各写一套，topic/promotion 上会给出相反结论（本工具首版即踩此坑：
+// 报 6588 而紧凑化脚本报 0，差额正是 node 行；第二版对 topic 又相反）。
+const ck = (r) => contentKeyOf(r);
 const seen = new Map();
 for (const r of rows) { if (r.kind === 'node') continue; const k = ck(r); seen.set(k, (seen.get(k) ?? 0) + 1); }
 const contentDup = [...seen.values()].filter((n) => n > 1).reduce((a, b) => a + b - 1, 0);

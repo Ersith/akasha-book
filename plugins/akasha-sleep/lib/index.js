@@ -9,6 +9,7 @@
 //     `idleResume:true` 时才自动续行（强信号＝思维链尾部「好。」；冷却 + 限次；文案禁清单/打勾/句号收尾）
 //   · 降级：核心库不可用 → sleep-error 观测线 + 条子提示文案，不炸、不失活。
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -58,7 +59,11 @@ const DEFAULTS = {
   idleResumeOnWeak: false,
   idleResumeCooldownMs: 300000,
   idleResumeMax: 3,
-  idleTailChars: 32
+  idleTailChars: 32,
+  // F8（2026-10-16 batch8；VERIFY-S3 §5-F8）：审核面滞后检查的**超时值改为 cfg 可注入**（默认 5000 ms）。
+  //   动机：测试里的超时驱动要实等整个超时 ⇒ route 套件从 0.65 s 抬到 6.4 s，每次回归都背。
+  //   语义不变（同一条 kill 路径），只是不再把 5 s 写死在调用点。
+  reviewLagTimeoutMs: 5000
 };
 
 /** 唤醒条是否值得推（有内容才说话）：无睡眠记录 / 有待办 / 审计有警告。 */
@@ -70,7 +75,9 @@ export function isWakeNoteworthy(k) {
 export function buildWakeNote(k) {
   const lines = ['【阿卡夏·起床包】'];
   lines.push(`库况：canon ${k.library.canon} / mirror ${k.library.mirror} / orphan ${k.library.orphan} / pricing ${k.library.pricing} / lexicon ${k.library.lexicon} / frontier ${k.library.frontier}`);
-  lines.push(k.sleep ? `睡眠：${k.sleep.lastRunAt}（${k.sleep.trigger}）待办 ${k.sleep.todo}` : '睡眠：无记录（等待首个空闲）');
+  // 2026-10-15（GPT 复核 lead L1）：此数是**本次睡眠生成**的待办（历史时点值），不是"当前待办总数"——
+  // 标签写明，免得与下一行的当前 inbox 数并排时被读成矛盾（纯展示口径修正，无数据丢失）。
+  lines.push(k.sleep ? `睡眠：${k.sleep.lastRunAt}（${k.sleep.trigger}）本次生成待办 ${k.sleep.todo}` : '睡眠：无记录（等待首个空闲）');
   if ((k.inbox?.totalItems ?? 0) > 0) lines.push(`待办 inbox：${k.inbox.totalItems} 条（akasha_promote 可转正）`);
   const warns = (k.review?.findings ?? []).filter((f) => f.level === 'warn');
   if (warns.length) lines.push(`审计：${warns.map((f) => f.code + '×' + f.count).join('，')}`);
@@ -100,18 +107,22 @@ export function tailReadText(file, maxBytes = TAIL_WINDOW_BYTES) {
   const st = statSync(file);
   const start = Math.max(0, st.size - maxBytes);
   const len = st.size - start;
-  if (len <= 0) return { text: '', bytes: 0, truncated: false };
+  if (len <= 0) return { text: '', bytes: 0, size: st.size, truncated: false };
   const fd = openSync(file, 'r');
   try {
     const buf = Buffer.allocUnsafe(len);
     const n = readSync(fd, buf, 0, len, start);
     let text = buf.subarray(0, n).toString('utf8');
-    if (start > 0) { const nl = text.indexOf('\n'); if (nl === -1) return { text: '', bytes: n, truncated: true }; text = text.slice(nl + 1); }
-    return { text, bytes: n, truncated: start > 0 };
+    // 2026-10-16 审修：**bytes = 实际读入字节数**（截断时恒等于窗口），**size = 文件真大小**——
+    //   调用方（gate-window-miss 观测线）此前把 bytes 当 fileBytes 记，日志无法反映"差多远"。
+    if (start > 0) { const nl = text.indexOf('\n'); if (nl === -1) return { text: '', bytes: n, size: st.size, truncated: true }; text = text.slice(nl + 1); }
+    return { text, bytes: n, size: st.size, truncated: start > 0 };
   } finally { closeSync(fd); }
 }
 // 会话身份是完整宿主 ID；`session-1`、`1`、`session-session-1` 是三个不同身份。
 // 生产者已经保留原始 ID。旧短 ID 缺少可核对映射时不得猜别名，需核对原档后重索引。
+// 2026-10-15 V02 补注（GPT N1/N2 收尾）：**存储侧**入口存裸 uuid（核心 normalizeSid）；**读侧**＝精确优先 + 归一兜底
+// （见下方 latestIntentGist 与 gate.test 的跨 ID 段）——不猜"旧短 ID"别名，但 `session-` 前缀这一种等价形态必须互认。
 
 export function latestIntentGist(text, session) {
   // V02：当前会话尚无 intent 也不能回退到另一个合法 ID；无标记的完整 ID 历史记录仍可精确读取。
@@ -134,7 +145,14 @@ export function latestIntentGist(text, session) {
     return null;
   };
   if (want === undefined) return pick(null);
-  return pick((r) => String(r.session ?? '') === want);
+  // 2026-10-15（GPT 复核"跨组件 ID 约定冲突"，板上第 7 条，实证）：核心侧**入口一律存裸 uuid**（`normalizeSid`），
+  // 而宿主给插件的是**完整 `session-<uuid>`** ⇒ 原第 137 行的严格相等在带前缀会话上恒不匹配 ⇒ gate/stateful **同时静默**。
+  // 修法：**精确优先**（保留 Q06 的"不许跨会话误配"），再以**归一兜底**（两边都去掉前缀后比较）。
+  const exact = pick((r) => String(r.session ?? '') === want);
+  if (exact) return exact;
+  const norm = (v) => String(v ?? '').replace(/^session-/, '');
+  const nw = norm(want);
+  return nw ? pick((r) => norm(r.session) === nw) : null;
 }
 
 /** 门档触发判据（2026-10-15 落地；**顶层导出**，供自测做等价对照——与 tailReadText/latestIntentGist 同规矩）。
@@ -156,6 +174,43 @@ export function gateTriggerOf(gist) {
   return null;
 }
 
+// 审核面滞后检查的**模块级单例**（2026-10-16 batch6 补丁 D；口径按 batch6 复核 VERIFY-S2 §3 收窄）：
+//   原定义在 apply() 闭包里 ⇒ 严格说是「插件实例级」（当前 cordis.yml 只有一条 root 插入、实例数=1，故与
+//   现状等价）。提到模块级 ⇒ **同一模块实例**内重复 `apply()`（同一进程、同一求值结果）共用同一份节流与
+//   结果，不会出现 N 份节流与 N 次 exec。
+//   ⚠ 边界（实测，别过度推广）：**重新求值 ≠ 同一实例**——两个独立模块实例（不同 cache-buster，≈ HMR
+//   重新求值而旧实例未被复用）会**各持一份节流、各跑一次 exec**。所以「不会 N 份」的口径只对
+//   「同一模块实例内的重复 apply」成立，不对「进程全局」成立。
+//   导出仅供测试：route.test.mjs 用 `reviewLagState.at = 0` 复位节流（同进程多段用例各跑各的）。
+export const reviewLagState = { at: 0, value: null, logged: null, checkedAt: null };
+// O1（2026-10-17 batch15 · 显示面）：检查时点只用于**显示**，不参与节流/判定（`at` 仍是节流唯一依据）。
+//   背景（VERIFY-A4 §5-O1）：戳重生成后、下一次 turn/end 检查到来前，显示的是上一结果 ⇒ 06:35–06:46 出现
+//   「脉搏报滞后」与「实跑 exit 0」的**时间差分歧**。附时点后「这个结论是什么时候的」一眼可见；判定不动。
+// O1-b（2026-10-17 batch16 · 显示面，VERIFY-S7 §7）：只有 `HH:MM` 时，进程长期静默（无 turn/end、无写入）
+//   ⇒ 旧结果跨日会被读成「今天 06:50」（今天 06:50 与明天 06:50 逐字相同）。修法：**超过 6h 的时点补日期**
+//   （`MM-DD HH:MM`），6h 内仍只给 `HH:MM`（短、不白占行宽）。
+//   阈值取 6h 的判据：与本插件 `minIntervalHours` 同一量级；「今天 HH:MM」与「昨天同 HH:MM」要混淆须错位
+//   ≥18h（同刻度落在 6h 窗外才可能同形）⇒ 6h 外的时点带日期即无歧义。判定/节流仍**不读** checkedAt。
+const stampOf = (ms) => {
+  const d = new Date(ms), p = (x) => String(x).padStart(2, '0');
+  const t = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return Date.now() - ms < 6 * 3600_000 ? t : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${t}`;
+};
+
+// D1/F6（2026-10-16 batch8 · VERIFY-S3 §5-F6）：**raw 分类器**——从 execFileSync 抛出的 error 取「真因」。
+//   优先级：真实退出码（number）> **`error.code` 字符串** > 信号（`'SIG:' + signal`）> `'-'` 兜底。
+//   ⚠ 顺序是实测定的（batch8 landing/tools/probe-timeout-shape.mjs）：**超时被杀同时带**
+//   `signal:'SIGTERM'` 与 `code:'ETIMEDOUT'`（status 为 null）⇒ 若信号优先，raw 会从 `'ETIMEDOUT'`
+//   退化成 `'SIG:SIGTERM'`（信息变差；H-3 用例当场红）。信号格只在 **code 缺失** 时兜底
+//   （POSIX 信号杀：status 为 null、code 为 undefined、signal='SIGKILL'）。
+//   提到顶层导出的理由：`'-'` / `'SIG:x'` / `'ENOENT'`（字符串格）在 **Windows 上不可达**，
+//   只能直测本函数（route.test.mjs H+++ 段）；生产路径（runReviewLag 的 catch）调用的就是这一份
+//   ——不存在「测试一份、生产另一份」。
+export const rawOfError = (e) => (typeof e?.status === 'number'
+  ? e.status
+  : (typeof e?.code === 'string' ? e.code
+    : (typeof e?.signal === 'string' ? 'SIG:' + e.signal : '-')));
+
 export function apply(ctx, config = {}) {
 
   // A/B 实验开关（2026-10-10 用户解冻，见 docs/ab-experiment-design.md §6）：
@@ -165,6 +220,13 @@ export function apply(ctx, config = {}) {
     return;
   }
   const cfg = { ...DEFAULTS, ...config };
+  // Empty optional prompts must use a string at the Harness API boundary.
+  const registerContext = ({ text, ...entry }) => ctx.systemPrompt.context({
+    ...entry,
+    text: typeof text === 'function'
+      ? (context) => text(context) ?? ''
+      : text ?? '',
+  });
   const require_ = createRequire(import.meta.url);
   const reportDir = join(cfg.akashaDir, 'logs');
   const stateFile = cfg.stateFile || join(reportDir, 'sleep-state.json');
@@ -304,7 +366,7 @@ export function apply(ctx, config = {}) {
   });
 
   // 条子：每个新回合的 runtime context 自动带上最近一次睡眠摘要（渲染自核心库，失败安全）。
-  ctx.systemPrompt.context({
+  registerContext({
     name: 'akasha:sleep',
     order: cfg.contextOrder,
     text: (context) => {
@@ -395,7 +457,85 @@ export function apply(ctx, config = {}) {
   ctx.on('agent/error', (p) => { retarget(sidOf(p)); noteFailure('agent'); });
   // 轮次与压缩真值：能拿到就用真值，拿不到就保持 0（宁缺勿假）
   try { ctx.on('agent/turn-stopping', (p) => { retarget(sidOf(p)); if (p && typeof p.turn === 'number') S().obs.turn = p.turn; }); } catch { /* 事件不存在 */ }
-  try { ctx.on('agent/turn-end', (p) => { retarget(sidOf(p)); if (p && typeof p.turn === 'number') S().obs.turn = Math.max(S().obs.turn, p.turn); }); } catch { /* 事件不存在 */ }
+  // ⚠ 2026-10-16 独立审修复：原 `ctx.on('agent/turn-end', …)` 是**死监听**——宿主不存在该事件
+  //   （权威面：dsh-scope/scoped-events.generated.js 与 dsh-tool-cordis api-catalog 的 agent/* 列表只有
+  //   turn-stopping/status/…，无 turn-end；全树 grep 'agent/turn-end' 亦零命中）。原两处注册（本行旧
+  //   obs.turn 更新 + 下方 review-lag）因此从未触发。改走 **durable 路由** session/event type='turn/end'
+  //   （与 akasha-hooks / dsh-akasha-session 同一路由；hooks.jsonl 的 kind:'turn-end' 即由它产生）。
+  // 审核面滞后（2026-10-16 收 · 独立审 2026-10-16 修）：
+  // 结果改存**进程级单例**（检查与会话无关：查的是仓库面，按会话分桶只会 N 倍跑进程且显示分散）。
+  // 安全：60s 节流、5s 超时、全 try；exit 1（有滞后）是**预期路径**不是故障；任何异常都不得影响回合。
+  const REVIEW_LAG_INTERVAL = 60 * 1000;
+  // reviewLagState 已在**模块级**（2026-10-16 batch6 补丁 D）——本实例与将来任何实例共用同一份节流与结果。
+  // P4b（2026-10-16 审修·观测面）：**状态变化才落线**（kind:'review-lag'，code + 首行截断）——原实现成功/失败都不留痕，
+  //   事后连「钩子跑没跑过」都无从核；不改 60s 节拍，只把结果变化记进 hooks.jsonl 供审计对照。
+  // D1（2026-10-16 batch7 · 观测线字段面变更，VERIFY-S2 §5-D1）：**raw 记非滞后态的真因**——
+  //   1.10.14 里 code:-1 同时承担「工具没装 / 语法错 / 超时 / 其它退出码」四类，事后审计无法区分
+  //   「工具没装」与「工具跑了但崩了」。raw 取值域（**凡非滞后态都带 raw**；⚠ 滞后态**同样带 raw**
+  //   ——batch8·F1 更正：batch7 原文写「滞后态不带」，与代码相反、实测滞后行 = `{"code":1,"raw":1,…}`；
+  //   `code + line` 已足够表达「有滞后」，故 raw 在此只作退出码确证）：
+  //     · number —— 子进程真实退出码（如 3、1（无 stdout，如语法错））
+  //     · 'ETIMEDOUT' —— 超时被杀（execFileSync：status 为 null、error.code 为该值；
+  //       ⚠ 实测这条**同时带** signal='SIGTERM' ⇒ rawOfError 里 code 优先于 signal，才拿到 'ETIMEDOUT'）
+  //     · 'ENOBUFS' —— 子进程 stdout 超 maxBuffer（batch8·F6 更正分类：**不是** spawn 级）
+  //     · 'SIG:<name>' —— 被信号杀死（batch8·F6：`e.signal` 存在且 **code 缺失** 时记；POSIX 可达，
+  //       本机 Windows 不可达——超时路径虽带 SIGTERM，但 code='ETIMEDOUT' 先命中）
+  //     · 'ENOENT' / 'EACCES' 等 **spawn 级** error.code —— 只在**可执行本体 / cwd 找不到**时出现
+  //       （batch8·F2 更正：`node <缺脚本>` **不落这一格**——7 种调用形态实测全为 status:1、
+  //       code=undefined；node 起得来、在模块解析阶段失败，stderr 打 MODULE_NOT_FOUND。脚本路径不存在 /
+  //       目录不存在 / 路径是目录三种「工具起不来」⇒ raw=1，见 batch7 landing/tools/probe-h4.mjs
+  //       与 batch7 VERIFY-S3 §1.2）
+  //     · '-' —— 编号与字符串都取不到（兜底）
+  //   去重键含 raw（原因不同各留一行，不被去重吞掉）；显示面与 `isLag` 判据不变。
+  //   ⚠ batch8·F5：**键与存储同粒度**——键用截断后的 `shown`（旧写法键用**未截断** `v.line`、
+  //   存储 `slice(0,80)` ⇒ 只在第 80 字之后不同的两条真状态会落成两行「除 ts 外逐字节相同」的记录）。
+  const noteReviewLag = (v) => {
+    try {
+      reviewLagState.value = v;
+      reviewLagState.checkedAt = Date.now();   // O1：本次检查的时点（与 value 同步更新，不参与判定）
+      const shown = String(v.line ?? '').slice(0, 80);
+      const key = `${v.code}|${v.raw ?? ''}|${shown}`;
+      if (key !== reviewLagState.logged) {
+        reviewLagState.logged = key;
+        log({ kind: 'review-lag', code: v.code, ...(v.raw !== undefined ? { raw: v.raw } : {}), line: shown });
+      }
+    } catch { /* 静默：观测线写不了不拖垮回合 */ }
+  };
+  // D3（2026-10-16 batch7 · 契约路线，VERIFY-S2 §5-D3）：**工具首行必须走 stdout**（当前真工具
+  //   `akasha/tools/review-lag.mjs` 走 console.log，符合；该文件属 `akasha/tools/**`，本批不动，
+  //   契约写在消费侧这里）。判据只认 `code===1 && stdout 首条非空行`：真滞后若改走 stderr ⇒ 会
+  //   被判成「工具起不来」⇒ 显示面静默、观测线 `-1`（**新的静默失败模式**——BEFORE 1.10.14 至少
+  //   还会显示一行「有滞后」）。
+  //   ⇒ 改工具输出通道（换 stderr / 套一层 wrapper 吞掉 stdout）＝改契约，须同批改本判据；
+  //   未选「判据放宽到认 stderr 标记」的理由见 batch7 landing README §2-D3：那会为一条**没写下来的
+  //   契约**增加新的判据面（stderr 文本匹配），且任何在 stderr 打印该标记的工具都会被算成「有滞后」。
+  const runReviewLag = () => {
+    try {
+      if (Date.now() - reviewLagState.at < REVIEW_LAG_INTERVAL) return;
+      reviewLagState.at = Date.now();
+      execFileSync(process.execPath, [join(cfg.akashaDir, 'tools', 'review-lag.mjs')],
+        {
+          // F8（batch8）：超时值改 cfg 可注入（默认 5000）——测试实等 5 s 会永久拖慢回归。
+          encoding: 'utf8', timeout: cfg.reviewLagTimeoutMs || 5000, stdio: ['ignore', 'pipe', 'pipe'],
+          // B（2026-10-16 batch6 加固）：宿主里 process.execPath 是 **Electron 壳**，靠宿主 env 的
+          //   ELECTRON_RUN_AS_NODE=1 才当 node 跑（本机实测继承链上确有该变量）。显式钉住＝不赌启动环境：
+          //   缺它时这一行会去**拉起整只桌面端**。
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        });
+      noteReviewLag({ code: 0, line: '无滞后' });
+    } catch (e) {
+      // D1：raw = 真因（见 noteReviewLag 头的取值域），code 仍只表达滞后 / 非滞后两态。
+      // F6（batch8）：分类逻辑提到顶层 `rawOfError`（POSIX 信号 ⇒ 'SIG:<name>'；其余同前）
+      const raw = rawOfError(e);
+      const first = String(e?.stdout ?? '').split('\n').find((l) => l.trim());
+      // A（2026-10-16 batch6 修 · 批次 5 复核发现的缺陷 #4）：exit 1 **且 stdout 空** ⇒ 工具自身起不来
+      //   （脚本缺失 / 语法错 / 依赖缺失——node 的启动失败同样 exit 1，实测），不是"有滞后"。
+      //   真·有滞后时工具**必打印首行** ⇒ 以 stdout 有无作干净判据；起不来记 code:-1：观测线仍留痕
+      //   （可事后核"它跑过"），显示面静默。
+      const isLag = raw === 1 && !!first;
+      noteReviewLag(isLag ? { code: 1, raw, line: first } : { code: -1, raw, line: '' });
+    }
+  };
   try {
     ctx.on('session/event', (sessOrP, maybeEvent) => {
       // R05（GPT 复核二轮）：宿主实际按 **(session, event)** 发布（dsh-session：callbackArgs=[session,event]）；
@@ -406,6 +546,13 @@ export function apply(ctx, config = {}) {
       const t = String(p?.type ?? p?.name ?? p?.eventType ?? '');
       // R04/R05：回合真值也接 **turn/start**（取消/异常回合不更新 turn-stopping ⇒ C3 当轮标记须靠 start 失效）。
       if (t === 'turn/start') { const tn = Number(p?.data?.turn ?? p?.turn); if (Number.isFinite(tn)) S().obs.turn = Math.max(S().obs.turn, tn); }
+      // 2026-10-16 独立审修复：turn/end 也带 data.turn（dsh-session：data={turn,reason}）——补进轮次真值来源；
+      //   并在**durable** 的 turn/end 上跑审核面滞后检查（原 agent/turn-end 死监听，见上方注）。
+      if (t === 'turn/end') {
+        const tn = Number(p?.data?.turn ?? p?.turn);
+        if (Number.isFinite(tn)) S().obs.turn = Math.max(S().obs.turn, tn);
+        runReviewLag();
+      }
       if (t.startsWith('compaction/end') || (t === 'compaction' && p?.phase === 'end')) {
         // N10（GPT 第三轮）：**失败压缩不计成功**——宿主失败路径同样发 end（data.error 非空）⇒ 此前把失败算成
         //   「已压缩 N 次」并触发多余补查。成功才计数与更新脆弱窗；失败另计（观测用，不触发提醒）。
@@ -428,7 +575,7 @@ export function apply(ctx, config = {}) {
   } catch { /* 事件不存在 */ }
 
   // 库脉搏（v1.3；v1.5 起附加回查行）：写→可见通道——并行会话 / 脚本写入库后，下一回合即可见并命名新内容。
-  ctx.systemPrompt.context({
+  registerContext({
     name: 'akasha:pulse',
     order: cfg.pulseOrder,
     text: (context) => {
@@ -438,6 +585,19 @@ export function apply(ctx, config = {}) {
         const lines = [core().renderPulseLine(lib.pulse())];
         const recall = core().renderRecallLine(S().recentFailures, Date.now());
         if (recall) lines.push(recall);
+        // 审核面滞后（2026-10-16）：改了核心件而独立审核没跟上 ⇒ 每回合带出（不靠人自觉跑 p0）
+        // 2026-10-16 审修：读**进程级单例**（原 S().obs 按会话分桶 ⇒ 结果落桶与渲染桶不一致时静默不显示）；
+        //   行宽受 clip 约束（原样拼是 117 字双「⚠ 审核面滞后」前缀行，超本模块 80 字纪律）。
+        const rl = reviewLagState.value;
+        if (rl && rl.code === 1 && rl.line) {
+          const n = (/：(\d+)\s*个/.exec(rl.line) || [])[1];
+          // O1（2026-10-17 batch15）：附**检查时点**——判定与节流不动，只让"这结论是什么时候的"可见
+          //   （旧结果在 60s 节流 / turn-end 驱动的窗口里会与实跑分歧：VERIFY-A4 §5-O1 的 06:35–06:46 即此）。
+          //   ⚠ 位置选在**前缀括号内**而不是行尾：行尾会被 80 字 clip 先截掉（长明细 + `…` 时点就没了），
+          //   放头部 ⇒ 无论尾巴多长，时点一定看得见；尾巴仍是可截断的"明细"。
+          const when = reviewLagState.checkedAt ? ` · 检于 ${stampOf(reviewLagState.checkedAt)}` : '';
+          lines.push(clip(`⚠ 审核面滞后（改了没审${when}）：` + (n ? `${n} 件核心件在审核戳后被改` : rl.line.replace(/^⚠\s*审核面滞后：/, ''))));
+        }
         return lines.filter(Boolean).join('\n') || null;
       } catch { return null; }
     }
@@ -447,7 +607,7 @@ export function apply(ctx, config = {}) {
   // 规则躺在会话开头那坨注入（akasha:self）里，**执行时看不到** ⇒ 必然漂移。
   // 修法＝接进每回合必然经过的执行点：这条 runtime context 行每回合都出现，内容渲染自
   // canon 的称呼体系当前版本（降级为内置短句），并写明执行点要求（交付/验收/复盘的开口句）。
-  ctx.systemPrompt.context({
+  registerContext({
     name: 'akasha:address',
     order: cfg.addressOrder,
     text: (context) => {
@@ -481,17 +641,18 @@ export function apply(ctx, config = {}) {
       { cat: "开关/运行", re: /开关|启用|禁用|默认开|默认关|开着|关着|在跑|跑着|还在吗|开着吗|装着吗|有没有开/ },
       { cat: "存在", re: /是否存在|有没有|在不在|还在吗/ },
     ];
-    ctx.systemPrompt.context({
+    registerContext({
       name: "akasha:stateful",
       order: cfg.statefulOrder,
       text: (context) => {
         retarget(renderSidOf(context));
         try {
           const path = join(cfg.akashaDir, "data", "session.jsonl");
-          // 2026-10-15 修：未知会话时**必须传 undefined**（＝"任意会话"分支）；原先传 null ⇒ 走 `String(r.session) === null`
-          // 恒假的比较 ⇒ **C3 在会话 id 未知时永远不触发**（stateful.test.mjs 的 6 条红即此因）。
+          // 2026-10-15 V02 契约（GPT 复核 plugins N2 收尾）：**身份未知 ⇒ 静默**——latestIntentGist 收到
+          // '(unknown)'/null/'' 一律 null（不得回退他会话）；显式 undefined（任意会话）只保留给离线诊断。
+          // （上一版注释写"必须传 undefined"，那是中间修法，已被哨兵契约推翻——留此以免再读错。）
           let gist = null;
-          try { gist = latestIntentGist(tailReadText(path).text, curSid === '(unknown)' ? undefined : curSid); } catch { /* 文件缺失/半行等 → 走 null */ }
+          try { gist = latestIntentGist(tailReadText(path).text, curSid); } catch { /* 文件缺失/半行等 → 走 null */ }
           if (!gist) return null;
           const hit = STATEFUL.find((k) => k.re.test(gist));
           if (!hit) return null;
@@ -512,18 +673,38 @@ export function apply(ctx, config = {}) {
   // 依据：canon-thinkloop-gate-20261015 + canon-gate-v2-20261015（**先 p0 机检 97s，只有升级项才开慢层**——这正是"不让每步都变长"的落点）。
   // 形态：一行 ≤80 字，只提示不阻断；与 C3 同法（尾窗读 intent + 同类 30 分钟去重 + hooks 留痕）；gateHints:false ⇒ 提示与事件双停。
   if (cfg.gateHints !== false) {   // 默认开；gateHints:false ⇒ 提示与事件双停（与 C1/C3 同规矩）
-    ctx.systemPrompt.context({
+    registerContext({
       name: 'akasha:gate',
       order: cfg.gateOrder,
       text: (context) => {
         retarget(renderSidOf(context));
         try {
           const path = join(cfg.akashaDir, 'data', 'session.jsonl');
-          // 2026-10-15 修（plugins 单元发现，实证）：**哨兵必须传 undefined**——`latestIntentGist(text, null)`
-          // 会走 `String(r.session) === null` 的恒假比较 ⇒ 本行在"会话 id 未知"时**永远不出话**
-          // （全历史 hooks.jsonl 里 `gate-reminder` 计数 = 0，对照 stateful-reminder = 21）。
+          // 2026-10-15 V02 契约（同 stateful；GPT N2）：未知身份 ⇒ 静默（'(unknown)'/null/'' ⇒ null），
+          // 不得读"全库最后一条 intent"（会被他会话触发）。gate-reminder 计数靠"已知会话 + 触发词"正常路径恢复。
           let gist = null;
-          try { gist = latestIntentGist(tailReadText(path).text, curSid === '(unknown)' ? undefined : curSid); } catch { /* 容缺 */ }
+          try {
+            const w = tailReadText(path);
+            gist = latestIntentGist(w.text, curSid);
+            // 2026-10-15（GPT 第二份复核·优先①·真根因）：**尾窗（256 KiB）截断时"未命中"是静默的** ✗ ——
+            // 现场快照里最后 58 条全是 node、最近 intent 在 ~460 KB 之前 ⇒ **即使 ID 完全正确也找不到**（她双重复现）。
+            // 契约：**不许静默** —— 窗口不足且未命中时落一条观测线（不是"没有意图"，是看不见）。
+            // 2026-10-16 审修：① **去重**——原实现每次渲染都写（实测 10:06:45–10:17:15Z 写 80 行 ≈ 6.6 行/分，
+            //   多会话并发时更密），对齐本插件其余钩子（同类 30 分钟去重）的纪律，改 **10 分钟/会话**；
+            // ② **字段**——`bytes` 是读入字节数（截断时=窗口值），原记成 fileBytes 无法反映"差多远" ⇒ 记真
+            //   大小 `size`，另留 readBytes；③ 未知身份渲染恒 null（V02 契约静默）≠ 窗口问题，不落这条线。
+            if (!gist && w.truncated && curSid !== '(unknown)') {
+              const nowMs = Date.now();
+              if (nowMs - (S().gateState.winMissAt || 0) > 10 * 60 * 1000) {
+                S().gateState.winMissAt = nowMs;
+                appendFileSync(join(cfg.akashaDir, 'logs', 'hooks.jsonl'), JSON.stringify({
+                  ts: new Date().toISOString(), kind: 'gate-window-miss',
+                  note: '尾窗截断且未命中 intent（256KiB 窗口不足）——不是"没有意图"，是看不见；需扩大窗口或改为带索引的检索',
+                  windowBytes: TAIL_WINDOW_BYTES, fileBytes: w.size ?? w.bytes, readBytes: w.bytes, sid: String(curSid),
+                }) + '\n', 'utf8');
+              }
+            }
+          } catch { /* 容缺 */ }
           const hit = gateTriggerOf(gist);
           if (!hit) return null;
           const now = Date.now();
@@ -546,7 +727,7 @@ export function apply(ctx, config = {}) {
   //   故用"最近失败的工具"作为**预提示**（近 30 分钟窗口 + 同工具去重）；"本回合尚未查库"这一前置
   //   在渲染时无法判定，改为"上一个回合没有查库动作时更倾向提示"的弱化版（v1 取"总是可提示"，由去重与上限约束）。
   if (cfg.preflightHints !== false) {
-    ctx.systemPrompt.context({
+    registerContext({
       name: 'akasha:preflight',
       order: cfg.preflightOrder,
       text: (context) => {
@@ -731,7 +912,7 @@ export function apply(ctx, config = {}) {
   // 极限观测行（2026-10-11，用户令）：轮次维度的机械钩子——把「该查库了」变成可见信号，不靠记性。
   //   只在知道轮次时渲染（拿不到真值就保持静默，不伪造）。硬约束同 C1：**一行、≤80 字**。
   if (cfg.extremeObs !== false) {
-    ctx.systemPrompt.context({
+    registerContext({
       name: 'akasha:extreme',
       order: (cfg.pulseOrder ?? 132) + 2,
       text: (context) => {
@@ -754,7 +935,7 @@ export function apply(ctx, config = {}) {
   //   **压缩 ≥5** ⇒ 升级为强制；**查过即不再催**（闭环，避免噪音）。
   const RECALL_WINDOW = 15;
   if (cfg.compensate !== false) {
-    ctx.systemPrompt.context({
+    registerContext({
       name: 'akasha:compensate',
       order: (cfg.pulseOrder ?? 132) + 3,
       text: (context) => {
@@ -787,7 +968,7 @@ export function apply(ctx, config = {}) {
     const CONV_ID = 'canon-core-conventions';
     const FALLBACK_CONVENTIONS = '库无界·装载有界｜来源态四标签｜修订链：追加不改原文｜零编造（红线）｜称呼：Master/大肥鱼';
     const clipLong = (s) => (s.length <= 160 ? s : s.slice(0, 159) + '…');
-    ctx.systemPrompt.context({
+    registerContext({
       name: 'akasha:conventions',
       order: (cfg.pulseOrder ?? 132) + 4,
       text: (context) => {
@@ -822,7 +1003,7 @@ export function apply(ctx, config = {}) {
       } catch { return ''; }
     };
     const clip120 = (s) => (s.length <= 120 ? s : s.slice(0, 119) + '…');
-    ctx.systemPrompt.context({
+    registerContext({
       name: 'akasha:recall',
       order: (cfg.pulseOrder ?? 132) + 5,
       text: (context) => {
@@ -870,6 +1051,13 @@ export function apply(ctx, config = {}) {
   // 首次激活即跑一次，此后按去抖节奏。
   const boot = readState();
   if (!boot.lastRunAt) runSleep('activate');
+
+  // C（2026-10-16 batch6）：**装载即查一次**——结果从**第一回合**起可见（原先首个 turn/end 之前渲染
+  //   ⇒ 重启后要等第二回合才显示）。代价：宿主启动多一次 ~0.1 s 同步子进程。
+  //   ⚠ 位置纪律：**放在激活睡眠之后**——本检查自己要往 hooks.jsonl 落一行观测线（kind:'review-lag'），
+  //   若排在激活睡眠之前，那一行会被算进启动那次的「已处理行数」水位线（selftest 实测 4≠3）——
+  //   那是自产的记账噪声，不是库的进展。
+  try { runReviewLag(); } catch { /* 静默：装载期任何异常都不得影响插件加载 */ }
 
   log({ kind: 'sleep-armed', pid: process.pid, minIntervalHours: cfg.minIntervalHours, timerCheckMs: cfg.timerCheckMs });
   if (llmSkipNote) log({ kind: 'wake-note-llm-skip', message: llmSkipNote });
