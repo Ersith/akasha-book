@@ -4,6 +4,20 @@
 > 设计稿：`..\research\ai-memory-architecture-20261006.md`（§7 形态 / §8 栈研判 / §10 强制力分层）
 > 计划：`..\docs\superpowers\plans\2026-10-06-akasha-v0.md` · `2026-10-07-akasha-sleep-v2.md` · `2026-10-07-time-filter-review.md`
 
+## Install (English)
+
+```bash
+git clone https://github.com/Ersith/akasha-book
+cd akasha-book/core
+node test.mjs           # self-test (291 passed / 0 failed on the shipped snapshot)
+node akasha.mjs check   # validate all six stores
+```
+
+The five DSH plugins live in `plugins/` (`akasha-gate`, `akasha-hooks`, `akasha-session`,
+`akasha-sleep`, `mcp-akasha`). Copy `core/` to a folder of your choice, set `AKASHA_DIR` to it,
+replace the `<AKASHA_DIR>` / `<LOCAL_PATH>` placeholders in each `cordis.patch.yml`, then restart
+the host. The MCP bridge needs `args: ['<AKASHA_DIR>/mcp.mjs']` (it does not read `AKASHA_DIR`).
+If a placeholder is left unreplaced the plugin fails loudly instead of degrading silently.
 ## 是什么
 
 名字取自「阿卡夏记录」（Akashic records）——传说中记载一切事件与知识的档案。本项目是它的工程化最小版：
