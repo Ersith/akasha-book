@@ -184,6 +184,11 @@ assert.equal(isWakeNoteworthy({ ...kQuiet, review: { findings: [{ level: 'warn',
 const note = buildWakeNote({ ...kQuiet, inbox: { totalItems: 2 } });
 assert.ok(note.includes('起床包') && note.includes('canon 1') && note.includes('待办 inbox：2 条') && note.includes('akasha_kit'), note);
 const noteWarn = buildWakeNote({ ...kQuiet, review: { findings: [{ level: 'warn', code: 'frontier-due', count: 3 }], ok: false } });
+// 2026-10-19：压缩后重投补「近期 2 条结论」（卡片 e3c10a7a 第三项）
+const noteWithConcl = buildWakeNote({ ...kQuiet, inbox: { totalItems: 2 } }, ['结论甲：先查库', '结论乙：再动手']);
+assert.ok(noteWithConcl.includes('近期结论（压缩前）：'), '压缩后唤醒条带结论标题');
+assert.ok(noteWithConcl.includes('结论甲：先查库') && noteWithConcl.includes('结论乙：再动手'), '两条结论都在');
+assert.ok(!buildWakeNote({ ...kQuiet, inbox: { totalItems: 2 } }).includes('近期结论'), '普通唤醒条不塞结论（仅压缩后）');
 assert.ok(noteWarn.includes('审计：frontier-due×3'), noteWarn);
 
 // —— 6. 库脉搏（v1.3）：纯函数两路 + 真库渲染一路 ——

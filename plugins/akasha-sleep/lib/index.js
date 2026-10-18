@@ -98,13 +98,33 @@ export function assertNoPlaceholders(config) {
   );
 }
 
+/** 压缩后重投（2026-10-19）：取当前会话最近 N 条结论（session.jsonl 的 conclusion 段），一行一条（≤80）。 */
+export function recentConclusions(akashaDir, sid, limit = 2) {
+  const bare = String(sid || '').replace(/^session-/, '');
+  if (!bare || bare === '(unknown)') return [];
+  const file = join(akashaDir, 'data', 'session.jsonl');
+  if (!existsSync(file)) return [];
+  const out = [];
+  for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+    if (!line.includes('"kind":"conclusion"')) continue;
+    try {
+      const j = JSON.parse(line);
+      if (j.kind !== 'conclusion') continue;
+      if (String(j.session || '').replace(/^session-/, '') !== bare) continue;
+      const gist = String(j.gist || '').replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim().replace(/^Master[，,]\s*/, '').replace(/#{1,6}\s*/g, '');
+      if (gist) out.push(gist);
+    } catch { /* 坏行跳过 */ }
+  }
+  return out.slice(-limit).map((s) => (s.length <= 74 ? s : s.slice(0, 73) + '…'));
+}
+
 /** 唤醒条是否值得推（有内容才说话）：无睡眠记录 / 有待办 / 审计有警告。 */
 export function isWakeNoteworthy(k) {
   return !k.sleep || (k.inbox?.totalItems ?? 0) > 0 || (k.review?.findings ?? []).some((f) => f.level === 'warn');
 }
 
 /** 组装「唤醒条」文本（纯函数）。 */
-export function buildWakeNote(k) {
+export function buildWakeNote(k, conclusions = []) {
   const lines = ['【阿卡夏·起床包】'];
   lines.push(`库况：canon ${k.library.canon} / mirror ${k.library.mirror} / orphan ${k.library.orphan} / pricing ${k.library.pricing} / lexicon ${k.library.lexicon} / frontier ${k.library.frontier}`);
   // 2026-10-15（GPT 复核 lead L1）：此数是**本次睡眠生成**的待办（历史时点值），不是"当前待办总数"——
@@ -113,6 +133,10 @@ export function buildWakeNote(k) {
   if ((k.inbox?.totalItems ?? 0) > 0) lines.push(`待办 inbox：${k.inbox.totalItems} 条（akasha_promote 可转正）`);
   const warns = (k.review?.findings ?? []).filter((f) => f.level === 'warn');
   if (warns.length) lines.push(`审计：${warns.map((f) => f.code + '×' + f.count).join('，')}`);
+  if (conclusions.length) {
+    lines.push('近期结论（压缩前）：');
+    for (const s of conclusions) lines.push('· ' + s);
+  }
   lines.push('详情：akasha_kit');
   return lines.join('\n');
 }
@@ -1072,7 +1096,7 @@ export function apply(ctx, config = {}) {
           S().pendingPostCompactWake = null;                     // 一次性：先清，无论成败都不重投
           const k = require_(join(cfg.akashaDir, 'lib.mjs')).kit();
           if (!isWakeNoteworthy(k)) return null;
-          const lines = buildWakeNote(k).split('\n')
+          const lines = buildWakeNote(k, recentConclusions(cfg.akashaDir, curSid)).split('\n')
             .map((l) => (l.length <= 80 ? l : l.slice(0, 79) + '…'));
           return '[压缩后重投] 会话已压缩 ' + pw.n + ' 次（上下文边界），库状态重投：\n' + lines.join('\n');
         } catch { return null; }
