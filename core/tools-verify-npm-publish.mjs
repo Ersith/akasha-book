@@ -2,11 +2,11 @@
 // 口径（来自 canon-npm-publish-20261010-r1 的教训）：只看两处 —— versions 数组里有没有该版本 + dist-tags.latest 指向。
 // 用法：node tools/verify-npm-publish.mjs
 const EXPECT = {
-  '@akasha-book/gate': '1.3.0',
-  '@akasha-book/hooks': '1.2.4',
-  '@akasha-book/session': '0.3.2',
-  '@akasha-book/sleep': '1.6.5',
-  '@akasha-book/mcp': '1.1.2',
+  '@akasha-book/gate': '1.4.3',
+  '@akasha-book/hooks': '1.2.9',
+  '@akasha-book/session': '0.3.6',
+  '@akasha-book/sleep': '1.10.31',
+  '@akasha-book/mcp': '1.1.5',
 };
 const PROXY = process.env.HTTPS_PROXY || 'http://127.0.0.1:<PORT>';
 
@@ -45,3 +45,5 @@ for (const [name, want] of Object.entries(EXPECT)) {
 }
 console.log('  ────────');
 console.log('  通过 ' + ok + ' / 待查 ' + bad + '（registry 直读，无本地缓存干扰）');
+
+process.exit(bad ? 1 : 0);

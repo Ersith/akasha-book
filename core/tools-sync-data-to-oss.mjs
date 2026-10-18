@@ -18,7 +18,7 @@ const pickDir = (...cands) => cands.find((p) => existsSync(p)) ?? cands[cands.le
 import { scrub, residual, selfTest } from './tools-redaction.mjs';
 
 const DRY = process.argv.includes('--dry');
-const SRC = process.env.AKASHA_ROOT ? join(process.env.AKASHA_ROOT, 'data') : pickDir(join(HERE, '..', 'data'), join(HERE, 'data'));
+const SRC = process.env.AKASHA_ROOT ? process.env.AKASHA_ROOT : pickDir(join(HERE, '..', 'data'), join(HERE, 'data'));
 const DST = pickDir(join(HERE, '..', '..', 'dist', 'akasha-oss', 'core', 'data'), join(HERE, '..', 'dist', 'akasha-oss', 'core', 'data'));
 const SKIP = new Set(['session.jsonl']);   // 会话层原文不进 OSS
 

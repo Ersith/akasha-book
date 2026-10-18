@@ -920,6 +920,12 @@ switch (cmd) {
       let built = null;
       let writeNote = '';
       if (flags.build) {
+        {
+          const storeF0 = storeFile ?? SESSION_DEFAULTS.storeFile;
+          let existsSid = false;
+          try { existsSid = readFileSync(storeF0, 'utf8').includes(sid); } catch { existsSid = false; }
+          if (!existsSid) { print(null, '会话不存在，拒绝建树：' + sid); code = 1; break; }
+        }
         built = buildTopics({ storeFile });
         // 幂等 + 防膨胀（2026-10-11 复检）：同 fingerprint ⇒ 跳过；否则写新代并在 retires 里标记旧代退役（追加不改旧行）
         const prev = loadStore('session', storeFile).records.filter((r) => r.kind === 'topic');
@@ -1047,6 +1053,12 @@ switch (cmd) {
       }
       if (flags.build) {
         const storeF = storeFile ?? SESSION_DEFAULTS.storeFile;
+        {
+          const storeF0 = storeFile ?? SESSION_DEFAULTS.storeFile;
+          let inStore = false;
+          try { inStore = readFileSync(storeF0, 'utf8').includes(sid); } catch { inStore = false; }
+          if (!inStore) { print(null, '会话不存在，拒绝建树：' + sid); code = 1; break; }
+        }
         const { treegen, nodes } = buildTree({ session: sid, storeFile: storeF, chunkTurns: Number(flags.turns) || 8, fanout: Number(flags.fanout) || 4 });
         appendNodes(storeF, nodes, treegen);
         print({ treegen, nodes: nodes.length }, `已重建：${sid} → ${nodes.length} 节点（treegen ${treegen}）\n` + renderTree(storeF, sid));

@@ -1,7 +1,7 @@
 // akasha/tools/redaction.mjs —— 脱敏规则的**单一来源**（2026-10-19 重做；独立审核 F7/F9 驱动）
 //
 // 为什么重做：旧 scrubber 对 10 类形态只中 1 类——JSON 转义（`.jsonl` 的主形态）、双转义、URL 编码、
-//   HTML 实体、裸用户名、`<USER_HOME>…`、`@akasha-book\`（反斜杠）全漏；扩展名白名单也不含 `.log/.html/…`。
+//   HTML 实体、裸用户名、`%USERPROFILE%\…`、`@local\`（反斜杠）全漏；扩展名白名单也不含 `.log/.html/…`。
 //   数据门禁同族缺陷：`[A-Za-z]:[\\/]Users[\\/][A-Za-z0-9._-]+` 对**中文用户名**与**转义形**一律 null。
 //   两处控制点各自漏，等于没控制——所以合成一张规则表，由 scrubber / 数据同步 / 发布闸门三处共用。
 //
@@ -11,9 +11,9 @@
 //   ③ **夹具自检**（selfTest）+ **洗后复扫**（residual）——dry 0 命中不得作为证据（2026-10-18 教训）。
 //
 // 两条边界（2026-10-19 实测踩出来的）：
-//   · **只替换前缀，不吞尾巴**：`<USER_HOME><名>` 只替换到名字为止，后面的 `\AppData\…` 原样保留。
+//   · **只替换前缀，不吞尾巴**：`C:\Users\<名>` 只替换到名字为止，后面的 `\AppData\…` 原样保留。
 //     吞尾巴会吃掉紧跟其后的中文正文（数据记录里路径常以「；」结尾，没有空格当界）。
-//   · **分隔符原样保留**：`@akasha-book\/`（正则字面量里的转义斜杠）必须变成 `@akasha-book\/`，
+//   · **分隔符原样保留**：`@local\/`（正则字面量里的转义斜杠）必须变成 `@akasha-book\/`，
 //     不能变成 `@akasha-book//`——那是语法错误。
 import { homedir, userInfo } from 'node:os';
 import { basename } from 'node:path';
@@ -108,7 +108,7 @@ DATA_RULES.push([PRIVATE_IP, '<PRIVATE_IP>']);
 
 /** 规则表（顺序=长→短；同一文本按序应用）。 */
 export const RULES = [
-  // 用户目录：吃到名字为止（名字可缺省——`<USER_HOME>` 后面直接是引号时也要抹掉前缀）
+  // 用户目录：吃到名字为止（名字可缺省——`C:\Users\` 后面直接是引号时也要抹掉前缀）
   [new RegExp(DRIVE + SEP + 'Users' + SEP + '(?:' + NAME + ')?', 'gi'), '<USER_HOME>'],
   [new RegExp(DRIVE + SEP + 'Harness' + SEP + 'akasha', 'gi'), '<AKASHA_DIR>'],
   [new RegExp(DRIVE + SEP + 'DSHHarness' + TTAIL, 'gi'), '<DSH_INSTALL>'],
@@ -118,9 +118,9 @@ export const RULES = [
   [new RegExp(DRIVE + SEP + 'dsh-temp' + TTAIL, 'gi'), '<LOCAL_PATH>'],
   [new RegExp(DRIVE + SEP + 'h' + SEP + 'all' + TTAIL, 'gi'), '<LOCAL_PATH>'],
   [new RegExp(DRIVE + SEP + 'Program Files' + TTAIL, 'gi'), '<LOCAL_PATH>'],
-  // `<USER_HOME>…` 只在**后面跟分隔符**时算路径写法；正文里单独提到这个环境变量名不算身份信息
+  // `%USERPROFILE%\…` 只在**后面跟分隔符**时算路径写法；正文里单独提到这个环境变量名不算身份信息
   [new RegExp('%USERPROFILE%' + SEP, 'gi'), '<USER_HOME>'],
-  // 分隔符用捕获后原样回填：`@akasha-book/`→`@akasha-book/`，`@akasha-book\`→`@akasha-book\`，`@akasha-book\/`→`@akasha-book\/`
+  // 分隔符用捕获后原样回填：`@local/`→`@akasha-book/`，`@local\`→`@akasha-book\`，`@local\/`→`@akasha-book\/`
   [/(@local)([\\/])/g, '@akasha-book$2'],
   [/(?:127\.0\.0\.1|localhost):\d{2,5}/g, '127.0.0.1:<PORT>'],
   [BARE_PORT_RE, '<PORT>'],
@@ -129,7 +129,7 @@ export const RULES = [
 // 裸用户名 + base64（编码后的同一敏感串）：独立审核点名的两类漏网
 for (const n of USER_NAMES) {
   RULES.push([new RegExp(escapeRe(n), 'g'), '<USER_HOME>']);
-  for (const seed of [n, '<USER_HOME>' + n, '<USER_HOME>' + n]) {
+  for (const seed of [n, 'C:\\Users\\' + n, 'C:/Users/' + n]) {
     const buf = Buffer.from(seed, 'utf8');
     for (const enc of new Set([buf.toString('base64'), buf.toString('base64url')])) {
       if (enc.length >= 8) RULES.push([new RegExp(escapeRe(enc), 'g'), '<USER_HOME_B64>']);
@@ -199,22 +199,22 @@ export function selfTest() {
   const N = USER_NAMES[0];
   const bad = [];
   const cases = [
-    ['普通路径', '<USER_HOME>' + N + '\\x', '<USER_HOME>'],
-    ['JSON 转义', '<USER_HOME>' + N + '\\\\x', '<USER_HOME>'],
-    ['双转义', '<USER_HOME>' + N, '<USER_HOME>'],
-    ['file URL', 'file:///<USER_HOME>' + N + '/x', '<USER_HOME>'],
-    ['URL 编码', '<USER_HOME>' + N, '<USER_HOME>'],
-    ['HTML 实体', '<USER_HOME>' + N, '<USER_HOME>'],
+    ['普通路径', 'C:\\Users\\' + N + '\\x', '<USER_HOME>'],
+    ['JSON 转义', 'C:\\\\Users\\\\' + N + '\\\\x', '<USER_HOME>'],
+    ['双转义', 'C:\\\\\\\\Users\\\\\\\\' + N, '<USER_HOME>'],
+    ['file URL', 'file:///C:/Users/' + N + '/x', '<USER_HOME>'],
+    ['URL 编码', 'C%3A%5CUsers%5C' + N, '<USER_HOME>'],
+    ['HTML 实体', 'C:&#92;Users&#92;' + N, '<USER_HOME>'],
     ['裸用户名', '与 ' + N + ' 有关', '<USER_HOME>'],
-    ['%USERPROFILE% 路径', '<USER_HOME>AppData\\x', '<USER_HOME>'],
-    ['@local 正斜杠', '@akasha-book/akasha-gate', '@akasha-book/'],
-    ['@local 反斜杠', '@akasha-book\\akasha-gate', '@akasha-book\\'],
+    ['%USERPROFILE% 路径', '%USERPROFILE%\\AppData\\x', '<USER_HOME>'],
+    ['@local 正斜杠', '@local/akasha-gate', '@akasha-book/'],
+    ['@local 反斜杠', '@local\\akasha-gate', '@akasha-book\\'],
     ['环回端口', '127.0.0.1:' + BARE_PORTS[1], '<PORT>'],
     ['裸端口', '端口 ' + BARE_PORTS[1] + ' 在听', '<PORT>'],
-    ['本机盘符路径', '<AKASHA_DIR>\\data', '<AKASHA_DIR>'],
-    ['dsh-temp 路径', '<LOCAL_PATH>', '<LOCAL_PATH>'],
-    ['个人资料目录（整段）', '<LOCAL_PATH>', '<LOCAL_PATH>'],
-    ['安装目录（整段）', '<DSH_INSTALL>', '<DSH_INSTALL>'],
+    ['本机盘符路径', 'H:\\Harness\\akasha\\data', '<AKASHA_DIR>'],
+    ['dsh-temp 路径', 'D:\\dsh-temp\\x', '<LOCAL_PATH>'],
+    ['个人资料目录（整段）', 'D:/个人资料整理_20260924/文档/Codex/x', '<LOCAL_PATH>'],
+    ['安装目录（整段）', 'D:\\DSHHarness\\resources\\app\\dsh\\node_modules', '<DSH_INSTALL>'],
   ];
   for (const [name, input, expect] of cases) {
     const out = scrub(input).text;
@@ -225,23 +225,23 @@ export function selfTest() {
   }
   // 本机目录族必须**整段抹掉**（只抹前缀会把目录树留在公开仓里：2026-10-19 实测回归）
   for (const [name, input, want] of [
-    ['个人资料目录整段', '<LOCAL_PATH>', '<LOCAL_PATH>'],
-    ['安装目录整段', '<DSH_INSTALL>', '<DSH_INSTALL>'],
-    ['dsh-temp 整段', '<LOCAL_PATH>', '<LOCAL_PATH>'],
+    ['个人资料目录整段', 'D:/个人资料整理_20260924/文档/Codex/x', '<LOCAL_PATH>'],
+    ['安装目录整段', 'D:\\DSHHarness\\resources\\app\\dsh\\node_modules', '<DSH_INSTALL>'],
+    ['dsh-temp 整段', 'D:\\dsh-temp\\a\\b', '<LOCAL_PATH>'],
   ]) {
     const out = scrub(input).text;
     if (out !== want) bad.push(name + '：尾巴未抹净（' + out + '）');
   }
   // base64 形态单列（期望值不是上面的占位符）
-  const b64 = Buffer.from('<USER_HOME>' + N, 'utf8').toString('base64');
+  const b64 = Buffer.from('C:\\Users\\' + N, 'utf8').toString('base64');
   const b64out = scrub('blob ' + b64 + ' end').text;
   if (b64out.includes(b64)) bad.push('base64：编码串仍在');
   // 边界①：正则字面量里的转义斜杠必须原样保留（否则 `/^@akasha-book///` 是语法错误）
-  const reCase = 'if (/^@akasha-book\\//.test(k)) {';
+  const reCase = 'if (/^@local\\//.test(k)) {';
   const reOut = scrub(reCase).text;
   if (reOut !== 'if (/^@akasha-book\\//.test(k)) {') bad.push('正则字面量：@local 转义斜杠被改坏（' + reOut + '）');
   // 边界②：路径后面的中文正文不得被吞（TAIL 类规则的教训）
-  const prose = scrub('用户级 TEMP/TMP=<USER_HOME>' + N + '\\AppData\\Local\\Temp；正常重启桌面端即生效').text;
+  const prose = scrub('用户级 TEMP/TMP=C:\\Users\\' + N + '\\AppData\\Local\\Temp；正常重启桌面端即生效').text;
   if (!prose.includes('；正常重启桌面端即生效')) bad.push('正文吞噬：路径后面的中文被吃掉了（' + prose.slice(0, 80) + '）');
   // 反例：正常文本一字不动
   const ctl = '见 docs/INSTALL.md 与 core/lib.mjs（无敏感串；提到 %USERPROFILE% 这个变量名也不算）';

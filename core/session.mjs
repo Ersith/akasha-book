@@ -13,7 +13,7 @@ export const SESSION_DEFAULTS = {
   // 原先写 join(ROOT,'data') 只认源码树 ⇒ 「指沙箱跑」时读面默认仍开真库（环境隔离失效）。默认布局下与旧值等价。
   storeFile: join(DATA, 'session.jsonl'),
   metaFile: join(DATA, 'session-meta.json'),
-  sessionsRoot: '<LOCAL_PATH>\\official-home\\sessions'
+  sessionsRoot: process.env.AKASHA_SESSIONS_ROOT || join(process.env.DSH_HOME || process.env.USERPROFILE || process.env.HOME || '.', '.dsh', 'sessions')
 };
 
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];

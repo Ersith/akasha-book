@@ -83,6 +83,11 @@ export function findPlaceholders(value, path = 'config', depth = 0) {
 }
 export function assertNoPlaceholders(config) {
   const hits = findPlaceholders(config);
+  const envVal = process.env.AKASHA_DIR;
+  if (typeof envVal === 'string' && envVal.trim() !== '') {
+    const m = envVal.match(PLACEHOLDER_TOKEN);
+    if (m) hits.push({ field: 'AKASHA_DIR(环境变量)', token: m[0] });
+  }
   if (!hits.length) return;
   const fields = [...new Set(hits.map((h) => h.field))].join('、');
   throw new Error(
