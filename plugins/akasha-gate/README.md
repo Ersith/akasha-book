@@ -8,6 +8,14 @@
 > 以及**宿主自带会话检索**（`session_search` / `session_event_read`：原始事件、逐字引文、精确过滤走官方；
 > 阿卡夏会话层只做结论/决策/教训/跨会话导航）。阿卡夏会跳过前两者的注入块、不写入它们的存储；
 > 缺任一层不报错，只是少了那层交叉记忆。详见仓库 README §配套系统。
+## 安装（必读）
+
+1. `git clone https://github.com/Ersith/akasha-book && cp -r akasha-book/core <目标目录>/core`
+2. 把 `cordis.patch.yml` 里所有 `<AKASHA_DIR>` 换成 `<目标目录>/core` 的绝对路径；或删掉路径字段并设 `AKASHA_DIR=<目标目录>/core`
+3. **未替换占位符 / 目录不存在时，插件会明确报错拒绝启动**（fail-closed，不会静默降级）；日志与数据都在 `<AKASHA_DIR>` 内
+
+> 只跑核心库（CLI/MCP）：`cd core && node test.mjs && node akasha.mjs check`。
+
 > **版本（单一真值）**：以本包 `package.json` 的 `version` 为准；本 README 不再复述版本号（2026-10-13 审计 P3 同族）。当前装载版本用 `plugin_manager list_bundles` 查。
 
 - **v1.4.1-h1（2026-10-14，外部审查修复批）**：**`WRITE_REDIRECT` 空目标例外兼容分裂写**（`2> /dev/null`，`>` 与目标间带空格——此前被裸 `>` 误拦）；同时把空目标从宽口径 `/dev/` 收窄为**精确 `/dev/null`**（`> /dev/sda` 类真设备写仍拦）。两侧哨兵 +2（只读放行 / 真写+分裂写仍拒），自测全绿。

@@ -17,6 +17,14 @@
 
 阿卡夏之书睡眠器 —— **调度与注入**（蒸馏逻辑归核心库 `<AKASHA_DIR>/sleep.mjs`；手动触发 `node akasha.mjs sleep [--dry]` 与之共用同一水位线）。
 
+## 安装（必读）
+
+1. `git clone https://github.com/Ersith/akasha-book && cp -r akasha-book/core <目标目录>/core`
+2. 把 `cordis.patch.yml` 里所有 `<AKASHA_DIR>` 换成 `<目标目录>/core` 的绝对路径；或删掉路径字段并设 `AKASHA_DIR=<目标目录>/core`
+3. **未替换占位符 / 目录不存在时，插件会明确报错拒绝启动**（fail-closed，不会静默降级）；日志与数据都在 `<AKASHA_DIR>` 内
+
+> 只跑核心库（CLI/MCP）：`cd core && node test.mjs && node akasha.mjs check`。
+
 > **版本（单一真值）**：以本包 `package.json` 的 `version` 为准；本 README **不再复述版本号**（2026-10-13 审计 P3：此处曾停在 v1.5.5 而实际已到 1.7.x-h 线）。当前装载版本用 `plugin_manager list_bundles` 查；装载态与源的逐字节一致性核查方法见 `akasha/MEMORY-TEST.md`（prompt-safety 双侧 `diff -q` 先例）。
 
 - **会话身份隔离（第五轮 · V02）**：C3 与指代检索仅按完整宿主 ID 精确匹配；当前会话无 intent 时保持静默。`session-1`、`1`、`session-session-1` 不互作别名。此前的单前缀兜底也会误读新版完整 ID 记录，现已移除。33037b3 中无身份格式标记但保留完整 ID 的记录仍可精确读取；更早被剥前缀的记录需要人工核对原会话档案后重索引，不自动猜归属或迁移生产库。

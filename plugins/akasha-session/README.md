@@ -11,6 +11,14 @@
 > 以及**宿主自带会话检索**（`session_search` / `session_event_read`：原始事件、逐字引文、精确过滤走官方；
 > 阿卡夏会话层只做结论/决策/教训/跨会话导航）。阿卡夏会跳过前两者的注入块、不写入它们的存储；
 > 缺任一层不报错，只是少了那层交叉记忆。详见仓库 README §配套系统。
+## 安装（必读）
+
+1. `git clone https://github.com/Ersith/akasha-book && cp -r akasha-book/core <目标目录>/core`
+2. 把 `cordis.patch.yml` 里所有 `<AKASHA_DIR>` 换成 `<目标目录>/core` 的绝对路径；或删掉路径字段并设 `AKASHA_DIR=<目标目录>/core`
+3. **未替换占位符 / 目录不存在时，插件会明确报错拒绝启动**（fail-closed，不会静默降级）；日志与数据都在 `<AKASHA_DIR>` 内
+
+> 只跑核心库（CLI/MCP）：`cd core && node test.mjs && node akasha.mjs check`。
+
 > **版本（单一真值）**：以本包 `package.json` 的 `version` 为准 —— 打包时由 npm 写入 tgz 文件名与包元数据，本 README **不再复述版本号**（2026-10-13 审计 P3：此处曾写 v0.2.3 而实际已到 0.3.2-h4，差出两个功能代；同族漂移在 gate / sleep / hooks 的 README 里也都出现过，故统一改为「指真值」而不是「抄版本」）。
 > 代际看点（只列可核对的）：0.2.x＝索引 + 压缩线 + 节奏条；**0.3.0（2026-10-10）＝索引 worker 化**（见下节）；0.3.x-h 序列＝壳/装配级修订（h3→h4 仅版号差异、代码全同；**h5（2026-10-14）＝循环观测加 `ctxChars` 上下文长度代理**——只记录不干预，见「循环观测 P0」节，见 `MEMORY-TEST.md` 核实记录；**0.3.4-h2（2026-10-15）＝P0 观测线去重 + turn 相 `src` 标记**——同一逻辑事件只落首报，「流已报 + 回合复检」可被下游区分；**0.3.5-h1（2026-10-15）＝格式密度观测**——每轮把 reasoning+text 的加粗标记密度推进近 10 轮滚动窗口，节奏条显示档位 + hooks 落 `density` 线；见「格式密度」节）。查「当前装载的是哪一版」用 `plugin_manager list_bundles`；查「插件壳与核心库谁需要重启」的证据链见 `akasha/MEMORY-TEST.md`（核心 `session.mjs` 由 worker 现场 `require` ⇒ 核心改动无需重启）。
 

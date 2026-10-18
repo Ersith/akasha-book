@@ -8,6 +8,14 @@
 > 以及**宿主自带会话检索**（`session_search` / `session_event_read`：原始事件、逐字引文、精确过滤走官方；
 > 阿卡夏会话层只做结论/决策/教训/跨会话导航）。阿卡夏会跳过前两者的注入块、不写入它们的存储；
 > 缺任一层不报错，只是少了那层交叉记忆。详见仓库 README §配套系统。
+## 安装（必读）
+
+1. `git clone https://github.com/Ersith/akasha-book && cp -r akasha-book/core <目标目录>/core`
+2. 把 `cordis.patch.yml` 里所有 `<AKASHA_DIR>` 换成 `<目标目录>/core` 的绝对路径；或删掉路径字段并设 `AKASHA_DIR=<目标目录>/core`
+3. **未替换占位符 / 目录不存在时，插件会明确报错拒绝启动**（fail-closed，不会静默降级）；日志与数据都在 `<AKASHA_DIR>` 内
+
+> 只跑核心库（CLI/MCP）：`cd core && node test.mjs && node akasha.mjs check`。
+
 > **版本（单一真值）**：以本包 `package.json` 的 `version` 为准（2026-10-13 审计 P3 同族：此处曾写死 v1.2 而实际已到 1.2.4-h2）。当前装载版本用 `plugin_manager list_bundles` 查。
 
 - **v1.2.6-h1（2026-10-14，外部审查修复批 B）**：**`expandHome` 定义前置于使用**（TDZ 修复）——此前它排在 `ENV_AKASHA` 之后，外部按契约设**非空 `AKASHA_DIR`** 时模块导入即 ReferenceError ⇒ hooks 整个装不上（复跑：`loaded`、exit 0 ✓）。

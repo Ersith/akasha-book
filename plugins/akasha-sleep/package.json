@@ -1,6 +1,6 @@
 {
   "name": "@akasha-book/sleep",
-  "version": "1.10.31",
+  "version": "1.10.32",
   "engines": {
     "node": ">=18"
   },

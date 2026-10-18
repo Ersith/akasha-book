@@ -33,6 +33,17 @@ stores. For raw session lookup it defers to the host's built-in `session_search`
 - 一个最小 MCP stdio server——模型侧「先查再答」的现成入口（**22 工具**；2026-10-14 重启核数）；
 - **前沿层（frontier）**：收集的前沿论文——「**文献即基石**」（现行数量以 `stats` 为准；由 `tools\import-frontier.mjs` 从设计稿 §4 生成 + 手工补录，幂等追加）。
 
+## 安装（必读）
+
+```bash
+git clone https://github.com/Ersith/akasha-book
+cp -r akasha-book/core <目标目录>/core
+cd <目标目录>/core && node test.mjs && node akasha.mjs check
+```
+
+插件安装：把 `plugins/<name>/cordis.patch.yml` 里的 `<AKASHA_DIR>` 换成 `<目标目录>/core` 的绝对路径（或设环境变量 `AKASHA_DIR`），再重启宿主。
+**未替换占位符 / 目录不存在时插件会明确报错拒绝启动（fail-closed）**，不会静默降级。
+
 ## 配套系统（Companion systems）
 
 阿卡夏本体**可独立运行**（核心库零第三方 npm 依赖）。但在本项目的完整形态里，它与另两层记忆、以及宿主自带的会话检索**分工协作**：

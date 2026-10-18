@@ -1,11 +1,13 @@
-# ⚠ 安装前必改：把 <AKASHA_DIR> / <LOCAL_PATH> 换成你的实际路径（Windows 路径建议用单引号包住）。
-#   五个插件都会检测未替换的占位符并**直接报错**（fail closed）——不再静默降级。
-#   也可以删掉这些路径字段，改用 AKASHA_DIR 环境变量（插件默认从它推导）。
+# ⚠ 安装必读（三步，缺一步插件会明确报错拒绝启动，不会静默降级）：
+#   1) git clone https://github.com/Ersith/akasha-book && cp -r akasha-book/core <目标目录>/core
+#   2) 把下面所有 <AKASHA_DIR> 换成 <目标目录>/core 的绝对路径（Windows 用 / 或 \\ 均可）
+#   3) 或者：删掉所有路径字段，设环境变量 AKASHA_DIR=<目标目录>/core（插件默认从它推导）
+#   插件启动时会检测未替换的占位符与缺失的 akasha.mjs，直接报错；这是有意的 fail-closed。
 - insert:
     - id: akasha-gate
       name: '@akasha-book/gate'
       config:
-        log: '<AKASHA_DIR>/logs\hooks.jsonl'
+        log: '<AKASHA_DIR>/logs/hooks.jsonl'
         dataDir: '<AKASHA_DIR>/data'
         akashaDir: '<AKASHA_DIR>'
         sectionOrder: 700

@@ -8,6 +8,12 @@
 > 以及**宿主自带会话检索**（`session_search` / `session_event_read`：原始事件、逐字引文、精确过滤走官方；
 > 阿卡夏会话层只做结论/决策/教训/跨会话导航）。阿卡夏会跳过前两者的注入块、不写入它们的存储；
 > 缺任一层不报错，只是少了那层交叉记忆。详见仓库 README §配套系统。
+## 安装（必读）
+
+1. `git clone https://github.com/Ersith/akasha-book && cp -r akasha-book/core <目标目录>/core`
+2. 把 `cordis.patch.yml` 的 `<AKASHA_DIR>` 换成 `<目标目录>/core`；`command` 用 PATH 里的 `node`（或改成本机 node 绝对路径）
+3. `failOnStartupError: true`：占位符未替换 / 目录不存在 / mcp.mjs 缺失时会**明确报错**，不再静默消失
+
 ## 它做什么
 
 宿主启动时，本插件：
