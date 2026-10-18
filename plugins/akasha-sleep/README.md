@@ -1,5 +1,11 @@
 # @akasha-book/sleep
 
+
+> **配套系统（Companion systems）**：阿卡夏本体可独立运行（核心零第三方 npm 依赖），但完整形态与三层协作——
+> **Hindsight**（仓库级记忆：架构/约定/决策/initiative）、**OpenViking**（用户与人格记忆、跨项目上下文）、
+> 以及**宿主自带会话检索**（`session_search` / `session_event_read`：原始事件、逐字引文、精确过滤走官方；
+> 阿卡夏会话层只做结论/决策/教训/跨会话导航）。阿卡夏会跳过前两者的注入块、不写入它们的存储；
+> 缺任一层不报错，只是少了那层交叉记忆。详见仓库 README §配套系统。
 > 2026-10-18 压缩后重投（2026-10-18）：监听 `compaction/end` 成功后置 `pendingPostCompactWake`，下一回合由 `akasha:post-compact-wake` 条子（order = pulseOrder+4）重投完整起床包（复用 `buildWakeNote`，一次性、每行 ≤80）；失败压缩不计；`postCompactWake:false` 可关。来源：拆 Prime Agent 的 Continual Harness（digest 在 compaction head 也投递）。**版本以本包 `package.json` 为准**（本文件不复述，避免文档漂移）。
 >
 > 2026-10-18 并行会话感知（1.10.26-h1）：在上一版（独立审核 6 条 P0）基础上再补自排除——`exclude` 增加 `curSid`（事件派生的会话 id，在 retarget 覆盖前捕获），修回合边界自指；其余同上一版：摘要先按 Markdown 结构切段（标题/列表/有序项/✅）再从非首句找「完成/下一步」，排除负例；meta 键统一归一 + 按 source 目录过滤子代理；指针改全 id；`order=131`；注入 `safeInject(..., {untrusted:true})`。

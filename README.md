@@ -18,6 +18,12 @@ The five DSH plugins live in `plugins/` (`akasha-gate`, `akasha-hooks`, `akasha-
 replace the `<AKASHA_DIR>` / `<LOCAL_PATH>` placeholders in each `cordis.patch.yml`, then restart
 the host. The MCP bridge needs `args: ['<AKASHA_DIR>/mcp.mjs']` (it does not read `AKASHA_DIR`).
 If a placeholder is left unreplaced the plugin fails loudly instead of degrading silently.
+
+**Companion systems**: Akasha runs standalone, but the full memory stack assumes **Hindsight** (repo-level memory)
+and **OpenViking** (user/persona memory) alongside it — Akasha skips their injected blocks and never writes into their
+stores. For raw session lookup it defers to the host's built-in `session_search` / `session_event_read`;
+`mcp__akasha__akasha_session_lookup` covers conclusions, decisions and cross-session navigation only.
+
 ## 是什么
 
 名字取自「阿卡夏记录」（Akashic records）——传说中记载一切事件与知识的档案。本项目是它的工程化最小版：
@@ -27,6 +33,15 @@ If a placeholder is left unreplaced the plugin fails loudly instead of degrading
 - 一个最小 MCP stdio server——模型侧「先查再答」的现成入口（**22 工具**；2026-10-14 重启核数）；
 - **前沿层（frontier）**：收集的前沿论文——「**文献即基石**」（现行数量以 `stats` 为准；由 `tools\import-frontier.mjs` 从设计稿 §4 生成 + 手工补录，幂等追加）。
 
+## 配套系统（Companion systems）
+
+阿卡夏本体**可独立运行**（核心库零第三方 npm 依赖）。但在本项目的完整形态里，它与另两层记忆、以及宿主自带的会话检索**分工协作**：
+
+- **Hindsight**（仓库级记忆：架构 / 约定 / 决策 / initiative）——阿卡夏的会话索引与睡眠蒸馏会**跳过**它的注入块（`<hindsight_knowledge>`），两边并行、互不写入对方存储。
+- **OpenViking**（用户与人格记忆、跨项目上下文）——同上，跳过 `<openviking-context>` 注入块，不冲突。
+- **宿主自带会话检索**（`session_search` / `session_event_read`）——**原始事件、逐字引文、精确过滤（session_ids / 时间 / 事件类型）走官方工具**；阿卡夏会话层只负责**结论 / 决策 / 教训 / 跨会话导航**。这条分工写进了 `mcp__akasha__akasha_session_lookup` 的工具说明；并行会话感知的 `seq` 指针也用 `session_event_read` 深查。
+
+> 只装阿卡夏也能用（六库 CLI / MCP / 会话层 / 睡眠都在）；缺 Hindsight / OpenViking 不报错，只是少了那两层的交叉记忆；宿主若没有会话检索工具，两条「回官方深查」的路由会退化为不可用（其余不受影响）。
 ## 目录
 
 > **两种布局**：开发活树是一个 `akasha/` 目录；开源仓是 `core/`（下面这棵树）+ `plugins/`（五个插件包）与它平级。下面按活树写，仓内把根换成 `core/`。

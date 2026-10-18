@@ -63,6 +63,15 @@ Bundle Patch 示例（把 `<AKASHA_DIR>` 换成你的绝对路径；**Windows �
 > mcp 拉不到 `mcp.mjs`（22 个工具全消失，`failOnStartupError:false` 让它连报错都没有）。
 > 看到 `未替换的占位符` 字样就说明配置还没改完，改完重启即可。
 
+## 5. 配套系统（Companion systems）
+
+阿卡夏本体**可独立运行**（核心零第三方 npm 依赖）。完整记忆栈建议同时具备：
+
+- **Hindsight**（仓库级记忆：架构 / 约定 / 决策 / initiative）——阿卡夏的会话索引与睡眠蒸馏会跳过它的注入块（`<hindsight_knowledge>`），两边互不写入对方存储；
+- **OpenViking**（用户与人格记忆、跨项目上下文）——同上，跳过 `<openviking-context>`；
+- **宿主自带会话检索**（`session_search` / `session_event_read`）——原始事件、逐字引文、精确过滤走官方工具；`mcp__akasha__akasha_session_lookup` 只负责结论 / 决策 / 教训 / 跨会话导航。
+
+缺任一层不会报错：只是少了那层交叉记忆（或「回官方深查」的路由不可用）。
 ## 3. 常见坑（都发生过）
 
 1. **配置写在包内 patch，升级即丢** → 用 `AKASHA_DIR` 或 profile 级覆盖。
