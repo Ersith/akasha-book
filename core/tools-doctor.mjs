@@ -164,8 +164,9 @@ run('会话索引', () => {
     // 2026-10-18：OSS/纯六库部署**故意不带会话层数据**（会话档案是本地隐私）——
     //   三件（session.jsonl / session-meta.json / 会话档案根）都缺 ⇒ SKIP；缺其一 ⇒ 仍是真问题。
     const metaMissing = readMetaNorm() === null;
-    const rootMissing = !existsSync(sessionsRoot);
-    if (metaMissing && rootMissing) return { status: 'skip', detail: '本部署未启用会话层（三件均缺）', fix: '需要时：node akasha.mjs session index <档案> --full' };
+    // 2026-10-19（H 复审）：**没有 session.jsonl 且没有台账＝本部署没启用会话层 ⇒ SKIP**，
+    //   不再要求「档案根也不存在」——用户机器的 ~/.dsh/sessions 可能恰好存在，会把纯六库部署误判 FAIL。
+    if (metaMissing) return { status: 'skip', detail: '本部署未启用会话层（无 session.jsonl / 台账）', fix: '需要时：node akasha.mjs session index <档案> --full' };
     return { status: 'fail', detail: 'session.jsonl 缺失：' + f, fix: 'node akasha.mjs session index <档案> --full' };
   }
   const { records, errors } = parseJsonl(readFileSync(f, 'utf8'));
