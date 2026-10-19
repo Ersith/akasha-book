@@ -39,6 +39,10 @@ export function mcpHooks({
   };
 }
 
+function hasKnownShape(raw) {
+  return Boolean(raw && (Array.isArray(raw) || Array.isArray(raw.hits) || Array.isArray(raw.pages) || Array.isArray(raw.results)));
+}
+
 function normalizeHits(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -55,10 +59,11 @@ export function hindsightHooks(callTool) {
     searchTool: 'hindsight_search_knowledge_pages',
     searchArgs: (query) => ({ query }),
     mapSearch: (raw, query) => ({
-      hits: normalizeHits(raw).map((p) => (p && typeof p === 'object'
+      ...(hasKnownShape(raw) ? {} : { degraded: true, reason: 'Hindsight 返回未知形状（已保留 raw）', raw }),
+      hits: (hasKnownShape(raw) ? normalizeHits(raw) : []).map((p) => (p && typeof p === 'object'
         ? { id: p.page_id ?? p.id ?? null, title: p.page ?? p.title ?? '', text: p.snippet ?? p.description ?? '', raw: p }
         : { id: null, title: '', text: String(p), raw: p })),
-      via: 'hindsight', query, degraded: false,
+      via: 'hindsight', query, ...(hasKnownShape(raw) ? { degraded: false } : {}),
     }),
     readTool: 'hindsight_read_knowledge_page',
     readArgs: (id) => ({ page_id: id }),

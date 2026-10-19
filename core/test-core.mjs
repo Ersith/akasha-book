@@ -263,6 +263,8 @@ if (lib) {
     assert.deepEqual(calls[0], ['hindsight_search_knowledge_pages', { query: '门控' }]);
     h.read('p1'); assert.equal(calls[1][0], 'hindsight_read_knowledge_page');
     assert.equal(typeof adapters.openvikingHooks, 'undefined');
+    const bad = adapters.hindsightHooks(() => ({ foo: 1 })).search('x');
+    assert.equal(bad.degraded, true); assert.deepEqual(bad.hits, []); assert.deepEqual(bad.raw, { foo: 1 });
   });
 
   t('appendRecord：追加后可读回（临时文件）', () => {
