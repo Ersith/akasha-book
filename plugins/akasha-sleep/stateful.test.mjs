@@ -15,7 +15,7 @@ process.env.AKASHA_DIR = DEFAULT_TRAP;
 process.on("exit", () => { try { rmSync(DEFAULT_TRAP, { recursive: true, force: true }); } catch { /* 兜底失败不遮错误 */ } });
 const { apply } = await import("./lib/index.js");
 
-const FIX = "<LOCAL_PATH>\\_ab\\stateful-fixture";
+const FIX = "H:\\Harness\\_ab\\stateful-fixture";
 
 /** 桩 cfg（照 route.test.mjs 同款）：三路径必须显式给全——漏一项就落 DEFAULTS = 真家目录。 */
 const cfgOf = (dir, over = {}) => ({

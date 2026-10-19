@@ -83,8 +83,8 @@ const scratchRoot = join(tmpdir(), 'akasha-sleep-selftest');
 mkdirSync(scratchRoot, { recursive: true });
 // 兜底清理：断言失败中断也清掉临时目录（2026-10-07 复查捕获「失败留残渣」）
 // F-14-S6-2（2026-10-17 batch15）：`scratchRoot` 是 mkdirSync 建的**父容器**，此前只清子目录 ⇒ 空容器常驻
-//   （实测 `<LOCAL_PATH>` 永不消失）。子目录清完后补一步**非空则留**的 rmdir：
-//   `<LOCAL_PATH>` 名称固定，若另一进程正在跑同一套件，其子目录还在 ⇒ rmdir 失败即保留，不误删他进程夹具。
+//   （实测 `D:\dsh-temp\akasha-sleep-selftest` 永不消失）。子目录清完后补一步**非空则留**的 rmdir：
+//   `D:\dsh-temp` 名称固定，若另一进程正在跑同一套件，其子目录还在 ⇒ rmdir 失败即保留，不误删他进程夹具。
 const cleanupDirs = [];
 process.on('exit', () => {
   for (const d of cleanupDirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* 兜底失败不遮错误 */ } }

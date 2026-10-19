@@ -23,7 +23,7 @@ const cfgOf = (dir, over = {}) => ({
 });
 
 const REAL = '<AKASHA_DIR>';
-const FIXBASE = '<LOCAL_PATH>\\_ab\\preflight-fixture';
+const FIXBASE = 'H:\\Harness\\_ab\\preflight-fixture';
 // ⚠ 每轮夹具必须**换独立目录**：插件用 createRequire 加载 `lib.mjs`，而目标是 .mjs ⇒ Node 走 **ESM 加载器缓存**，
 //   `require.cache` 里没有它（清理无效）⇒ 只能换 specifier 才能拿到新桩。
 //   2026-10-11 实测：不换目录时 ⑥–⑨ 全挂（拿到上一轮没有 loadStore 的桩）。
@@ -188,7 +188,7 @@ for (const fn of cap13.handlers['tools/result'] || []) fn({ name: 'mcp__akasha__
 T('⑭ 召回后「距上次查库」归零', !!extRow && extRow.text().includes('距今 0 轮'), String(extRow && extRow.text()));
 for (const fn of cap13.handlers['session/event'] || []) fn({ type: 'compaction/end' });
 T('⑭ 压缩事件计数入行', !!extRow && extRow.text().includes('压缩=1'), String(extRow && extRow.text()));
-for (const fn of cap13.handlers['tools/result'] || []) fn({ name: 'pwsh', args: { command: 'node <AKASHA_DIR>/akasha.mjs check' } }, { isError: false });
+for (const fn of cap13.handlers['tools/result'] || []) fn({ name: 'pwsh', args: { command: 'node H:/Harness/akasha/akasha.mjs check' } }, { isError: false });
 T('⑭ CLI 查库也计召回', !!extRow && extRow.text().includes('距今 0 轮'), String(extRow && extRow.text()));
 T('⑭ ≤80 字', (extRow.text() || '').length <= 80);
 
