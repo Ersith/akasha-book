@@ -2,7 +2,7 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, detectConflicts, multiRecall, rollbackBatch, memoryDiff, conflictReport, stripGenre, autonomyReadings, expandRecord, assertDataRoot, recordRejected, listRejected, blindspotsFor, progressiveRecall, calibrationOf, generationInfo, committedOf, blindspotMap, renderDiscipline, verifyDiscipline, STORES, stats, lookupDetailed, normalizeDateArg, dayArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS, reviewPack, appendReviewLog, readReviewLog, nowSnapshot } from './lib.mjs';
+import { checkAll, detectConflicts, multiRecall, rollbackBatch, memoryDiff, conflictReport, stripGenre, autonomyReadings, expandRecord, assertDataRoot, recordRejected, listRejected, blindspotsFor, progressiveRecall, calibrationOf, generationInfo, committedOf, blindspotMap, renderDiscipline, verifyDiscipline, STORES, stats, lookupDetailed, normalizeDateArg, dayArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS, reviewPack, appendReviewLog, readReviewLog, nowSnapshot, withFileLock } from './lib.mjs';
 import { applyPlan, replayHistory, revokePlan, sleepPlan, sleepRun, productionForceRejected } from './sleep.mjs';
 import { indexSession, autoBuildTree, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, buildTopics, lookupTopics, appendSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
@@ -941,7 +941,7 @@ switch (cmd) {
             retires: prev.map((r) => Number(r.treegen) || 0),
             logged_at: new Date().toISOString(),
           };
-          appendSegments(storeFile ?? SESSION_DEFAULTS.storeFile, [rec]);
+          withFileLock(storeFile ?? SESSION_DEFAULTS.storeFile, () => appendSegments(storeFile ?? SESSION_DEFAULTS.storeFile, [rec]));
           writeNote = '（已写第 ' + rec.treegen + ' 代；旧代 ' + rec.retires.length + ' 个标记退役）';
         }
       }
@@ -1060,7 +1060,7 @@ switch (cmd) {
           if (!inStore) { print(null, '会话不存在，拒绝建树：' + sid); code = 1; break; }
         }
         const { treegen, nodes } = buildTree({ session: sid, storeFile: storeF, chunkTurns: Number(flags.turns) || 8, fanout: Number(flags.fanout) || 4 });
-        appendNodes(storeF, nodes, treegen);
+        withFileLock(storeF, () => appendNodes(storeF, nodes, treegen));
         print({ treegen, nodes: nodes.length }, `已重建：${sid} → ${nodes.length} 节点（treegen ${treegen}）\n` + renderTree(storeF, sid));
         break;
       }

@@ -170,11 +170,13 @@ export function quarantineTail(file) {
     const tailLen = size - tailStart;
     const tail = Buffer.alloc(tailLen);
     readSync(fd, tail, 0, tailLen, tailStart);
+    const unchanged = () => { try { return statSync(file).size === size; } catch { return false; } };
     const text = tail.toString('utf8');
-    if (text.trim() === '') { ftruncateSync(fd, tailStart); return { repaired: true, bytes: tailLen }; }
+    if (text.trim() === '') { if (!unchanged()) return { skipped: true, reason: '文件在检查期间增长' }; ftruncateSync(fd, tailStart); return { repaired: true, bytes: tailLen }; }
     let parsed = null;
     try { parsed = JSON.parse(text.trim()); } catch { /* 真坏行 */ }
     if (parsed && typeof parsed === 'object') {
+      if (!unchanged()) return { skipped: true, reason: '文件在检查期间增长' };
       appendFileSync(file, '\n');
       return { repaired: true, bytes: tailLen };
     }
@@ -185,6 +187,7 @@ export function quarantineTail(file) {
       writeSync(qfd, JSON.stringify({ quarantined_at: new Date().toISOString(), source: file, bytes: tailLen, tail: text, tail_b64: tail.toString('base64') }) + String.fromCharCode(10));
       fsyncSync(qfd);
     } finally { closeSync(qfd); }
+    if (!unchanged()) return { quarantined: q, bytes: tailLen, skipped: true, reason: '文件在检查期间增长' };
     ftruncateSync(fd, tailStart);
     return { quarantined: q, bytes: tailLen };
   } finally { closeSync(fd); }
@@ -210,11 +213,11 @@ export function withFileLock(file, fn, opts = {}) {
       fsyncSync(fd);
       break;
     } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
+      if (e.code !== 'EEXIST' && e.code !== 'EPERM' && e.code !== 'EBUSY' && e.code !== 'EACCES') throw e;
       const info = readLockInfo(lock);
       const age = lockAgeMs(lock);
       const stale = info
-        ? (info.host === host ? (!pidAlive(info.pid) || (Number.isFinite(info.at) ? Date.now() - info.at > 10 * 60 * 1000 : age > 10 * 60 * 1000)) : age > 60000)
+        ? (info.host === host ? !pidAlive(info.pid) : age > 60000)
         : age > 30000;
       if (stale) {
         // 2026-10-19 审查 P0-1：判 stale 与「拿走锁」必须串行——否则 A 建新锁后、B 的 rename 会拿走 A 的活锁。
@@ -223,15 +226,15 @@ export function withFileLock(file, fn, opts = {}) {
         let gfd;
         try { gfd = openSync(gate, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY); }
         catch (e) {
-          if (e.code !== 'EEXIST') throw e;
-          try { if (lockAgeMs(gate) > 30000) unlinkSync(gate); } catch { /* 刚释放 */ }
+          if (e.code !== 'EEXIST' && e.code !== 'EPERM' && e.code !== 'EBUSY' && e.code !== 'EACCES') throw e;
+          try { if (lockAgeMs(gate) > 5000) unlinkSync(gate); } catch { /* 刚释放 */ }
         }
         if (gfd !== undefined) {
           try {
             const info2 = readLockInfo(lock);
             const age2 = lockAgeMs(lock);
             const stale2 = info2
-              ? (info2.host === host ? (!pidAlive(info2.pid) || (Number.isFinite(info2.at) ? Date.now() - info2.at > 10 * 60 * 1000 : age2 > 10 * 60 * 1000)) : age2 > 60000)
+              ? (info2.host === host ? !pidAlive(info2.pid) : age2 > 60000)
               : age2 > 30000;
             if (stale2) {
               const claim = lock + '.stale-' + process.pid + '-' + token.slice(0, 8);
@@ -254,7 +257,21 @@ export function withFileLock(file, fn, opts = {}) {
   }
   try { return fn(); }
   finally {
-    try { const info = readLockInfo(lock); if (info && info.token === token) unlinkSync(lock); } catch { /* 已被接管/已删 */ }
+    const gate = lock + '.steal';
+    let gfd;
+    for (let n = 0; n < 20 && gfd === undefined; n += 1) {
+      try { gfd = openSync(gate, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY); }
+      catch (e) { if (!['EEXIST', 'EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
+    }
+    if (gfd !== undefined) {
+      try {
+        const info = readLockInfo(lock);
+        if (info && info.token === token) unlinkSync(lock);
+      } finally {
+        try { closeSync(gfd); } catch { /* 已关 */ }
+        try { unlinkSync(gate); } catch { /* 已删 */ }
+      }
+    }
   }
 }
 

@@ -1170,7 +1170,7 @@ export function autoBuildTree({ session, storeFile = SESSION_DEFAULTS.storeFile,
   if (!segCount) return { built: false, reason: 'no-segments', treegen: latestGen, segCount: 0, latestSeq: 0, nodes: 0 };
   const { treegen, nodes } = buildTree({ session: sid, storeFile, chunkTurns, fanout });
   const stamped = nodes.map((n) => ({ ...n, treeFingerprint: fp }));   // ① 签名挂在节点上（自描述，无需新档）
-  appendNodes(storeFile, stamped, treegen);
+  withFileLock(storeFile, () => appendNodes(storeFile, stamped, treegen));
   return { built: true, reason: 'built', treegen, segCount, latestSeq, nodes: stamped.length };
 }
 
