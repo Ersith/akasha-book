@@ -9,14 +9,15 @@
 //   HINDSIGHT_API_TOKEN 可选
 // 退出码：0=有命中；1=无命中/降级；2=参数错误。
 
-import { hindsightHttpHooks } from './adapters.mjs';
+import { hindsightHttpHooks, openvikingHttpHooks } from './adapters.mjs';
 
 function parse(argv) {
-  const out = { query: '', limit: 5, json: false, base: '', bank: '', token: '' };
+  const out = { query: '', limit: 5, json: false, driver: 'hindsight', base: '', bank: '', token: '' };
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--json') out.json = true;
+    else if (a === '--driver') out.driver = argv[++i] || 'hindsight';
     else if (a === '--limit') out.limit = Number(argv[++i]) || 5;
     else if (a === '--bank') out.bank = argv[++i] || '';
     else if (a === '--base') out.base = argv[++i] || '';
@@ -34,17 +35,19 @@ if (args.help || !args.query) {
   process.exit(2);
 }
 
-const base = args.base || process.env.HINDSIGHT_API_URL || `http://127.0.0.1:${process.env.HINDSIGHT_API_PORT || 9077}`;
-const bank = args.bank || process.env.HINDSIGHT_BANK_ID || 'coding-agent::Harness';
-const token = args.token || process.env.HINDSIGHT_API_TOKEN || '';
+if (!['hindsight', 'openviking'].includes(args.driver)) { console.error('未知 driver：' + args.driver); process.exit(2); }
+const isOv = args.driver === 'openviking';
+const base = args.base || (isOv ? (process.env.OPENVIKING_BASE_URL || ('http://127.0.0.1:' + (process.env.OPENVIKING_PORT || 1933))) : (process.env.HINDSIGHT_API_URL || `http://127.0.0.1:${process.env.HINDSIGHT_API_PORT || 9077}`));
+const bank = isOv ? '' : (args.bank || process.env.HINDSIGHT_BANK_ID || 'coding-agent::Harness');
+const token = args.token || (isOv ? (process.env.OPENVIKING_BEARER_TOKEN || '') : (process.env.HINDSIGHT_API_TOKEN || ''));
 
-const hooks = hindsightHttpHooks({ baseUrl: base, bankId: bank, token });
+const hooks = isOv ? openvikingHttpHooks({ baseUrl: base, token }) : hindsightHttpHooks({ baseUrl: base, bankId: bank, token });
 const r = await hooks.search(args.query, { limit: args.limit });
 
 if (args.json) {
-  console.log(JSON.stringify({ base, bank, ...r }, null, 2));
+  console.log(JSON.stringify({ driver: args.driver, base, bank, ...r }, null, 2));
 } else {
-  console.log(`Hindsight · ${bank} · ${r.hits.length} 条${r.degraded ? '（降级：' + (r.reason || '未知') + '）' : ''}`);
+  console.log(`${isOv ? 'OpenViking' : 'Hindsight'}${bank ? ' · ' + bank : ''} · ${r.hits.length} 条${r.degraded ? '（降级：' + (r.reason || '未知') + '）' : ''}`);
   for (const h of r.hits) {
     const title = String(h.title || '').slice(0, 60);
     const text = String(h.text || '').replace(/\s+/g, ' ').slice(0, 100);

@@ -48,13 +48,19 @@
 
 宿主侧薄适配在 `adapters.mjs`：`hindsightHooks(callTool)` 把 MCP 工具包成 `{search, read, health}`。**OpenViking 暂不接**——其 MCP 工具返回「Found N item(s)…」格式化文本，不是结构化 hits；v1 避免把文本当 hits 静默空，等 REST 或文本解析器。核心仍零依赖。
 
+### 3.3 OpenViking REST（已真实冒烟）
+
+`openvikingHttpHooks({ baseUrl, token })`：`POST /api/v1/search/search`（mode=list）+ `GET /api/v1/content/read?uri=`。
+响应 `{status:'ok',result:{memories:[{uri,abstract,score}]}}` ⇒ hits `{id:uri,title:末段,text:abstract,raw}`；无 memories ⇒ degraded+raw。
+实测：`http://127.0.0.1:<PORT>`，query「阿卡夏 记忆」→ 2 条真实 hits（identity.md 等），health 200。
+
 ### 3.2 Hindsight REST（已真实冒烟）
 
 `hindsightHttpHooks({ baseUrl, bankId, token })`：直接走本机 daemon 的
 `GET /v1/default/banks/{bank}/knowledge-base/search?q=&limit=` 与 `/pages/{id}`。
 非 2xx/网络失败 ⇒ `{hits:[], degraded:true, reason}`；不重试、不缓存。
 
-CLI：活树 `node tools/companion-recall.mjs "查询词" [--limit 3] [--bank …] [--json]`；OSS 仓为 `node core/tools-companion-recall.mjs`（默认 `HINDSIGHT_API_URL`/`HINDSIGHT_API_PORT` + `HINDSIGHT_BANK_ID`）。
+CLI：活树 `node tools/companion-recall.mjs "查询词" [--driver hindsight|openviking] [--limit 3] [--bank …] [--json]`；OSS 仓为 `node core/tools-companion-recall.mjs`（默认 `HINDSIGHT_API_URL`/`HINDSIGHT_API_PORT` + `HINDSIGHT_BANK_ID`）。
 
 2026-10-19 实测：`http://127.0.0.1:<PORT>` + bank `coding-agent::Harness`，
 query `CompanionPort 适配层` → 3 条真实 hits（`kp-…`），health HTTP 200。

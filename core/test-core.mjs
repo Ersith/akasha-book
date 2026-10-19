@@ -278,6 +278,18 @@ if (lib) {
     const unknown = adapters.hindsightHttpHooks({ baseUrl: 'http://unit.test', bankId: 'b', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ foo: 1 }) }) });
     const u = await unknown.search('x'); assert.equal(u.degraded, true); assert.deepEqual(u.hits, []); assert.deepEqual(u.raw, { foo: 1 });
   });
+  t('Adapt 器：OpenViking REST 搜索归一与降级', async () => {
+    const calls = [];
+    const ok = adapters.openvikingHttpHooks({ baseUrl: 'http://ov.test', fetchImpl: async (u, init) => { calls.push([u, init]); return { ok: true, status: 200, json: async () => ({ status: 'ok', result: { memories: [{ uri: 'viking://user/x.md', abstract: '摘要', score: 0.9 }] } }) }; } });
+    const r = await ok.search('记忆', { limit: 2 });
+    assert.equal(r.hits[0].id, 'viking://user/x.md'); assert.equal(r.hits[0].title, 'x.md'); assert.equal(r.hits[0].text, '摘要');
+    assert.ok(calls[0][0].endsWith('/api/v1/search/search'));
+    assert.equal(calls[0][1].method, 'POST'); assert.deepEqual(JSON.parse(calls[0][1].body), { query: '记忆', limit: 2, mode: 'list' });
+    const bad = adapters.openvikingHttpHooks({ baseUrl: 'http://ov.test', fetchImpl: async () => ({ ok: false, status: 503 }) });
+    const e = await bad.search('x'); assert.equal(e.degraded, true); assert.deepEqual(e.hits, []);
+    const unknown = adapters.openvikingHttpHooks({ baseUrl: 'http://ov.test', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ foo: 1 }) }) });
+    const u = await unknown.search('x'); assert.equal(u.degraded, true); assert.deepEqual(u.raw, { foo: 1 });
+  });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));
     const tmp = join(dir, '.tmp-test.jsonl');

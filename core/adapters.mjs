@@ -113,3 +113,54 @@ export function hindsightHttpHooks({ baseUrl, bankId, token, fetchImpl = globalT
     },
   };
 }
+
+/**
+ * OpenViking **REST**（本机 HTTP Server，只读）：POST /api/v1/search/search。
+ * 返回 { status:'ok', result:{ memories:[{uri,abstract,score,…}] } }；read 走 GET /api/v1/content/read?uri=…
+ * 非 2xx / body 无 memories 数组 ⇒ {hits:[], degraded:true, reason}（保留 raw），不静默空。
+ */
+export function openvikingHttpHooks({ baseUrl, token, fetchImpl = globalThis.fetch, limit = 5 } = {}) {
+  const port = process.env.OPENVIKING_PORT || 1933;
+  const base = String(baseUrl || ('http://127.0.0.1:' + port)).replace(/\/+$/, '');
+  if (!base) throw new Error('openvikingHttpHooks 需要 baseUrl');
+  if (typeof fetchImpl !== 'function') throw new Error('openvikingHttpHooks 需要 fetch');
+  const auth = token ? { authorization: 'Bearer ' + token } : {};
+  return {
+    search: async (query, opts = {}) => {
+      try {
+        const r = await fetchImpl(base + '/api/v1/search/search', {
+          method: 'POST',
+          headers: { ...auth, 'content-type': 'application/json' },
+          body: JSON.stringify({ query: String(query ?? ''), limit: opts.limit ?? limit, mode: 'list' }),
+        });
+        if (!r.ok) return { hits: [], via: 'openviking-http', degraded: true, reason: 'HTTP ' + r.status };
+        const j = await r.json();
+        const rows = j?.result?.memories;
+        if (!Array.isArray(rows)) return { hits: [], via: 'openviking-http', degraded: true, reason: '响应无 result.memories 数组', raw: j };
+        return {
+          hits: rows.map((x) => ({
+            id: x.uri ?? null,
+            title: String(x.uri ?? '').split('/').pop() || '',
+            text: x.abstract ?? x.overview ?? '',
+            raw: x,
+          })),
+          via: 'openviking-http', degraded: false,
+        };
+      } catch (e) { return { hits: [], via: 'openviking-http', degraded: true, reason: '请求失败：' + e.message }; }
+    },
+    read: async (id) => {
+      try {
+        const r = await fetchImpl(base + '/api/v1/content/read?uri=' + encodeURIComponent(String(id ?? '')), { headers: auth });
+        if (!r.ok) return { record: null, via: 'openviking-http', degraded: true, reason: 'HTTP ' + r.status };
+        const j = await r.json();
+        return { record: j?.result ?? j, depth: 'summary', id, via: 'openviking-http' };
+      } catch (e) { return { record: null, via: 'openviking-http', degraded: true, reason: '请求失败：' + e.message }; }
+    },
+    health: async () => {
+      try {
+        const r = await fetchImpl(base + '/health', { headers: auth });
+        return { ok: r.ok, detail: 'HTTP ' + r.status };
+      } catch (e) { return { ok: false, detail: '请求失败：' + e.message }; }
+    },
+  };
+}
