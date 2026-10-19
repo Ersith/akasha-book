@@ -121,7 +121,7 @@ const SANDBOX = mkdtempSync(join(tmpdir(), "akasha-health-"));
   mkdirSync(dataDir, { recursive: true });
   cpSync(join(H, "akasha/data"), dataDir, { recursive: true });
   mkdirSync(join(SANDBOX, "logs"), { recursive: true });
-  const env = { ...process.env, AKASHA_ROOT: dataDir, AKASHA_LOGS: join(SANDBOX, "logs"), AKASHA_DIR: SANDBOX };
+  const env = { ...process.env, AKASHA_ROOT: dataDir, AKASHA_LOGS: join(SANDBOX, "logs"), AKASHA_DIR: SANDBOX, AKASHA_SESSIONS_ROOT: join(H, "official-home", "sessions") };
   const run = (args, input) => {
     const r = spawnSync(NODE, [join(H, "akasha/akasha.mjs"), ...args], { cwd: H, encoding: "utf8", timeout: 120000, env, input });
     return { status: r.status, out: ((r.stdout || "") + (r.stderr || "")).trim() };
@@ -154,9 +154,28 @@ const SANDBOX = mkdtempSync(join(tmpdir(), "akasha-health-"));
   // B6b mirror outcome（**写命令**——只在沙箱跑；2026-10-13 全局唯一允许它出现的位置）
   const mo = run(["mirror", "outcome", "mirror-handcheck-sweep-r1", "--verdict", "部分"]);
   ok("CLI mirror outcome（临时库）", mo.status === 0 && /已记录结果/.test(mo.out), `exit=${mo.status} :: ${mo.out.slice(0, 100)}`);
-  // B7 session index（要 sessionId；临时库只让它写派生索引，真档案只读）
-  const si = run(["session", "index", "session-4ef9e15f-85ac-44e7-8e23-a4c7914482ce"]);
-  ok("CLI session index（临时库）", si.status === 0, `exit=${si.status} :: ${si.out.slice(0, 110)}`);
+  // B7 session index（2026-10-19 P0 后修：不再写死已归档的 session id——运行时发现一个真实档案）
+  const findSessionId = () => {
+    const root = join(H, 'official-home', 'sessions');
+    try {
+      for (const ws of readdirSync(root)) {
+        const dir = join(root, ws);
+        let subs = [];
+        try { subs = readdirSync(dir); } catch { continue; }
+        for (const sid of subs) {
+          if (/^session-/.test(sid) && (existsSync(join(dir, sid, 'session.v4.jsonl.zstd')) || existsSync(join(dir, sid, 'session.v3.jsonl.zstd')))) return sid;
+        }
+      }
+    } catch { /* 无档案目录 */ }
+    return null;
+  };
+  const sidForIndex = findSessionId();
+  if (sidForIndex) {
+    const si = run(["session", "index", sidForIndex]);
+    ok("CLI session index（临时库）", si.status === 0, `id=${sidForIndex} exit=${si.status} :: ${si.out.slice(0, 90)}`);
+  } else {
+    ok("CLI session index（临时库）", true, "SKIP：未发现会话档案（不是失败）");
+  }
   // B8 check（临时库写后仍须绿）
   const ck = run(["check"]);
   ok("临时库 check（写后仍绿）", ck.status === 0 && /OK —/.test(ck.out), ck.out.slice(0, 110));
