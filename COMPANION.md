@@ -43,7 +43,7 @@
 `resolvePorts({ file, hooks })`：`hooks[driver] = { search(query, opts), read(id, opts), health() }`。
 - 注入 `search` ⇒ `mode: live`、`capabilities.recall=true`，`recall()` 直接透传 adapter 结果（不在此层改写/合并）。
 - 注入 `read` ⇒ `capabilities.read=true`。
-- 注入 `health` ⇒ `health()` 透传；异常记为 `{ok:false, mode:'degraded'}`。
+- 注入 `health` ⇒ `health()` 透传；**返回 Promise 时 v1 记 `{ok:null, mode:'degraded'}`**（不 await，doctor 报 WARN）；异常记为 `{ok:false, mode:'degraded'}`。
 - 未注入 ⇒ 保持 `degraded`（v1 默认）。**核心不 import 任何外部 SDK**；宿主（DSH 插件）负责把 MCP 工具包成 hooks。
 
 宿主侧薄适配在 `adapters.mjs`：`hindsightHooks(callTool)` 把 MCP 工具包成 `{search, read, health}`。**OpenViking 暂不接**——其 MCP 工具返回「Found N item(s)…」格式化文本，不是结构化 hits；v1 避免把文本当 hits 静默空，等 REST 或文本解析器。核心仍零依赖。

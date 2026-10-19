@@ -41,7 +41,8 @@ const base = args.base || (isOv ? (process.env.OPENVIKING_BASE_URL || ('http://1
 const bank = isOv ? '' : (args.bank || process.env.HINDSIGHT_BANK_ID || 'coding-agent::Harness');
 const token = args.token || (isOv ? (process.env.OPENVIKING_BEARER_TOKEN || '') : (process.env.HINDSIGHT_API_TOKEN || ''));
 
-const hooks = isOv ? openvikingHttpHooks({ baseUrl: base, token }) : hindsightHttpHooks({ baseUrl: base, bankId: bank, token });
+const fetchT = (u, o = {}) => fetch(u, { ...o, signal: AbortSignal.timeout(4000) });
+const hooks = isOv ? openvikingHttpHooks({ baseUrl: base, token, fetchImpl: fetchT }) : hindsightHttpHooks({ baseUrl: base, bankId: bank, token, fetchImpl: fetchT });
 const r = await hooks.search(args.query, { limit: args.limit });
 
 if (args.json) {

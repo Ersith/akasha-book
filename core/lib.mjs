@@ -261,7 +261,7 @@ export function withFileLock(file, fn, opts = {}) {
   finally {
     const gate = lock + '.steal';
     let gfd;
-    for (let n = 0; n < 20 && gfd === undefined; n += 1) {
+    for (let n = 0; n < 200 && gfd === undefined; n += 1) {
       try { gfd = openSync(gate, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY); }
       catch (e) { if (!['EEXIST', 'EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
     }

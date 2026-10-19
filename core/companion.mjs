@@ -53,7 +53,7 @@ export function resolvePorts({ file, hooks } = {}) {
 /**
  * 单端口对象（只读）。
  * mode：absent＝未配置 driver；degraded＝配置了 driver 但 v1 尚未接 adapter。
- * （v1 没有 live：adapter 落地后才会出现；届时用 health().ok 判别真实可用。）
+ * （live 只在注入了同步 search hook 时出现；health hook 若返回 Promise，调用方需自行 await。）
  */
 export function makePort(kind, driver = 'none', cfg = {}, hooks = null) {
   const configured = typeof driver === 'string' && driver !== 'none';
@@ -66,15 +66,21 @@ export function makePort(kind, driver = 'none', cfg = {}, hooks = null) {
     kind,
     driver,
     identity() { return { kind, driver, mode, version: 'v1' }; },
-    capabilities() { return { read: live && typeof hooks.read === 'function', write: false, recall: live, inject: false, reason: live ? 'adapter 已注入（只读）' : 'v1 只读契约，adapter 未接' }; },
+    capabilities() { return { read: live && typeof hooks.read === 'function', write: false, recall: live, inject: false, reason: live ? 'adapter 已注入（只读）' : 'v1 只读契约，未注入 adapter hooks' }; },
     skipTags() { return [...new Set(tags)]; },
     health() {
-      if (live && typeof hooks.health === 'function') { try { return { ...hooks.health(), mode }; } catch (e) { return { ok: false, mode: 'degraded', detail: 'health 失败：' + e.message }; } }
+      if (live && typeof hooks.health === 'function') {
+        try {
+          const r = hooks.health();
+          if (r && typeof r.then === 'function') return { ok: null, mode: 'degraded', detail: 'health 返回 Promise（v1 不 await；调用方自行探测）' };
+          return { ...r, mode };
+        } catch (e) { return { ok: false, mode: 'degraded', detail: 'health 失败：' + e.message }; }
+      }
       if (live) return { ok: true, mode, detail: 'hooks 已注入（未提供 health 探测）' };
       return { ok: !configured, mode, detail: configured ? `driver=${driver} 已配置，v1 未接 adapter` : '未配置（absent）' };
     },
     recall(query, opts = {}) {
-      if (!live) return { hits: [], via: 'degraded', degraded: true, reason: 'v1 只读契约，adapter 未接' };
+      if (!live) return { hits: [], via: 'degraded', degraded: true, reason: 'v1 只读契约，未注入 adapter hooks' };
       return hooks.search(String(query ?? ''), opts);
     },
     read(id, opts = {}) {

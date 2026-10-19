@@ -148,8 +148,8 @@ run('配套端口', () => {
   try {
     const ports = resolvePorts();
     const h = healthOf(ports);
-    const degraded = h.filter((x) => x.mode === 'degraded' || x.ok === false);
-    if (degraded.length) return { status: 'warn', detail: degraded.map((x) => x.kind + '=' + x.driver).join('；') + '（v1 adapter 未接）', fix: '接 adapter 前 driver 配置不生效；见 COMPANION.md' };
+    const degraded = h.filter((x) => x.mode === 'degraded' || x.ok === false || x.ok === null);
+    if (degraded.length) return { status: 'warn', detail: degraded.map((x) => x.kind + '=' + x.driver).join('；') + '（未注入 adapter hooks；MCP/CLI 各自接入）', fix: '端口配置只在注入了 hooks 的进程内生效；见 COMPANION.md §3.1' };
     return { status: 'pass', detail: h.map((x) => x.kind + '=' + x.mode).join('；') };
   } catch (e) { return { status: 'warn', detail: '读取失败：' + e.message }; }
 });

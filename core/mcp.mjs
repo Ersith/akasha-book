@@ -95,10 +95,12 @@ async function handle(msg) {
         const until = a.until ? normalizeDateArg(a.until) : { ok: true, day: null };
         if (!since.ok || !until.ok) { value = { error: since.error || until.error }; }
         else {
+          const lookupMax = a.maxTokens ?? ((a.depth === undefined || a.depth === 'summary') && a.reflect !== true ? 6000 : undefined);
           const detailed = a.recall === true
-            ? multiRecall(a.query, { via: 'mcp', reflect: a.reflect === true, depth: a.depth ?? (a.reflect === true ? 'full' : 'summary'), doseThreshold: a.doseThreshold, trace: a.trace === true, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens ?? (a.depth === undefined && a.reflect !== true ? 6000 : undefined) })
-            : lookupDetailed(a.query, { via: 'mcp', reflect: a.reflect === true, depth: a.depth ?? (a.reflect === true ? 'full' : 'summary'), doseThreshold: a.doseThreshold, trace: a.trace === true, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens ?? (a.depth === undefined && a.reflect !== true ? 6000 : undefined) });
-          value = a.report === true || a.recall === true || a.trace === true || a.maxTokens !== undefined || a.offset !== undefined ? detailed : detailed.hits;   // R15（GPT 复核二轮）：显式分页时返回完整对象（含 budget.nextOffset/total），默认保持纯 hits 数组的旧契约
+            ? multiRecall(a.query, { via: 'mcp', reflect: a.reflect === true, depth: a.depth ?? (a.reflect === true ? 'full' : 'summary'), doseThreshold: a.doseThreshold, trace: a.trace === true, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: lookupMax })
+            : lookupDetailed(a.query, { via: 'mcp', reflect: a.reflect === true, depth: a.depth ?? (a.reflect === true ? 'full' : 'summary'), doseThreshold: a.doseThreshold, trace: a.trace === true, since: since.day, until: until.day, includeUndated: a.undated === true, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: lookupMax });
+          const truncated = detailed && !Array.isArray(detailed) && detailed.budget && detailed.budget.trimmed > 0;
+          value = a.report === true || a.recall === true || a.trace === true || a.maxTokens !== undefined || a.offset !== undefined || truncated ? detailed : detailed.hits;   // 默认保持 hits 数组旧契约；被默认上限裁过时返回带 budget 的对象（不静默丢条）
         }
       }
       else if (name === 'akasha_price') {
@@ -231,7 +233,13 @@ const rl = createInterface({ input: process.stdin });
 let pendingWrites = 0;
 let pendingHandlers = 0;
 let stdinClosed = false;
-const finish = () => { if (stdinClosed && pendingWrites === 0 && pendingHandlers === 0) process.exit(0); };
+const finish = () => {
+  if (stdinClosed && pendingWrites === 0 && pendingHandlers === 0) {
+    process.exitCode = 0;
+    // 不在此处 process.exit：stdout 回调内强退会触发 Windows libuv 断言（in-flight fetch 时序）。
+    // stdin 已关、无在飞任务；让事件循环自然排空即可。
+  }
+};
 const emit = (reply) => {
   if (!reply) return;
   const payload = JSON.stringify(reply) + '\n';
