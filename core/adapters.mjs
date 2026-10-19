@@ -73,3 +73,43 @@ export function hindsightHooks(callTool) {
 
 // OpenViking（2026-10-19 复核）：其 MCP 工具返回「Found N item(s)…」格式化文本，不是结构化 hits；
 // v1 不接（避免把文本当 hits 静默空）。等 REST 或文本解析器落地后再加 openvikingHooks。
+
+/**
+ * Hindsight **REST**（本机 daemon，只读）：不依赖 MCP 文本形状。
+ * 端点：GET /v1/default/banks/{bank}/knowledge-base/search?q=&limit=
+ *      GET /v1/default/banks/{bank}/knowledge-base/pages/{id}
+ * 失败/非 2xx ⇒ {hits:[], degraded:true}（保留 status/reason，不静默成功）。
+ */
+export function hindsightHttpHooks({ baseUrl, bankId, token, fetchImpl = globalThis.fetch, limit = 5 } = {}) {
+  const base = String(baseUrl ?? '').replace(/\/+$/, '');
+  const bank = String(bankId ?? '');
+  if (!base || !bank) throw new Error('hindsightHttpHooks 需要 baseUrl + bankId');
+  if (typeof fetchImpl !== 'function') throw new Error('hindsightHttpHooks 需要 fetch');
+  const headers = token ? { authorization: 'Bearer ' + token } : {};
+  const bankUrl = (suffix) => `${base}/v1/default/banks/${encodeURIComponent(bank)}${suffix}`;
+  return {
+    search: async (query, opts = {}) => {
+      const q = '?q=' + encodeURIComponent(String(query ?? '')) + '&limit=' + encodeURIComponent(String(opts.limit ?? limit));
+      try {
+        const r = await fetchImpl(bankUrl('/knowledge-base/search' + q), { headers });
+        if (!r.ok) return { hits: [], via: 'hindsight-http', degraded: true, reason: 'HTTP ' + r.status };
+        const j = await r.json();
+        const rows = Array.isArray(j?.results) ? j.results : [];
+        return { hits: rows.map((x) => ({ id: x.id ?? null, title: x.name ?? '', text: x.snippet ?? '', raw: x })), via: 'hindsight-http', degraded: false };
+      } catch (e) { return { hits: [], via: 'hindsight-http', degraded: true, reason: '请求失败：' + e.message }; }
+    },
+    read: async (id) => {
+      try {
+        const r = await fetchImpl(bankUrl('/knowledge-base/pages/' + encodeURIComponent(String(id ?? ''))), { headers });
+        if (!r.ok) return { record: null, via: 'hindsight-http', degraded: true, reason: 'HTTP ' + r.status };
+        return { record: await r.json(), depth: 'summary', id, via: 'hindsight-http' };
+      } catch (e) { return { record: null, via: 'hindsight-http', degraded: true, reason: '请求失败：' + e.message }; }
+    },
+    health: async () => {
+      try {
+        const r = await fetchImpl(base + '/v1/default/banks', { headers });
+        return { ok: r.ok, detail: 'HTTP ' + r.status };
+      } catch (e) { return { ok: false, detail: '请求失败：' + e.message }; }
+    },
+  };
+}

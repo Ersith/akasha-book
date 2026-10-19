@@ -48,6 +48,16 @@
 
 宿主侧薄适配在 `adapters.mjs`：`hindsightHooks(callTool)` 把 MCP 工具包成 `{search, read, health}`。**OpenViking 暂不接**——其 MCP 工具返回「Found N item(s)…」格式化文本，不是结构化 hits；v1 避免把文本当 hits 静默空，等 REST 或文本解析器。核心仍零依赖。
 
+### 3.2 Hindsight REST（已真实冒烟）
+
+`hindsightHttpHooks({ baseUrl, bankId, token })`：直接走本机 daemon 的
+`GET /v1/default/banks/{bank}/knowledge-base/search?q=&limit=` 与 `/pages/{id}`。
+非 2xx/网络失败 ⇒ `{hits:[], degraded:true, reason}`；不重试、不缓存。
+
+2026-10-19 实测：`http://127.0.0.1:<PORT>` + bank `coding-agent::Harness`，
+query `CompanionPort 适配层` → 3 条真实 hits（`kp-…`），health HTTP 200。
+配置口径：bank 默认取 `HINDSIGHT_BANK_ID`/运行目录银行；token 取 `HINDSIGHT_API_TOKEN`。
+
 ## 4. 切主条件（写死）
 
 1. 连续观察期内端口主路径失败率 ≤ 现配套；

@@ -267,6 +267,15 @@ if (lib) {
     assert.equal(bad.degraded, true); assert.deepEqual(bad.hits, []); assert.deepEqual(bad.raw, { foo: 1 });
   });
 
+  t('Adapt 器：Hindsight REST 搜索归一与错误降级', async () => {
+    const urls = [];
+    const ok = adapters.hindsightHttpHooks({ baseUrl: 'http://unit.test', bankId: 'coding-agent::Harness', fetchImpl: async (u) => { urls.push(u); return { ok: true, status: 200, json: async () => ({ results: [{ id: 'r1', name: '页', snippet: '片段' }] }) }; } });
+    const r = await ok.search('门控');
+    assert.equal(r.hits[0].id, 'r1'); assert.equal(r.hits[0].title, '页'); assert.equal(r.hits[0].text, '片段');
+    assert.ok(urls[0].includes('/v1/default/banks/coding-agent%3A%3AHarness/knowledge-base/search'));
+    const bad = adapters.hindsightHttpHooks({ baseUrl: 'http://unit.test', bankId: 'b', fetchImpl: async () => ({ ok: false, status: 503 }) });
+    const e = await bad.search('x'); assert.equal(e.degraded, true); assert.deepEqual(e.hits, []);
+  });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));
     const tmp = join(dir, '.tmp-test.jsonl');
