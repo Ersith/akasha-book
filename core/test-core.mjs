@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
 import { runCheckerSelftest } from './tools-checker-selftest.mjs';
 import * as companion from './companion.mjs';
+import { SCAFFOLD_RE } from './session.mjs';
 
 // ── 可选依赖：akasha-gate 插件（D2，2026-10-19 发布面 P1）─────────────────────────────────
 // 原来这里是**静态** `import * as gateMod from '../plugins/akasha-gate/index.js'` ⇒ 扁平部署（core/ 单独拷到
@@ -228,6 +229,12 @@ if (lib) {
     assert.equal(repo.health().mode, 'degraded', '配置了 driver 但 adapter 未接 ⇒ degraded');
     assert.equal(companion.healthOf(ports2).length, 2);
     rmSync(dir, { recursive: true, force: true });
+  });
+  t('CompanionPort / SCAFFOLD_RE：旧脚手架全命中 + 新标签命中 + 普通文本不误伤', () => {
+    const old = ['<system-reminder>', '<hindsight_knowledge>', '<openviking-context>', 'Current runtime context', '【阿卡夏·起床包】', '阿卡夏·睡眠：', '阿卡夏·库脉搏', '阿卡夏·称呼：', '小阿卡夏·会话层：', '[极限观测·本进程]', '[约定]', '[坑前提示·首用]', '<memory uri="x">', 'This is an automatically generated checkpoint'];
+    for (const s of old) assert.ok(SCAFFOLD_RE.test(s), '旧脚手架未命中：' + s);
+    for (const s of ['<ledger_knowledge>', '<persona_context>']) assert.ok(SCAFFOLD_RE.test(s), '新标签未命中：' + s);
+    assert.ok(!SCAFFOLD_RE.test('普通用户消息'), '普通文本被误伤');
   });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));

@@ -148,7 +148,7 @@ run('配套端口', () => {
   try {
     const ports = resolvePorts();
     const h = healthOf(ports);
-    const degraded = h.filter((x) => x.mode === 'degraded');
+    const degraded = h.filter((x) => x.mode === 'degraded' || x.ok === false);
     if (degraded.length) return { status: 'warn', detail: degraded.map((x) => x.kind + '=' + x.driver).join('；') + '（v1 adapter 未接）', fix: '接 adapter 前 driver 配置不生效；见 COMPANION.md' };
     return { status: 'pass', detail: h.map((x) => x.kind + '=' + x.mode).join('；') };
   } catch (e) { return { status: 'warn', detail: '读取失败：' + e.message }; }

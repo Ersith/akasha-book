@@ -4,7 +4,7 @@
 
 ## 在交付面内
 
-- `core/` — 零依赖核心：`lib.mjs`（六库/检索/修订/定价）、`akasha.mjs`（CLI）、`mcp.mjs`（stdio MCP）、`session.mjs`、`sleep.mjs`、`init-example.mjs`、`json-redaction.mjs`，以及运维/校验类工具（check / audit / doctor / review / redaction / sync / verify 等）。
+- `core/` — 零依赖核心：`lib.mjs`（六库/检索/修订/定价）、`akasha.mjs`（CLI）、`mcp.mjs`（stdio MCP）、`session.mjs`、`sleep.mjs`、`init-example.mjs`、`json-redaction.mjs`、`companion.mjs`，以及运维/校验类工具（check / audit / doctor / review / redaction / sync / verify 等）。
 - `plugins/` — 5 个 DSH 插件：`akasha-gate`、`akasha-hooks`、`akasha-session`、`akasha-sleep`、`mcp-akasha`。
 - `data/` — **中性示例**（`init-example.mjs` 生成；默认运行库，不含个人记忆）。
 - `data-snapshot/` — **脱敏真库快照**（测试基线；`test.mjs` 自动优先用它；可选，不参与运行）。

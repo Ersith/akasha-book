@@ -8,7 +8,7 @@
 //   · recall / read —— 未接 adapter 前返回 degraded（不抛死会话、不静默假装有数据）。
 // v1 明确**不做**：写入、远端同步、向量检索。写语义等上游异步抽取口径定死再开。
 //
-// 零依赖（仅 node stdlib）；配置来源：AKASHA_COMPANIONS 指向的 JSON，或 AKASHA_DIR/companions.json。
+// 零依赖（仅 node stdlib）；配置来源：显式 file，或 AKASHA_COMPANIONS，或 AKASHA_DIR/companions.json。
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -21,8 +21,6 @@ export const DEFAULT_SKIP_TAGS = Object.freeze([
   '<persona_context',
 ]);
 
-const DRIVERS = Object.freeze({ repo: 'hindsight', persona: 'openviking' });
-
 function readConfig(file) {
   if (!file) return null;
   try {
@@ -32,20 +30,20 @@ function readConfig(file) {
   } catch { return null; }
 }
 
-/** 解析配置：显式 path > AKASHA_COMPANIONS > AKASHA_DIR/companions.json > cwd/companions.json。 */
+/** 解析配置：显式 file **独占**（给了就只读它，便于测试与环境隔离）；否则 AKASHA_COMPANIONS → AKASHA_DIR/companions.json。 */
 export function resolvePorts({ file } = {}) {
-  const candidates = [
-    file,
-    process.env.AKASHA_COMPANIONS,
-    process.env.AKASHA_DIR ? join(process.env.AKASHA_DIR, 'companions.json') : null,
-    join(process.cwd(), 'companions.json'),
-  ].filter(Boolean);
+  const candidates = file
+    ? [file]
+    : [
+        process.env.AKASHA_COMPANIONS,
+        process.env.AKASHA_DIR ? join(process.env.AKASHA_DIR, 'companions.json') : null,
+      ].filter(Boolean);
   const cfg = candidates.map(readConfig).find(Boolean) || {};
   const companions = cfg.companions && typeof cfg.companions === 'object' ? cfg.companions : {};
   const ports = [];
   for (const kind of ['repo', 'persona']) {
     const c = companions[kind] && typeof companions[kind] === 'object' ? companions[kind] : {};
-    const driver = typeof c.driver === 'string' && c.driver.trim() ? c.driver.trim() : (kind === 'repo' ? 'none' : 'none');
+    const driver = typeof c.driver === 'string' && c.driver.trim() ? c.driver.trim() : 'none';
     ports.push(makePort(kind, driver, c));
   }
   return ports;
@@ -53,17 +51,21 @@ export function resolvePorts({ file } = {}) {
 
 /**
  * 单端口对象（只读）。
- * mode：live＝配置了 driver（v1 尚未接真 adapter，仍标 degraded）；degraded＝driver 存在但未实现；absent＝none。
+ * mode：absent＝未配置 driver；degraded＝配置了 driver 但 v1 尚未接 adapter。
+ * （v1 没有 live：adapter 落地后才会出现；届时用 health().ok 判别真实可用。）
  */
 export function makePort(kind, driver = 'none', cfg = {}) {
   const configured = typeof driver === 'string' && driver !== 'none';
   const mode = configured ? 'degraded' : 'absent';
+  const tags = Array.isArray(cfg.tags)
+    ? [...DEFAULT_SKIP_TAGS, ...cfg.tags.filter((t) => typeof t === 'string' && t.trim())]
+    : [...DEFAULT_SKIP_TAGS];
   return {
     kind,
     driver,
     identity() { return { kind, driver, mode, version: 'v1' }; },
     capabilities() { return { read: false, write: false, recall: false, inject: false, reason: 'v1 只读契约，adapter 未接' }; },
-    skipTags() { return [...DEFAULT_SKIP_TAGS]; },
+    skipTags() { return [...new Set(tags)]; },
     health() { return { ok: !configured, mode, detail: configured ? `driver=${driver} 已配置，v1 未接 adapter` : '未配置（absent）' }; },
     recall() { return { hits: [], via: 'degraded', degraded: true, reason: 'v1 只读契约，adapter 未接' }; },
     read() { return { record: null, depth: 'pointer', degraded: true, reason: 'v1 只读契约，adapter 未接' }; },

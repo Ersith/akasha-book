@@ -269,7 +269,7 @@ const SEG_STRIP_KINDS = new Set(['conclusion', 'process', 'node']);
 // ⇒ 框架注入污染检索与主题统计。故本常量提到模块级、**生成意图段时一并过滤**（DRY，一处定义两处用）。
 // 口径：**只影响派生索引**（session.jsonl），**原始会话日志一字不动** ✓（索引可重建，原文即真源）。
 const SCAFFOLD_BASE = [
-  '<system-reminder>', '<hindsight_knowledge', '<openviking-context', 'Current runtime context',
+  '<system-reminder>', 'Current runtime context',
   '【阿卡夏·起床包】', '阿卡夏·睡眠：', '阿卡夏·库脉搏', '阿卡夏·称呼：', '小阿卡夏·会话层：',
   '[极限观测', '[约定]', '[坑前提示', '<memory uri=', 'This is an automatically generated checkpoint',
 ];

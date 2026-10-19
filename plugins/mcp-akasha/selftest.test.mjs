@@ -159,7 +159,7 @@ await assert.rejects(apply({ logger: { info() {} } }, { args: ['<AKASHA_DIR>/mcp
 //   跳过去了（差点漏检）。现在示例库**自足**：源有 init-example 就用它；没有就用文件内联的
 //   最小示例库就地播种（只用核心自有 CLI 面 `add --store/--data`，不碰 lib.mjs 内部 API）。
 let skipCount = 0;
-const REQUIRED_CORE = ['lib.mjs', 'json-redaction.mjs', 'mcp.mjs', 'session.mjs', 'sleep.mjs'];
+const REQUIRED_CORE = ['lib.mjs', 'json-redaction.mjs', 'mcp.mjs', 'session.mjs', 'sleep.mjs', 'akasha.mjs', 'init-example.mjs', 'companion.mjs'];
 const missingCore = REQUIRED_CORE.filter((f) => !existsSync(join(CORE, f)));
 const INIT_EXAMPLE = existsSync(join(CORE, 'init-example.mjs')) ? join(CORE, 'init-example.mjs') : null;
 if (missingCore.length) {

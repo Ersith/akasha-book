@@ -103,7 +103,7 @@ test('full/reflect retain unbounded cross; default MCP is summary-bounded', () =
   seed({ canon: 20 });
   // 2026-10-19：MCP 日常读默认 depth=summary（token 省），默认不再保证 20 条全量。
   const dflt = invoke('akasha_cross', {});
-  assert.equal(dflt.depth, 'summary'); assert.ok(ids(dflt).length <= 20);
+  assert.equal(dflt.depth, 'summary'); assert.equal(ids(dflt).length, 12); assert.ok(dflt.budget && dflt.budget.trimmed > 0);
   for (const args of [{ depth: 'full' }, { depth: 'pointer', reflect: true }, { depth: 'full', perStore: 0 }]) {
     const r = invoke('akasha_cross', args); assert.equal(ids(r).length, 20); assert.equal(r.depth, 'full'); assert.equal(r.budget, undefined);
   }
