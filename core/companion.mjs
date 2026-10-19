@@ -72,7 +72,10 @@ export function makePort(kind, driver = 'none', cfg = {}, hooks = null) {
       if (live && typeof hooks.health === 'function') {
         try {
           const r = hooks.health();
-          if (r && typeof r.then === 'function') return { ok: null, mode: 'degraded', detail: 'health 返回 Promise（v1 不 await；调用方自行探测）' };
+          if (r && typeof r.then === 'function') {
+            r.then(() => {}, () => {});   // 丢弃但吞掉 rejection，避免 unhandledRejection
+            return { ok: null, mode: 'degraded', detail: 'health 返回 Promise（v1 不 await；调用方自行探测）' };
+          }
           return { ...r, mode };
         } catch (e) { return { ok: false, mode: 'degraded', detail: 'health 失败：' + e.message }; }
       }

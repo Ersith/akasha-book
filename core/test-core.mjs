@@ -290,6 +290,29 @@ if (lib) {
     const unknown = adapters.openvikingHttpHooks({ baseUrl: 'http://ov.test', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ foo: 1 }) }) });
     const u = await unknown.search('x'); assert.equal(u.degraded, true); assert.deepEqual(u.raw, { foo: 1 });
   });
+  t('CompanionPort：async health Promise 被安全丢弃（不 unhandledRejection）', async () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-health-'));
+    const f = join(dir, 'companions.json');
+    writeFileSync(f, JSON.stringify({ companions: { repo: { driver: 'fake' } } }), 'utf8');
+    const ports = companion.resolvePorts({ file: f, hooks: { fake: { search: () => ({}), health: () => Promise.reject(new Error('boom')) } } });
+    const p = ports.find((x) => x.kind === 'repo');
+    assert.equal(p.health().ok, null);
+    await new Promise((r) => setTimeout(r, 30));
+    rmSync(dir, { recursive: true, force: true });
+  });
+  t('withFileLock：释放遇陈旧 .steal 闸可自清并放锁', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-gate-'));
+    const f = join(dir, 'x.jsonl');
+    const gate = f + '.lock.steal';
+    writeFileSync(gate, '', 'utf8');
+    utimesSync(gate, new Date(Date.now() - 10000), new Date(Date.now() - 10000));
+    let ran = false;
+    lib.withFileLock(f, () => { ran = true; }, { timeoutMs: 500 });
+    assert.equal(ran, true);
+    assert.equal(existsSync(f + '.lock'), false);
+    assert.equal(existsSync(gate), false);
+    rmSync(dir, { recursive: true, force: true });
+  });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));
     const tmp = join(dir, '.tmp-test.jsonl');

@@ -428,7 +428,7 @@ export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.store
     if (!s) continue;
     try { records.push(JSON.parse(s)); } catch { parseFails += 1; }
   }
-  // 2026-10-19 人工复检：档案读取/解压/JSON 解析移到锁外——锁内只做「水位 → 去重 → 追加 → 记账」。
+  // 2026-10-19 人工复检：档案读取/解压/JSON 解析移到锁外；锁内做「store 载入 → 水位/去重/段提取 → 追加 → 记账」。
   const run = () => {
     const seqOf = (rec, i) => (Number.isInteger(rec.seq) ? rec.seq : i + 1);
     const meta = readMeta(metaFile);

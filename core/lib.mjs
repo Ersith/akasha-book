@@ -261,9 +261,14 @@ export function withFileLock(file, fn, opts = {}) {
   finally {
     const gate = lock + '.steal';
     let gfd;
-    for (let n = 0; n < 200 && gfd === undefined; n += 1) {
+    const releaseDeadline = Date.now() + 1000;
+    while (gfd === undefined && Date.now() < releaseDeadline) {
       try { gfd = openSync(gate, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY); }
-      catch (e) { if (!['EEXIST', 'EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
+      catch (e) {
+        if (!['EEXIST', 'EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
+        try { if (lockAgeMs(gate) > 5000) unlinkSync(gate); } catch { /* 刚释放 */ }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
     }
     if (gfd !== undefined) {
       try {
