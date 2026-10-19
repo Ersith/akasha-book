@@ -165,7 +165,7 @@ export function readSessionArchive(filePath) {
  *    ① 主会话：`session-<uuid>/session.v4.jsonl.zstd`（带前缀）
  *    ② 子代理：`<uuid>/session.v4.jsonl.zstd`（**裸 uuid，无前缀**）
  *  原实现假设"目录名恒为 `session-<id>`"，对子代理恒返回 null ⇒ 每回合刷一条错误。
- *  实测（<LOCAL_PATH>\official-home\sessions\--H-Harness--）：176 目录 = 157 带前缀（主）+ 19 裸 uuid（今日子代理）。
+ *  实测（H:\Harness\official-home\sessions\--H-Harness--）：176 目录 = 157 带前缀（主）+ 19 裸 uuid（今日子代理）。
  *  `child:true` 表示命中的是裸名目录 ⇒ 调用方据此**跳过**（子代理转录不是"我的会话"，不该进小阿卡夏）。 */
 export function resolveSessionArchive(sessionsRoot, sessionId) {
   const needle = String(sessionId ?? '');

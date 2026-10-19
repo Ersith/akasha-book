@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const OSS = 'H:\\Harness\\dist\\akasha-oss';
 const SHA = 'd311ad54d1dc2cd2697c7b9eeac57eaa6466fc04'; // 2026-10-10：manifest + 测试批的冻结 Commit
 const MARK = '<!-- store-status -->';
 

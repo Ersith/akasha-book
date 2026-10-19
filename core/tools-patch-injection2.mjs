@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const APPLY = process.argv.includes('--apply');
-const F = '<AKASHA_DIR>/lib.mjs';
+const F = 'H:/Harness/akasha/lib.mjs';
 const lines = readFileSync(F, 'utf8').split('\n');
 const targets = ['audit', 'summary', 'stats'];
 let changed = 0;

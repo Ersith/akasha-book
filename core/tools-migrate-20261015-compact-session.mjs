@@ -9,7 +9,7 @@ import { contentKeyOf, normSid as norm } from './tools-session-key.mjs';
 
 // 2026-10-15（GPT 复核 session N1 收尾）：`AKASHA_ROOT` 与核心**同口径**＝放 jsonl 的目录本身（不再自作主张追加 /data）；
 // 原实现 `ROOT.replace(/\/data\/?$/,'')+'/data/session.jsonl'` 对 `custom-store` 这类根会拼错（Windows 反斜杠也不匹配该去尾正则）。
-const DATA_ROOT = process.env.AKASHA_ROOT ? String(process.env.AKASHA_ROOT) : '<AKASHA_DIR>/data';
+const DATA_ROOT = process.env.AKASHA_ROOT ? String(process.env.AKASHA_ROOT) : 'H:/Harness/akasha/data';
 const STORE = DATA_ROOT.endsWith('.jsonl') ? DATA_ROOT : `${DATA_ROOT.replace(/[\\/]+$/, '')}/session.jsonl`;
 // 备份**随目标走**且带时间戳（原先是固定真回滚目录 ⇒ 指向沙箱 `--apply` 也会碰真实回滚件 ✗）；可用 AKASHA_BAK 覆盖。
 const STORE_DIR = STORE.replace(/[\\/][^\\/]+$/, '');

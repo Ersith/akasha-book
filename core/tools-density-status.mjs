@@ -1,5 +1,5 @@
 // akasha/tools/density-status.mjs —— 格式密度状态（只读）
-// 读 hooks.jsonl 的 density 线（@akasha-book/akasha-session 每轮落一条），输出最近状态与分档趋势。
+// 读 hooks.jsonl 的 density 线（@local/akasha-session 每轮落一条），输出最近状态与分档趋势。
 // 分档（初值，可校准）：绿 <15 · 黄 15-40 · 橙 40-120 · 红 >120（依据：全库 70 会话归因，见 canon-degradation-attribution-r2/r3）
 // 用法：
 //   node akasha/tools/density-status.mjs                 # 最近 20 条
@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const HOME = process.env.AKASHA_HOME || '<AKASHA_DIR>';
+const HOME = process.env.AKASHA_HOME || 'H:/Harness/akasha';
 const LOG = process.env.AKASHA_LOGS ? path.join(process.env.AKASHA_LOGS, 'hooks.jsonl') : path.join(HOME, 'logs', 'hooks.jsonl');
 
 const argv = process.argv.slice(2);
@@ -27,7 +27,7 @@ for (const l of lines) {
   rows.push(o);
 }
 if (!rows.length) {
-  console.log('（暂无 density 线——@akasha-book/akasha-session ≥0.3.5 安装并重启后，自「首个 turn 结束」起每轮落一条）');
+  console.log('（暂无 density 线——@local/akasha-session ≥0.3.5 安装并重启后，自「首个 turn 结束」起每轮落一条）');
   console.log('  历史口径可先用: node tmp/degradation-attrib/r2g-density-curve.mjs <会话档案>');
   process.exit(0);
 }

@@ -3,17 +3,17 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { loadStore, currentRecords, revise } from './lib.mjs';
 
 // ① 测试：把 ⑤ 那次调用的空列表修成 ["edit"]
-const T = "<LOCAL_PATH>\\dsh-akasha-sleep\\preflight.test.mjs";
+const T = "H:\\Harness\\dsh-akasha-sleep\\preflight.test.mjs";
 let s = readFileSync(T, "utf8");
 const bad = "captureRows({ akashaDir: FIX, preflightHints: true }, []));";
 const good = "captureRows({ akashaDir: FIX, preflightHints: true }, [\"edit\"]));";
 const n = s.split(bad).length - 1;
 if (n > 0) { s = s.split(bad).join(good); writeFileSync(T, s, "utf8"); console.log("  ✓ 测试调用点已修 " + n + " 处"); }
 else console.log("  = 无可修");
-writeFileSync("<LOCAL_PATH>\\dist\\akasha-oss\\plugins\\akasha-sleep\\preflight.test.mjs", s, "utf8");
+writeFileSync("H:\\Harness\\dist\\akasha-oss\\plugins\\akasha-sleep\\preflight.test.mjs", s, "utf8");
 
 // ② 计划 §8 追加端到端结论
-const P = "<LOCAL_PATH>\\dist\\akasha-oss\\docs\\c1-c3-schedule.md";
+const P = "H:\\Harness\\dist\\akasha-oss\\docs\\c1-c3-schedule.md";
 let doc = readFileSync(P, "utf8");
 if (!doc.includes("端到端验证（生产）")) {
   doc += "\n### 端到端验证（生产，2026-10-10）\n\n";
@@ -23,7 +23,7 @@ if (!doc.includes("端到端验证（生产）")) {
   doc += "- 第二次确认：再下一回合该行未重复出现 ⇒ 同工具 30 分钟去重在线上同样有效。\n";
   doc += "- 教训（我自己的）：禁止 pwsh 内联多行 JS；多行脚本一律先落文件再执行；脚本内串字串禁止内嵌同类引号。\n";
   writeFileSync(P, doc, "utf8");
-  writeFileSync("<LOCAL_PATH>\\docs\\c1-c3-schedule.md", doc, "utf8");
+  writeFileSync("H:\\Harness\\docs\\c1-c3-schedule.md", doc, "utf8");
   console.log("  [plan] 端到端验证 + 去重确认 + 教训 已记（双份）");
 } else console.log("  [plan] already");
 

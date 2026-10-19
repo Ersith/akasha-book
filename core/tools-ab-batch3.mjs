@@ -3,9 +3,9 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
-const T2 = '<LOCAL_PATH>\\_ab\\tasks2';
-const T3 = '<LOCAL_PATH>\\_ab\\tasks3';
-const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const T2 = 'H:\\Harness\\_ab\\tasks2';
+const T3 = 'H:\\Harness\\_ab\\tasks3';
+const OSS = 'H:\\Harness\\dist\\akasha-oss';
 
 const V3 = {
   B01: { dir: T2, task: '同事问：上次 npm 的 E409「previously staged」让我们误判过一次包是否已发布——**最后是靠哪两处核对**确定"包到底发没发"的？请给出那两处，并给出一个**可回查的出处**（段 id 或条目 id）。', judge: '必须同时给出：① versions 数组（且提 `--prefer-online` 绕缓存）② dist-tags；③ 一个可回查出处。缺任一项＝不通过（通用答法不算）。' },
@@ -30,7 +30,7 @@ for (const [id, t] of Object.entries(V3)) {
     writeFileSync(p, content, 'utf8');
   }
   if (t.withheld) {
-    const wd = join('<LOCAL_PATH>\\_ab\\_withheld', id);
+    const wd = join('H:\\Harness\\_ab\\_withheld', id);
     mkdirSync(wd, { recursive: true });
     for (const [rel, content] of Object.entries(t.withheld)) {
       const p = join(wd, rel);
@@ -71,6 +71,6 @@ if (!doc.includes('## 12. v3')) {
     '',
   ].join('\n');
   writeFileSync(P, doc + block, 'utf8');
-  writeFileSync('<LOCAL_PATH>\\docs\\ab-task-battery.md', doc + block, 'utf8');
+  writeFileSync('H:\\Harness\\docs\\ab-task-battery.md', doc + block, 'utf8');
   console.log('  [battery] §12 已追加（双份）');
 } else console.log('  [battery] already');

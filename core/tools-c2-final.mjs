@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const OSS = 'H:\\Harness\\dist\\akasha-oss';
 const F = OSS + '\\docs\\observation-ledger.md';
 let t = readFileSync(F, 'utf8');
 const anchor = '**C2 已落地（2026-10-10，外部评审指定的第一优先）**';

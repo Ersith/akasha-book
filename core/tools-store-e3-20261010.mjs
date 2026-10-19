@@ -14,9 +14,9 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const CLI = process.argv.includes('--cli')
   ? process.argv[process.argv.indexOf('--cli') + 1]
-  : '<DSH_INSTALL>';
-const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
-const OUT = '<LOCAL_PATH>\\_scratch\\store-e3';
+  : 'D:\\DSHHarness\\resources\\app\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js';
+const OSS = 'H:\\Harness\\dist\\akasha-oss';
+const OUT = 'H:\\Harness\\_scratch\\store-e3';
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
 
 const PLUGINS = [

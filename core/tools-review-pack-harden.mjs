@@ -4,8 +4,8 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const SRC = '<LOCAL_PATH>\\_ab\\review-pack-v2';
-const OUT = '<LOCAL_PATH>\\_ab\\review-pack-v2run';
+const SRC = 'H:\\Harness\\_ab\\review-pack-v2';
+const OUT = 'H:\\Harness\\_ab\\review-pack-v2run';
 const packJson = JSON.parse(readFileSync(join(SRC, 'pack.json'), 'utf8'));
 
 // 剥路径：Windows 路径 / 盘符 / 反引号内路径 / 文件名；并去掉时间戳
@@ -58,7 +58,7 @@ writeFileSync(join(OUT, 'README.md'), [
   '# review-pack v2 硬化轮（第二次盲评）',
   '',
   '## 与第一轮的差别（修掉三条有效性威胁）',
-  '1. **三套记忆全封**：无库臂**不得**使用 `akasha_*`、`hindsight_*`、`mcp__openviking__*`，不得读 `<AKASHA_DIR>`、`<LOCAL_PATH>\\docs`，不得访问 `viking://`；',
+  '1. **三套记忆全封**：无库臂**不得**使用 `akasha_*`、`hindsight_*`、`mcp__openviking__*`，不得读 `H:\\Harness\\akasha`、`H:\\Harness\\docs`，不得访问 `viking://`；',
   '2. **题面硬化**：只给「工具 + 一行报错」，**路径/时间/上下文已剥离**（抬高难度，消除天花板）；',
   '3. **包元信息不入库**：本轮不把 case→rubric 映射写入记忆库（避免对有库臂泄露难度）；',
   '4. **判卷者独立审计**：判卷者对 rubric 对齐与两列差异给独立意见（第一轮它抓出了配题缺陷）。',

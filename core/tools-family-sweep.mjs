@@ -1,7 +1,7 @@
 // akasha/tools/family-sweep.mjs —— 阿卡夏全族「一次跑完」的检查器（2026-10-13，举一反三批）
 //
 // 起因：现有各检查是散的（plugin-src-drift 只管 5 个 @local 包的代码漂移），有三个盲区：
-//   ① 只对比**代码文件**，不扫**发布件里的机器路径**（本次 S6 清掉的 <LOCAL_PATH> 写死就属于这类）；
+//   ① 只对比**代码文件**，不扫**发布件里的机器路径**（本次 S6 清掉的 H:/Harness 写死就属于这类）；
 //   ② 不检查**环境变量契约**（插件读 AKASHA_DIR / 核心读 AKASHA_ROOT+AKASHA_LOGS，两套并存）；
 //   ③ 不检查**README 里的版本漂移**（P3 的那类，靠人眼看不出来）。
 //
@@ -29,7 +29,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const H = (process.env.FAMILY_SWEEP_ROOT || process.env.HARNESS_ROOT || '<LOCAL_PATH>').replace(/\\/g, '/').replace(/\/+$/, '');
+const H = (process.env.FAMILY_SWEEP_ROOT || process.env.HARNESS_ROOT || 'H:/Harness').replace(/\\/g, '/').replace(/\/+$/, '');
 const PROFILE = process.env.FAMILY_SWEEP_PROFILE || join(H, 'official-home/profiles/desktop/node_modules');
 const quiet = process.argv.includes('--quiet');
 const noTests = process.argv.includes('--no-tests');
@@ -41,19 +41,19 @@ let actions = 0;
 
 // ── 1. 包清单（含 bundle 目录：cordis.patch.yml 与 mcp.mjs 这类也纳入代码对比）──
 const PKGS = [
-  { name: '@akasha-book/akasha-gate', src: join(H, 'dsh-akasha-gate'), code: ['index.js', 'prompt-safety.js', 'cordis.patch.yml'] },
-  { name: '@akasha-book/akasha-sleep', src: join(H, 'dsh-akasha-sleep'), code: ['lib/index.js', 'lib/prompt-safety.js'] },
-  { name: '@akasha-book/akasha-session', src: join(H, 'dsh-akasha-session'), code: ['lib/index.js', 'lib/index-worker.mjs'] },   // 2026-10-15：+index-worker（声明了却漏扫）；根 index.js 系 v0.2 遗留件——0.3.5-h6 已连同 files 一起删（22:30），本清单同批移除（新「两侧皆无」类 22:34 抓出的正是这条陈旧声明）
-  { name: '@akasha-book/akasha-hooks', src: join(H, 'dsh-akasha-hooks'), code: ['index.js'] },
-  { name: '@akasha-book/mcp-akasha', src: join(H, 'dsh-mcp-akasha'), code: ['index.js', 'cordis.patch.yml'] },
-  { name: '@akasha-book/mcp-rea', src: join(H, 'dsh-mcp-rea'), code: ['server.mjs', 'cordis.patch.yml'] },
+  { name: '@local/akasha-gate', src: join(H, 'dsh-akasha-gate'), code: ['index.js', 'prompt-safety.js', 'cordis.patch.yml'] },
+  { name: '@local/akasha-sleep', src: join(H, 'dsh-akasha-sleep'), code: ['lib/index.js', 'lib/prompt-safety.js'] },
+  { name: '@local/akasha-session', src: join(H, 'dsh-akasha-session'), code: ['lib/index.js', 'lib/index-worker.mjs'] },   // 2026-10-15：+index-worker（声明了却漏扫）；根 index.js 系 v0.2 遗留件——0.3.5-h6 已连同 files 一起删（22:30），本清单同批移除（新「两侧皆无」类 22:34 抓出的正是这条陈旧声明）
+  { name: '@local/akasha-hooks', src: join(H, 'dsh-akasha-hooks'), code: ['index.js'] },
+  { name: '@local/mcp-akasha', src: join(H, 'dsh-mcp-akasha'), code: ['index.js', 'cordis.patch.yml'] },
+  { name: '@local/mcp-rea', src: join(H, 'dsh-mcp-rea'), code: ['server.mjs', 'cordis.patch.yml'] },
 ];
 
 // 根自检（2026-10-17 B-④）：根可被 FAMILY_SWEEP_ROOT 覆盖（反例必须在隔离克隆里跑，不动真包）。
 // 覆盖指错时旧实现仍会红（第 1 节报 6 条「profile 里不在」），红得对但**指错方向**——把「根指错了」
 // 说成「包没装」。此自检把原因说清并早退（空根探针 c8），避免照诊断去重打包。
 if (!PKGS.some((p) => existsSync(p.src))) {
-  console.log('  ✗ 扫描根自检：' + H + ' 下 ' + PKGS.length + ' 个源包一个都没有 —— FAMILY_SWEEP_ROOT 指错了？（默认 <LOCAL_PATH>）');
+  console.log('  ✗ 扫描根自检：' + H + ' 下 ' + PKGS.length + ' 个源包一个都没有 —— FAMILY_SWEEP_ROOT 指错了？（默认 H:/Harness）');
   process.exit(1);
 }
 
@@ -251,7 +251,7 @@ if (declGaps) say(`  → 声明面/配置面：${declGaps} 项必须动作 ✗`)
 
 // ── 2. 发布件机器路径（注释行豁免；本机路径只许出现在注释/README/宿主 patch 配置里）──
 say('');
-say('══ 2. 发布件机器路径（JS 代码行不许写死 <LOCAL_PATH> / D:\\ 等）══');
+say('══ 2. 发布件机器路径（JS 代码行不许写死 H:\\Harness / D:\\ 等）══');
 const MACHINE_RE = /(H:[\\/]Harness|D:[\\/](ServerPackCreator|DSHHarness))/i;
 // 只扫 **JS 代码**：`cordis.patch.yml` 是「每台机器自己的 profile 配置」（按设计就是本机路径），
 // 扫它等于对着宿主的合法配置报警——**不是缺陷**（2026-10-13 首跑即踩：17 处全在 patch 里）。
@@ -322,7 +322,7 @@ if (!noTests) {
   for (const p of PKGS) {
     if (!existsSync(p.src)) continue;
     const files = readdirSync(p.src).filter((f) => f.endsWith('.test.mjs') || f === 'selftest.mjs').sort();
-    for (const f of files) SUITES.push([p.name.replace('@akasha-book/', '') + '/' + f, join(p.src, f)]);
+    for (const f of files) SUITES.push([p.name.replace('@local/', '') + '/' + f, join(p.src, f)]);
   }
   for (const [label, file] of SUITES) {
     // 2026-10-17 批次13 采纳（batch12 VERIFY-H4 §5-N2）：缺件原先只 ⚠、不计动作 ⇒ 与「有问题却判绿」同族 fail-open；

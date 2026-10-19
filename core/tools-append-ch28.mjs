@@ -1,6 +1,6 @@
 // akasha/tools/append-ch28.mjs —— 追加 CHECKS R28（MCP 桥重建 + 核心 mcp.mjs 加固）到 OSS 仓
 import { readFileSync, appendFileSync, writeFileSync } from 'node:fs';
-const F = '<LOCAL_PATH>\\dist\\akasha-oss\\CHECKS.md';
+const F = 'H:\\Harness\\dist\\akasha-oss\\CHECKS.md';
 const MARK = '## R28 ·';
 let t = readFileSync(F, 'utf8');
 if (t.includes(MARK)) { console.log('  = R28 已存在，跳过'); process.exit(0); }

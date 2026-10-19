@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const OSS = 'H:\\Harness\\dist\\akasha-oss';
 const P = OSS + '\\docs\\recall-preventability-test-plan.md';
 let t = readFileSync(P, 'utf8');
 if (!t.includes('## 12.')) {
@@ -22,7 +22,7 @@ if (!t.includes('## 12.')) {
     '',
   ].join('\n');
   writeFileSync(P, t + block, 'utf8');
-  writeFileSync('<LOCAL_PATH>\\docs\\recall-preventability-test-plan.md', t + block, 'utf8');
+  writeFileSync('H:\\Harness\\docs\\recall-preventability-test-plan.md', t + block, 'utf8');
   console.log('  [plan] §12 已追加（仓 + 工作区双份同步）');
 } else console.log('  [plan] already');
 

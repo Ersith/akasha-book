@@ -5,8 +5,8 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
-const OUT = '<LOCAL_PATH>\\_scratch\\store-e3';
+const OSS = 'H:\\Harness\\dist\\akasha-oss';
+const OUT = 'H:\\Harness\\_scratch\\store-e3';
 const RUNS = OUT;
 const latest = readdirSync(RUNS).filter((f) => f.startsWith('e3-run-')).sort().pop();
 const run = JSON.parse(readFileSync(join(RUNS, latest), 'utf8'));
@@ -33,7 +33,7 @@ for (const r of run.results) {
 console.log('=== 证据文件 ===');
 for (const [n, p] of rows) console.log('  ' + n.padEnd(16) + p);
 
-const BP = '<LOCAL_PATH>\\_tools\\build-dsh-plugin\\build-dsh-plugin\\scripts\\audit-plugin.mjs';
+const BP = 'H:\\Harness\\_tools\\build-dsh-plugin\\build-dsh-plugin\\scripts\\audit-plugin.mjs';
 const node = process.execPath;
 console.log('\n=== 带证据复评 ===');
 for (const [n, p] of rows) {

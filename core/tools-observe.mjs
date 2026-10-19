@@ -13,8 +13,8 @@
 import { readFileSync } from "node:fs";
 import { recallSignals, RECALL_TRAP_MAP, sessionKeyOf } from './lib.mjs';
 
-const LOG = "<AKASHA_DIR>\\logs\\hooks.jsonl";
-const SESS = "<AKASHA_DIR>\\data\\session.jsonl";
+const LOG = "H:\\Harness\\akasha\\logs\\hooks.jsonl";
+const SESS = "H:\\Harness\\akasha\\data\\session.jsonl";
 const args = process.argv.slice(2);
 const flag = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null; };
 const since = flag("--since"), until = flag("--until"), wantJson = args.includes("--json");

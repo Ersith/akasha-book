@@ -4,8 +4,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readSessionArchive } from './session.mjs';
 
-const SESSION_FILE = '<LOCAL_PATH>\\official-home\\sessions\\--H-Harness--\\session-f362b992-b105-470c-b0aa-d87d16b9b0b6\\session.v4.jsonl.zstd';
-const OUT_DIR = '<LOCAL_PATH>\\research\\session-replay-20261007';
+const SESSION_FILE = 'H:\\Harness\\official-home\\sessions\\--H-Harness--\\session-f362b992-b105-470c-b0aa-d87d16b9b0b6\\session.v4.jsonl.zstd';
+const OUT_DIR = 'H:\\Harness\\research\\session-replay-20261007';
 mkdirSync(OUT_DIR, { recursive: true });
 
 const { text, frames, frameFails } = readSessionArchive(SESSION_FILE);

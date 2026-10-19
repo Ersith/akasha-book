@@ -2,8 +2,8 @@
 import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
-const SRC = '<LOCAL_PATH>\\_scratch\\store-e3';
+const OSS = 'H:\\Harness\\dist\\akasha-oss';
+const SRC = 'H:\\Harness\\_scratch\\store-e3';
 const PLUGINS = ['akasha-gate', 'akasha-hooks', 'akasha-session', 'akasha-sleep', 'mcp-akasha'];
 
 const OLD_ROW = '| 一次性 Profile 安装·启动·卸载（E3） | **尚未（unverified）** | 本表如实标注：E3 证据**未执行**，属**下一道门**；不把未执行写成 passed |';

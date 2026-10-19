@@ -1,7 +1,7 @@
 // tmp/loop-p1-calibration.mjs —— 只读：把 loop-watch 命中摊开分类，供 P1 阈值标定
 import { readFileSync } from 'node:fs';
 
-const raw = readFileSync('<AKASHA_DIR>/logs/hooks.jsonl', 'utf8').split('\n');
+const raw = readFileSync('H:/Harness/akasha/logs/hooks.jsonl', 'utf8').split('\n');
 const hits = [];
 for (const line of raw) {
   if (!line.includes('"loop-watch"')) continue;

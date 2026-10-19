@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 
 // 2026-10-18：支持外部部署（OSS）——根目录优先 HARNESS_ROOT，回退本机默认。
 //   OSS 同步时会把回退值改写成 process.cwd()（见 oss-sync-core.mjs 的规则 7）。
-const H = (process.env.HARNESS_ROOT || "<LOCAL_PATH>").replace(/\\/g, '/').replace(/\/+$/, '');
+const H = (process.env.HARNESS_ROOT || "H:/Harness").replace(/\\/g, '/').replace(/\/+$/, '');
 // 2026-10-19（OSS 降级）：本工具是**活树运维工具**（依赖 official-home / 六库活数据）。
 //   在 OSS 分发仓里跑会因根不存在而 ENOENT 崩——改为**明确报错并退出**（不是假装检查）。
 if (!existsSync(join(H, 'akasha', 'data'))) {
@@ -186,7 +186,7 @@ const SANDBOX = mkdtempSync(join(tmpdir(), "akasha-health-"));
 {
   // 2026-10-16 批次8：夹具第一步是 `cpSync(CORE → 临时)`，而 CORE=akasha/ 里有"复制地雷"——
   //   ① `gate-out/gate-selffix/runs`（143MB 产物树；其中 audit-1016-batch6/seg-sleep/verify/derived/akasha
-  //      是 **junction → <AKASHA_DIR>**）⇒ Node cpSync 顺着它**无限自嵌套**，副本膨胀到 GB 级；
+  //      是 **junction → H:\Harness\akasha**）⇒ Node cpSync 顺着它**无限自嵌套**，副本膨胀到 GB 级；
   //   ② `data/session.jsonl`（91MB 会话原档；`akasha_check` 自述"不读会话原档"）。
   //   实测（2026-10-16 23:0x 单独重跑）：42s 崩在 `cpSync`（selftest.test.mjs:65）——
   //     `EINPROGRESS, There is not enough space on the disk`（Windows errno 112＝磁盘满），

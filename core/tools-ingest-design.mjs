@@ -4,8 +4,8 @@
 import { readFileSync } from 'node:fs';
 import { appendRecord, currentRecords, loadStore, STORES } from './lib.mjs';
 
-const DRAFT = '<LOCAL_PATH>/research/ai-memory-architecture-20261006.md';
-const PLAN = '<LOCAL_PATH>/docs/superpowers/plans/2026-10-06-akasha-v0.md';
+const DRAFT = 'H:/Harness/research/ai-memory-architecture-20261006.md';
+const PLAN = 'H:/Harness/docs/superpowers/plans/2026-10-06-akasha-v0.md';
 const lines = readFileSync(DRAFT, 'utf8').split('\n');
 
 // 已有 id 集合（幂等）

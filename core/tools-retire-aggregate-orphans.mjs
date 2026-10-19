@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const APPLY = process.argv.includes('--apply');
-const AK = '<AKASHA_DIR>';
+const AK = 'H:/Harness/akasha';
 const rows = readFileSync(`${AK}/data/orphan.jsonl`, 'utf8').split('\n').filter(Boolean)
   .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 const cur = new Map();

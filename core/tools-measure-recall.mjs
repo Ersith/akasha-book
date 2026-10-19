@@ -3,13 +3,13 @@
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
-const NODE = '<DSH_INSTALL>';
-const AK = '<AKASHA_DIR>/akasha.mjs';
+const NODE = 'D:/DSHHarness/resources/runtime/primary-runtime/dependencies/node/bin/node.exe';
+const AK = 'H:/Harness/akasha/akasha.mjs';
 const SID8 = 'f362b992';
 const tok = (chars) => Math.round(chars * 1.18);   // 中文经验换算（≈1.18 tok/字）
 
 // ① 语料基准
-const rows = readFileSync('<AKASHA_DIR>/data/session.jsonl', 'utf8').split('\n').filter(Boolean)
+const rows = readFileSync('H:/Harness/akasha/data/session.jsonl', 'utf8').split('\n').filter(Boolean)
   .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
   .filter((r) => String(r.session || '').includes(SID8));
 const concl = rows.filter((r) => String(r.kind) === 'conclusion');

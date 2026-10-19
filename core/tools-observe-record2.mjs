@@ -2,9 +2,9 @@
 import { copyFileSync } from "node:fs";
 import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
-const OSS = "<LOCAL_PATH>\\dist\\akasha-oss";
-copyFileSync(OSS + "\\docs\\observation-metrics.md", "<LOCAL_PATH>\\docs\\observation-metrics.md");
-copyFileSync("<AKASHA_DIR>\\tools\\observe.mjs", OSS + "\\core\\tools-observe.mjs");
+const OSS = "H:\\Harness\\dist\\akasha-oss";
+copyFileSync(OSS + "\\docs\\observation-metrics.md", "H:\\Harness\\docs\\observation-metrics.md");
+copyFileSync("H:\\Harness\\akasha\\tools\\observe.mjs", OSS + "\\core\\tools-observe.mjs");
 console.log("  [sync] 文档双份 + 脚本副本进仓");
 
 const recs = currentRecords(loadStore("canon").records);

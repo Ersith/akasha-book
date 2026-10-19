@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STORE = join(ROOT, 'data', 'session.jsonl');
 const META = join(ROOT, 'data', 'session-meta.json');
-const BAD_KEY = '<LOCAL_PATH>\\_scratch\\session-freeze-7fe8ec84\\session.v4.jsonl.zstd';
+const BAD_KEY = 'H:\\Harness\\_scratch\\session-freeze-7fe8ec84\\session.v4.jsonl.zstd';
 const TS = new Date().toISOString().replace(/[:.]/g, '-');
-const BACKUP = '<LOCAL_PATH>\\_scratch\\session-cleanup-backup-' + TS + '.jsonl';
+const BACKUP = 'H:\\Harness\\_scratch\\session-cleanup-backup-' + TS + '.jsonl';
 
 const lines = readFileSync(STORE, 'utf8').trim().split('\n');
 const bad = lines.filter((l) => { try { return JSON.parse(l).session === BAD_KEY; } catch { return false; } });

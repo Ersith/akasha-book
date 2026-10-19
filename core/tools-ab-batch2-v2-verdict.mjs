@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const OSS = 'H:\\Harness\\dist\\akasha-oss';
 const P = OSS + '\\docs\\ab-task-battery.md';
 const t = readFileSync(P, 'utf8');
 if (!t.includes('## 10. v2 预筛判别力')) {
@@ -36,7 +36,7 @@ if (!t.includes('## 10. v2 预筛判别力')) {
     '',
   ].join('\n');
   writeFileSync(P, t + block, 'utf8');
-  writeFileSync('<LOCAL_PATH>\\docs\\ab-task-battery.md', t + block, 'utf8');
+  writeFileSync('H:\\Harness\\docs\\ab-task-battery.md', t + block, 'utf8');
   console.log('  [battery] §10/§11 已追加（双份）');
 } else console.log('  [battery] already');
 

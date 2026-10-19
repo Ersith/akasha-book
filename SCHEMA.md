@@ -315,13 +315,13 @@ verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", a
 - **选值依据（13 会话对照，只读测量）**：cap=40 ⇒ 合计 516 块/最大 40；cap=30 ⇒ 687；cap=25 ⇒ 835；cap=20 ⇒ 1032。取 **40**（≈一轮实料；再细则节点翻倍、渲染与检索变吵）。
 - **实测效果**：`391c6ea4` 4 → **48 节点**（36 块）｜`7fe8ec84` 53 → **507 节点**（385 块）｜`f362b992` 37 块；三棵树最大块 **= 40**（硬约束成立）。
 - 关掉上限：显式传 `segCap: 0`（守卫里用它做旧行为对照）。
-- 打包：`@akasha-book/akasha-session` **0.3.2-h5**（restart-required）。
+- 打包：`@local/akasha-session` **0.3.2-h5**（restart-required）。
 
 - **两条闸（机械、无 LLM）**：
   1. **签名未变即复用**——指纹 = `{segCount, latestSeq}`，挂在新代节点的 `treeFingerprint` 字段（**不新增元数据档**）；一致 ⇒ `{built:false, reason:'fingerprint-unchanged'}`。
   2. **节流**——`minIntervalMs`（默认 10 分钟，从上一代的 `logged_at` 推 lastBuildAt）内不重建 ⇒ `reason:'throttled'`（带 `nextEligibleInMs`）。
 - **旧代留档 + 无损可展开**：重建 = 新 `treegen` 整批追加；旧代原地保留（append-only）；节点带 `children`/`ptr`，全保真仍走 **ptr 回原档**（语义不变）。
-- **接通点**：`@akasha-book/akasha-session` 的索引成功回调（`tree-auto` 观测线：`{built, reason, treegen, nodes, segCount}`；失败落 `tree-auto-error`）。**热替换说明**：本轮把插件 `index.js` 同步进 profile（回滚点 `index.js.bak-pre-treeauto-20261012`）——**插件侧最终仍走下次插件批次统一打包**。
+- **接通点**：`@local/akasha-session` 的索引成功回调（`tree-auto` 观测线：`{built, reason, treegen, nodes, segCount}`；失败落 `tree-auto-error`）。**热替换说明**：本轮把插件 `index.js` 同步进 profile（回滚点 `index.js.bak-pre-treeauto-20261012`）——**插件侧最终仍走下次插件批次统一打包**。
 - CLI：`session tree --auto --session <id> [--interval ms] [--force]`（`--force` 跳过两道闸）。
 - 真库实测：7fe8ec84 首建 **71 节点 / 15388 段**；二跑如实 `fingerprint-unchanged`。
 
@@ -474,7 +474,7 @@ verification: { kind: "replay" | "experiment" | "doc" | "incident" | "refute", a
 ## 触发词路由与反射字段（#13 / #10，2026-10-11 起、2026-10-12 窗口 2 补校验）
 
 - **字段**（canon 可选）：`hint`（**≤80 字**反射文本——「改条目＝改反射」）、`triggers`（触发词数组，非空字符串）、`hint_until`（到期日 `YYYY-MM-DD`，过期即不打）。
-- **运行时**（`@akasha-book/akasha-sleep` ≥1.5.x，插件侧）：每回合读最近用户消息 → 命中 `triggers` 且条目未退役 / 未过期 / `when`（#9）成立 ⇒ **动手前**注入一行 `[触发] <词> ⇒ <hint> —— 条目 <id>`；**同条 30 分钟一次、每回合最多一条**（防刷屏）；`triggerRouting:false` 可关。
+- **运行时**（`@local/akasha-sleep` ≥1.5.x，插件侧）：每回合读最近用户消息 → 命中 `triggers` 且条目未退役 / 未过期 / `when`（#9）成立 ⇒ **动手前**注入一行 `[触发] <词> ⇒ <hint> —— 条目 <id>`；**同条 30 分钟一次、每回合最多一条**（防刷屏）；`triggerRouting:false` 可关。
 - **校验**（2026-10-12 窗口 2 补）：写入侧走核心 `validateRecord`——`hint` 非空且 ≤160 字硬上限（超长会被显示侧 80 字裁剪，故拦）、`triggers` 非空字符串数组、`hint_until` 日期形。
 - **与「坑前提示」同族**：后者由工具名/动作自动匹配（`hintForTool`）；本字段是**条自带触发词**的通用形态。
 - 现状：活库 15 行带 `hint`，其中 2 条带 `triggers`（`canon-trap-edit-context-mismatch-r2` / `canon-trap-quoting-escapes-r2`）。
@@ -576,7 +576,7 @@ share'     = clamp(baseShare·(1+rawΔ), minShare, maxShare)
 
 ## 输出审计与使用计数（v0，2026-10-07 起）
 
-- 钩子插件（`@akasha-book/akasha-hooks` v1.2）监听 `agent/assistant-stream`，对 committed 的 assistant 文本跑 `auditText`（纯函数）：
+- 钩子插件（`@local/akasha-hooks` v1.2）监听 `agent/assistant-stream`，对 committed 的 assistant 文本跑 `auditText`（纯函数）：
   - 引用**不存在**的库 id → `output-audit` 观测线（编造引用嫌疑）；
   - 引用**真实**库 id → `usage` 观测线（**条目级使用计数 v0**）。
 - **v1.2 修复（2026-10-07 复查）**：官方 revision **逐帧递增**——累积必须按 `attemptId` 连续（修复前按 revision 重置 ⇒ 每 chunk 清空、`output-audit`/`usage` **恒 0 条**）；id 跨帧切分可还原。
@@ -629,7 +629,7 @@ share'     = clamp(baseShare·(1+rawΔ), minShare, maxShare)
 - **调用分级**：被动行 → 定向轻查（session lookup / 主库 lookup·brief）→ 停靠与导航（session tree / node）→ 深取回档（--process / ptr 回原档 / 主库 cross·show）。
 - 计分：与主库同一 `scoreTokens`（整词 ×1 + min(Σ回退, 0.9)；结论 +1.0 只进排序权重）。`strong` 表示至少一次整词命中。
 - 覆盖边界：旧格式（8–9 月 chunk 型）仅部分可抽取；读取侧 `frameFails` 记录损坏 / 半写帧；会话层条目**免复审**（天然带时间，非知识断言）。
-- 插件（`@akasha-book/akasha-session` v0.2.3，2026-10-07 起）：`turn/end` 去抖（30s/会话）自动增量索引 + 压缩事件行（`compaction/end` 真值；成功才记；**wave1 起压缩先强制补索引（绕过去抖/背压），`session-compact` 线带 `indexed`/`reason`——仅 `indexed:true` 时节奏条说「已收入」，否则提示「可能未进会话层」与回退路径；同会话后续索引成功即改口**）+ 每回合节奏条（`systemPrompt.context`，order 134）；**v0.2 起含循环观测 P0（dry 干跑——只观测不干预）**：流环（**现役格式＝`agent/assistant-stream` 帧**：reasoning/text-delta 累积，480 字符节流 + 8K 尾窗；`assistant/chunk` 系 V0 遗物仅兼容保留；chunk 帧的 turn/step 由 start 帧缓存补全）+ turn 环（turn-stopping/`turn/end` 兜底，取数＝事件流缓存全文）+ 帧/类型探针 → `loop-watch` / `loop-watch-probe` 观测线（写 `logs\hooks.jsonl`；汇总 `session loopwatch`）。观测线 `session-armed` / `session-index` / `session-index-skip` / `session-index-error` / `session-compact`。
+- 插件（`@local/akasha-session` v0.2.3，2026-10-07 起）：`turn/end` 去抖（30s/会话）自动增量索引 + 压缩事件行（`compaction/end` 真值；成功才记；**wave1 起压缩先强制补索引（绕过去抖/背压），`session-compact` 线带 `indexed`/`reason`——仅 `indexed:true` 时节奏条说「已收入」，否则提示「可能未进会话层」与回退路径；同会话后续索引成功即改口**）+ 每回合节奏条（`systemPrompt.context`，order 134）；**v0.2 起含循环观测 P0（dry 干跑——只观测不干预）**：流环（**现役格式＝`agent/assistant-stream` 帧**：reasoning/text-delta 累积，480 字符节流 + 8K 尾窗；`assistant/chunk` 系 V0 遗物仅兼容保留；chunk 帧的 turn/step 由 start 帧缓存补全）+ turn 环（turn-stopping/`turn/end` 兜底，取数＝事件流缓存全文）+ 帧/类型探针 → `loop-watch` / `loop-watch-probe` 观测线（写 `logs\hooks.jsonl`；汇总 `session loopwatch`）。观测线 `session-armed` / `session-index` / `session-index-skip` / `session-index-error` / `session-compact`。
 
 ## 因果注释字段（I-09，2026-10-14；**字段先行**）
 

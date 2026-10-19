@@ -8,9 +8,9 @@ import { currentRecords, loadStore, RECALL_TRAP_MAP, RECALL_STRUCTURAL_TOOLS } f
 
 const args = process.argv.slice(2);
 const flag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
-const OUT = flag('--out', '<LOCAL_PATH>\\_ab\\review-pack');
+const OUT = flag('--out', 'H:\\Harness\\_ab\\review-pack');
 const N = Number(flag('--n', '10'));
-const HOOKS = '<AKASHA_DIR>\\logs\\hooks.jsonl';
+const HOOKS = 'H:\\Harness\\akasha\\logs\\hooks.jsonl';
 
 const lines = readFileSync(HOOKS, 'utf8').split(/\r?\n/).filter(Boolean);
 const recs = [];
@@ -150,7 +150,7 @@ const readme = [
   '- 两臂用**同一批题、同一评审标准**；不得为提升指标挑选题目。',
   '',
   '## 生成方式',
-  '`node <AKASHA_DIR>\\tools\\review-pack.mjs`（原料＝`akasha\\logs\\hooks.jsonl` 的历史失败记录；门控拒绝已排除）。',
+  '`node H:\\Harness\\akasha\\tools\\review-pack.mjs`（原料＝`akasha\\logs\\hooks.jsonl` 的历史失败记录；门控拒绝已排除）。',
   ''
 ].join('\n');
 writeFileSync(join(OUT, 'README.md'), readme, 'utf8');

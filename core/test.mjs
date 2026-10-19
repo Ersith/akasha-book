@@ -611,7 +611,7 @@ if (lib) {
       const reportDir = join(dir, 'logs');
       // 夹具用**真实形态**的失败文案（2026-10-13 A2）：「x」这类无信息样本会被判成聚合型 ⇒ 不再进 orphan 候选，
       //   测 `todo >= 3` 就失真了。用带证据的文案（工具名 + 具体错误），语义与线上一致。
-      appendFileSync(logPath, JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, message: 'old_string was not found in "<LOCAL_PATH>/x.mjs"' }) + '\n' + JSON.stringify({ kind: 'gate-denied', tool: 'write', message: '拒绝直写 akasha/data/canon.jsonl' }) + '\n', 'utf8');
+      appendFileSync(logPath, JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, message: 'old_string was not found in "H:/Harness/x.mjs"' }) + '\n' + JSON.stringify({ kind: 'gate-denied', tool: 'write', message: '拒绝直写 akasha/data/canon.jsonl' }) + '\n', 'utf8');
       const dry = sleepMod.sleepRun({ trigger: 'manual', log: logPath, stateFile: statePath, inboxFile: inboxPath, reportDir, dry: true });
       assert.equal(dry.ok, true);
       assert.equal(dry.report.counters.lines, 2);
@@ -3789,8 +3789,8 @@ t('A2（2026-10-13）候选分道：无具体样本 ⇒ aggregate（不转正）
   const sleepMod = await import('./sleep.mjs');
   const { hasConcreteSample } = sleepMod;
   // 谓词：正例
-  for (const s of ['工具失败 edit: old_string was not found in "<LOCAL_PATH>/x.mjs"', '门控拦截 write: 拒绝直写 akasha/data/canon.jsonl',
-    'agent 错误: unknown tool "ops_read_many"', 'x exit 2: rg: <LOCAL_PATH>/openviking-server', 'cannot read "tmp/a.log": binary file']) {
+  for (const s of ['工具失败 edit: old_string was not found in "H:/Harness/x.mjs"', '门控拦截 write: 拒绝直写 akasha/data/canon.jsonl',
+    'agent 错误: unknown tool "ops_read_many"', 'x exit 2: rg: H:/Harness/openviking-server', 'cannot read "tmp/a.log": binary file']) {
     assert.equal(hasConcreteSample([s]), true, '应判为有证据：' + s);
   }
   // 谓词：负例（通用文案 / 空 / 纯计数）
@@ -3799,7 +3799,7 @@ t('A2（2026-10-13）候选分道：无具体样本 ⇒ aggregate（不转正）
   }
   // 端到端（纯函数）：无样本 ⇒ aggregate；有样本 ⇒ orphan-candidate
   const c = { toolErrorsSubstantive: 1, denials: 1, agentErrors: 1, recallMisses: 0 };
-  const samples = { 'tool-error': ['工具失败 edit: old_string was not found in "<LOCAL_PATH>/x.mjs"'], 'gate-denied': [], 'agent-error': [] };
+  const samples = { 'tool-error': ['工具失败 edit: old_string was not found in "H:/Harness/x.mjs"'], 'gate-denied': [], 'agent-error': [] };
   const todos = sleepMod.buildTodos(c, ['n'], null, null, samples);
   const kinds = Object.fromEntries(todos.map((x) => [x.code, x.kind]));
   assert.equal(kinds['tool-error'], 'orphan-candidate', '有证据 ⇒ 可转正');
@@ -3857,7 +3857,7 @@ t('类⑤（2026-10-13）有证据的候选落库不得带 evidence:none（两�
   const ib = join(dir, 'inbox.jsonl');
   const sf = join(dir, 'orphan.jsonl');
   writeFileSync(ib, JSON.stringify({ ts: 't1', kind: 'todo', items: [
-    { kind: 'orphan-candidate', code: 'tool-error', count: 2, samples: ['工具失败 edit: old_string was not found in "<LOCAL_PATH>/x.mjs"'] },
+    { kind: 'orphan-candidate', code: 'tool-error', count: 2, samples: ['工具失败 edit: old_string was not found in "H:/Harness/x.mjs"'] },
   ] }) + '\n', 'utf8');
   const r = lib.promoteInbox({ inboxFile: ib, storeFile: sf });
   assert.equal(r.promoted.length, 1, JSON.stringify(r));
