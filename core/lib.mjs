@@ -14,6 +14,8 @@ export const DATA = process.env.AKASHA_ROOT ? String(process.env.AKASHA_ROOT) : 
 // 跨进程对照（MCP 子进程 vs 本进程）就会「库同源、日志不同源」，出现难查的假红（P2 修复时实测）。
 // `AKASHA_LOGS` 可覆盖；默认 <repo>/logs（与既有行为一致）。
 export const LOGS_DIR = process.env.AKASHA_LOGS ? String(process.env.AKASHA_LOGS) : join(ROOT, 'logs');
+/** 本地日期（YYYY-MM-DD）：库的「今天/created/last_reviewed/trash」一律本地时区，避免 UTC 与时钟行错 8h。 */
+export function todayLocal(date = new Date()) { const d = new Date(date.getTime() - date.getTimezoneOffset() * 60000); return d.toISOString().slice(0, 10); }
 // I-08（2026-10-14）：孤儿＝**热缓冲**的溢出阈值——超过此数即由 audit 报 `orphan-backlog`（只报不裁；压缩流程见 PROTOCOL「孤儿热缓冲」）。
 export const ORPHAN_BACKLOG_DEFAULTS = 60;
 export const STORES = ['canon', 'mirror', 'orphan', 'pricing', 'lexicon', 'frontier'];
@@ -771,11 +773,18 @@ export function valenceTip(r) {
 // 时间过滤（2026-10-07）：时间戳 = event_time（事件时间，优先）|| logged_at（记录时间，ISO UTC）。
 // 带过滤参数时，无时间戳的条目被排除；比较按日期级字符串（UTC 口径）。
 function tsOf(r) { return r.event_time || r.logged_at || null; }
+function recordDay(r) {
+  const ts = tsOf(r);
+  if (!ts) return null;
+  // event_time 是作者写的日期（YYYY-MM-DD）⇒ 原样；logged_at 是 ISO 时刻 ⇒ 按本地日切（与 todayLocal 同口径）。
+  if (r.event_time) return String(ts).slice(0, 10);
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? String(ts).slice(0, 10) : todayLocal(d);
+}
 function inRange(r, since, until) {
   if (!since && !until) return true;
-  const ts = tsOf(r);
-  if (!ts) return false;
-  const day = String(ts).slice(0, 10);
+  const day = recordDay(r);
+  if (!day) return false;
   if (since && day < String(since).slice(0, 10)) return false;
   if (until && day > String(until).slice(0, 10)) return false;
   return true;
@@ -805,7 +814,7 @@ export function dateBucket(r, { since, until } = {}) {
   const src = ts ? (hasEvt ? 'event_time' : 'logged_at') : null;
   if (!since && !until) return { bucket: 'in', timeSource: src };
   if (!ts) return { bucket: 'undated', timeSource: null };
-  const day = String(ts).slice(0, 10);
+  const day = recordDay(r);
   if (since && day < String(since).slice(0, 10)) return { bucket: 'out', timeSource: src };
   if (until && day > String(until).slice(0, 10)) return { bucket: 'out', timeSource: src };
   return { bucket: 'in', timeSource: src };
@@ -927,15 +936,19 @@ const credAge = (a, b) => Math.floor((Date.parse(b) - Date.parse(a)) / 86400000)
 const betterTier = (a, b) => (!a ? b : (TIER_ORDER[a] <= TIER_ORDER[b] ? a : b));
 const dropTier = (t) => (t ? ORDER_TIER[Math.min(5, TIER_ORDER[t] + 1)] : null);
 
-function chainEndingAt(records, rec) {
-  const byId = new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
+// P1（2026-10-20）：`byId` 改为可选第三参。
+// 原实现每次调用都 `new Map(records…)` 重建全库索引；credibilityMap / credibilityTodos 在循环里
+// 对每条记录调一次 ⇒ canon 941 条约 88 万次 Map 插入，实测占 lookup 净耗时 28%（43.4ms）。
+// 现由调用方在循环外建一次传入；不传则退回旧行为（单点调用如 show 无需改）。
+function chainEndingAt(records, rec, byId) {
+  const idx = byId || new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
   const chain = [];
   let c = rec;
   const seen = new Set();
   while (c && isStr(c.id) && !seen.has(c.id)) {
     seen.add(c.id);
     chain.unshift(c);
-    c = isStr(c.supersedes) ? byId.get(c.supersedes) : null;
+    c = isStr(c.supersedes) ? idx.get(c.supersedes) : null;
   }
   return chain;
 }
@@ -948,7 +961,7 @@ function chainEndingAt(records, rec) {
  */
 export function credibilityOf(store, chain, opts = {}) {
   const rows = Array.isArray(chain) ? chain.filter((r) => r && typeof r === 'object') : [];
-  const today = credDay(opts.today) || new Date().toISOString().slice(0, 10);
+  const today = credDay(opts.today) || todayLocal();
   const steps = [];
   let tier = null;
   let refuted = false;
@@ -1974,9 +1987,11 @@ function recordsOf(name, opts = {}) {
 /** 当前集 id → credibilityOf（链走到该条）。opts.today / files 透传。 */
 export function credibilityMap(store, records, opts = {}) {
   const map = new Map();
+  // P1（2026-10-20）：索引建一次，循环内复用（原为每条记录重建全库 Map）
+  const byId = new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
   for (const r of currentRecords(records)) {
     if (!isStr(r.id)) continue;
-    map.set(r.id, credibilityOf(store, chainEndingAt(records, r), opts));
+    map.set(r.id, credibilityOf(store, chainEndingAt(records, r, byId), opts));
   }
   return map;
 }
@@ -1988,7 +2003,7 @@ export function credibilityMap(store, records, opts = {}) {
  * 日志缺失 = 引用数未知 → 不出 verify-candidate。
  */
 export function credibilityTodos(opts = {}) {
-  const today = credDay(opts.today) || new Date().toISOString().slice(0, 10);
+  const today = credDay(opts.today) || todayLocal();
   const min = Number.isInteger(opts.verifyUsageMin) ? opts.verifyUsageMin : CRED_DEFAULTS.verifyUsageMin;
   let usage = null;
   if (opts.usage instanceof Map) usage = opts.usage;
@@ -2012,9 +2027,10 @@ export function credibilityTodos(opts = {}) {
   const items = [];
   for (const name of STORES) {
     const records = recordsOf(name, opts);
+    const byId = new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
     for (const r of currentRecords(records)) {
       if (!isStr(r.id)) continue;
-      const chain = chainEndingAt(records, r);
+      const chain = chainEndingAt(records, r, byId);
       const cred = credibilityOf(name, chain, { ...opts, today });
       if (cred.refuted) {
         items.push({ kind: 'review', code: 'refuted', store: name, id: r.id, count: 1, note: `${r.id} 被 verification.refute 标记：检索默认隐藏（--include-refuted 或 show 可见），权重 0；不自动改库` });
@@ -2367,7 +2383,7 @@ export function summary(opts = {}) {
   const L = (n) => loadStore(n, (opts.files && opts.files[n]) || storePath(n));
   // 2026-10-15 全量检查（cli-mcp S5）：`per` 无上界 ⇒ `summary --per 1e9` 出 185KB（默认档 4.3KB）⇒ 钳到 20
   const per = Math.min(20, Number.isInteger(opts.per) && opts.per > 0 ? opts.per : 3);
-  const today = dayArg(opts.today, 'today') || new Date().toISOString().slice(0, 10);   // 2026-10-15：校验下沉到 lib（原先只有 MCP 面校，CLI 透传 ⇒ 'bogus' 词法大于一切 ISO 日期）
+  const today = dayArg(opts.today, 'today') || todayLocal();   // 2026-10-15：校验下沉到 lib（原先只有 MCP 面校，CLI 透传 ⇒ 'bogus' 词法大于一切 ISO 日期）
   const stores = {};
   for (const name of STORES) {
     const cur = currentRecords(L(name).records);
@@ -2490,7 +2506,7 @@ export function mirrorCompare(text, opts = {}) {
 /** (a') 记录可判定结果（修订链：追加不改原文）。verdict ∈ 成功|部分|失败。 */
 export function mirrorOutcome(id, { verdict, rework = null, note = null } = {}) {
   if (!verdict || !/^(成功|部分|失败)$/.test(String(verdict))) throw new Error('--verdict 必填且 ∈ {成功,部分,失败}');
-  const patch = { outcome_verdict: String(verdict), last_reviewed: new Date().toISOString().slice(0, 10) };
+  const patch = { outcome_verdict: String(verdict), last_reviewed: todayLocal() };
   if (rework !== null) patch.rework = Number(rework);
   if (note) patch.outcome_note = String(note);
   return revise('mirror', id, patch);
@@ -2808,7 +2824,7 @@ export function recordQuery(entry = {}, opts = {}) {
  *  矛盾检测的实际调用（query-log 侧线，cmd=conflict；计数自 2026-10-13 侧线启用起——如实标注窗口）。
  *  只读、只报数，不做任何裁决。数据面注入：`opts.files`（六库文件）/ `opts.reviewLog` / `opts.queryLog` / `opts.today`。 */
 export function revisabilityStats(opts = {}) {
-  const today = opts.today ? String(opts.today).slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const today = opts.today ? String(opts.today).slice(0, 10) : todayLocal();
   const dayNum = (d) => { const t = Date.parse(String(d ?? '').slice(0, 10) + 'T00:00:00Z'); return Number.isFinite(t) ? Math.floor(t / 86400000) : null; };
   const todayNum = dayNum(today);
   let retired = 0; const retiredByStore = {};
@@ -3291,7 +3307,7 @@ export function verifyDiscipline(text) {
 }
 
 /** 到期复审只看当前版本（旧版 next_review 不报）。 */
-export function frontierDue(today = new Date().toISOString().slice(0, 10)) {
+export function frontierDue(today = todayLocal()) {
   return currentRecords(loadStore('frontier').records).filter((r) => r.next_review && r.next_review <= today);
 }
 
@@ -3306,7 +3322,7 @@ export const REVIEW_DEFAULTS = Object.freeze({
 
 export function reviewDue(opts = {}) {
   const policy = { ...REVIEW_DEFAULTS, ...(opts.policy || {}) };
-  const today = String(opts.today || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const today = String(opts.today || todayLocal()).slice(0, 10);
   const dayOf = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
   const stores = Array.isArray(opts.stores) && opts.stores.length ? opts.stores : policy.stores;
   const items = []; const undated = [];
@@ -3343,7 +3359,10 @@ export function reviewDue(opts = {}) {
 
 /** 取日期前缀（YYYY-MM-DD）；非字符串/非日期 ⇒ null。 */
 function daySlice(v) {
-  return (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) ? v.slice(0, 10) : null;
+  if (typeof v !== 'string' || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(v)) return null;
+  if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(v)) return v;              // 纯日期：作者原样
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? v.slice(0, 10) : todayLocal(d);  // ISO 时刻：本地日切
 }
 
 /** 两版之间「改了什么」（字段级）。id / supersedes / logged_at 是修订机制本身的字段，不算内容变化。 */
@@ -3361,7 +3380,7 @@ function diffFields(a, b) {
  *  窗口按日、**含两端**（UTC）。分类：added（链根）/ revised（修订版，附与前一版的变化字段）/ retired（墓碑）。
  *  只读——不改数据。 */
 export function memoryDiff(opts = {}) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   const since = String(opts.since || opts.from || today).slice(0, 10);
   const until = String(opts.until || opts.to || since).slice(0, 10);
   if (!(Date.parse(since) <= Date.parse(until))) throw new Error('diff 窗口非法：since > until（' + since + ' > ' + until + '）');
@@ -3557,12 +3576,15 @@ export function agePrefix(rec, opts = {}) {
   const raw = rec && (rec.event_time || rec.logged_at || rec.time || null);
   if (!raw) return '[日期未知]';
   const s = String(raw);
-  const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T00:00:00Z' : s);
-  if (!Number.isFinite(t)) return '[日期未知]';
-  const now = opts.now != null ? Number(opts.now)
-    : (opts.today ? Date.parse(String(opts.today).slice(0, 10) + 'T00:00:00Z') : Date.now());
-  if (!Number.isFinite(now)) return '[日期未知]';
-  const days = Math.floor((now - t) / 86400000);
+  // 日期只按「日历日」比：纯日期用原文；ISO 时刻按本地日切。不能拿 UTC 午夜去减本地现在（本地 00:00–08:00 会误报未来）。
+  let day;
+  if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(s)) day = s.slice(0, 10);
+  else { const d = new Date(s); if (Number.isNaN(d.getTime())) return '[日期未知]'; day = todayLocal(d); }
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(day)) return '[日期未知]';
+  const anchor = opts.today ? String(opts.today).slice(0, 10)
+    : (opts.now != null ? todayLocal(new Date(Number(opts.now))) : todayLocal());
+  const days = Math.round((Date.parse(anchor + 'T00:00:00Z') - Date.parse(day + 'T00:00:00Z')) / 86400000);
+  if (!Number.isFinite(days)) return '[日期未知]';
   if (days < 0) return `[未来·${-days}天]`;
   return `[过去·${days}天]`;
 }
@@ -3741,7 +3763,7 @@ export function rollbackBatch(store, opts = {}) {
   if (!STORES.includes(store)) throw new Error('未知存储：' + store);
   if (isProtocolId(opts.id) || isProtocolId(opts.since)) throw new Error('协议条不可批量回滚（用法条改写须人工 --allow-protocol）');
   const file = opts.file || storePath(store);
-  const day = opts.since ? String(opts.since).slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const day = opts.since ? String(opts.since).slice(0, 10) : todayLocal();
   const need = opts.apply === true;
   return withFileLock(file, () => {
     const records = loadStore(store, file).records;
@@ -3787,7 +3809,7 @@ export function rollbackBatch(store, opts = {}) {
       if (!isStr(tip.id) || tip.id === rootId) continue;                                          // 只有追加、无修订 ⇒ 无可回滚
       // R12 幂等由 N06 的 coveredIds 统一接管（重跑：窗口内修订全被覆盖 ⇒ 无候选 ⇒ 零新增）。
       // 候选 = 窗口内「未回滚过的修订」（rollback 记录自身不是候选、已覆盖的不再算）。
-      const firstIdx = ch.findIndex((x, k) => k > 0 && x.rollback_of === undefined && String(x.logged_at ?? '').slice(0, 10) >= day && !rolledBy.has(x.id) && !coveredIds.has(x.id));
+      const firstIdx = ch.findIndex((x, k) => k > 0 && x.rollback_of === undefined && (recordDay(x) || '') >= day && !rolledBy.has(x.id) && !coveredIds.has(x.id));
       if (firstIdx < 1) continue;                                                                 // 窗口内无未覆盖修订 ⇒ 无可回滚
       const restore = ch[firstIdx - 1];
       if (isProtocolId(rootId) || isProtocolId(tip.id) || isProtocolId(restore.id)) {             // F01：协议链回滚须人工 --allow-protocol
@@ -3798,7 +3820,7 @@ export function rollbackBatch(store, opts = {}) {
         plan.push({ store, id: tip.id, restores: restore.id, refused: 'retired' });
         continue;
       }
-      const coveredHere = ch.slice(firstIdx).map((x) => x.id).filter((x) => String(byId.get(x)?.logged_at ?? '').slice(0, 10) >= day);
+      const coveredHere = ch.slice(firstIdx).map((x) => x.id).filter((x) => (recordDay(byId.get(x) || {}) || '') >= day);
       plan.push({ store, id: tip.id, restores: restore.id, covered: coveredHere, claim: restore.claim ?? restore.summary ?? restore.behavior ?? restore.title ?? '' });
     }
     if (!need) return plan;
@@ -4035,7 +4057,7 @@ export function boundedInt(v, { min = 1, max = 1000, dflt = undefined } = {}) {
 export function audit(opts = {}) {
   // 2026-10-15 全量检查（S-core-1）：本函数声称支持 `opts.files` 数据面注入，实际不带路径读真库 ⇒ 接上注入
   const L = (n) => loadStore(n, (opts.files && opts.files[n]) || storePath(n));
-  const today = dayArg(opts.today, 'today') || new Date().toISOString().slice(0, 10);   // 2026-10-15：校验下沉到 lib（原先只有 MCP 面校，CLI 透传 ⇒ 'bogus' 词法大于一切 ISO 日期）
+  const today = dayArg(opts.today, 'today') || todayLocal();   // 2026-10-15：校验下沉到 lib（原先只有 MCP 面校，CLI 透传 ⇒ 'bogus' 词法大于一切 ISO 日期）
   const days = (a, b) => Math.floor((Date.parse(b) - Date.parse(a)) / 86400000);
   const findings = [];
 
@@ -4203,7 +4225,7 @@ export function kit(opts = {}) {
 export function promoteInbox(opts = {}) {
   const inboxFile = opts.inboxFile || join(LOGS_DIR, 'inbox.jsonl');
   const storeFile = opts.storeFile;
-  const today = dayArg(opts.today, 'today') || new Date().toISOString().slice(0, 10);   // 2026-10-15：校验下沉到 lib（原先只有 MCP 面校，CLI 透传 ⇒ 'bogus' 词法大于一切 ISO 日期）
+  const today = dayArg(opts.today, 'today') || todayLocal();   // 2026-10-15：校验下沉到 lib（原先只有 MCP 面校，CLI 透传 ⇒ 'bogus' 词法大于一切 ISO 日期）
   const lines = (() => { try { return readFileSync(inboxFile, 'utf8').split(/\r?\n/).filter(Boolean); } catch { return []; } })();
   const existing = new Set(loadStore('orphan', storeFile).records.map(r => r.id));
   const promoted = []; const wouldPromote = []; const skipped = [];
@@ -4544,7 +4566,7 @@ function retireRecordUnlocked(store, id, opts, file) {
     // 用临时 opts.file 的自检会把夹具行写进示例库目录。
     const trashDir = join(dirname(file), '_trash');
     mkdirSync(trashDir, { recursive: true });
-    const trash = join(trashDir, new Date().toISOString().slice(0, 10) + '-' + store + '.jsonl');
+    const trash = join(trashDir, todayLocal() + '-' + store + '.jsonl');
     // 顺序：先落回收站（fsync）再原子替换——任一步崩溃都不丢数据（最坏是回收站多一份）。
     if (removed.length) {
       const fd = openSync(trash, 'a');

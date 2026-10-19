@@ -2,7 +2,7 @@
 // 例：node akasha.mjs check / node akasha.mjs lookup 狼来了 / node akasha.mjs price --severity 5 --irreversibility 4 --cost 3 --bad
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { checkAll, detectConflicts, multiRecall, rollbackBatch, memoryDiff, conflictReport, stripGenre, autonomyReadings, expandRecord, assertDataRoot, recordRejected, listRejected, blindspotsFor, progressiveRecall, calibrationOf, generationInfo, committedOf, blindspotMap, renderDiscipline, verifyDiscipline, STORES, stats, lookupDetailed, normalizeDateArg, dayArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS, reviewPack, appendReviewLog, readReviewLog, nowSnapshot, withFileLock } from './lib.mjs';
+import { checkAll, detectConflicts, multiRecall, rollbackBatch, memoryDiff, conflictReport, stripGenre, autonomyReadings, expandRecord, assertDataRoot, recordRejected, listRejected, blindspotsFor, progressiveRecall, calibrationOf, generationInfo, committedOf, blindspotMap, renderDiscipline, verifyDiscipline, STORES, stats, lookupDetailed, normalizeDateArg, dayArg, dateCoverageStats, price, appendRecord, loadStore, audit, mirrorCompare, mirrorOutcome, mirrorImportDraft, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, retireRecord, currentRecords, frontierDue, allocateContextBudget, contextBudgetEnabled, phaseResidueSample, placeWithRedundancy, CONTEXT_BUDGET_DEFAULTS, reviewPack, appendReviewLog, readReviewLog, nowSnapshot, withFileLock, todayLocal } from './lib.mjs';
 import { applyPlan, replayHistory, revokePlan, sleepPlan, sleepRun, productionForceRejected } from './sleep.mjs';
 import { indexSession, autoBuildTree, lookupSegments, lookupSegmentsDetailed, sessionClusters, sessionThemes, buildTopics, lookupTopics, appendSegments, renderSessionContext, resolveSessionFile, renderTree, buildTree, appendNodes, loopWatchStats, promoteSegment, SESSION_DEFAULTS } from './session.mjs';
 
@@ -498,7 +498,7 @@ switch (cmd) {
         would_confirm: flags.confirm || '（待补）',
         would_refute: flags.refute || '（待补）',
         severity: flags.severity || '中',
-        created: flags.created || new Date().toISOString().slice(0, 10),
+        created: flags.created || todayLocal(),
         ...(flags['event-time'] ? { event_time: dayArg(flags['event-time'], 'event-time') } : {})   // 2026-10-15（cli-mcp S1）：原先零校验，`15/10/2026` 甚至 `9999-13-45` 都落库且 check 全绿
       };
       const r = appendRecord('orphan', rec);
@@ -513,14 +513,14 @@ switch (cmd) {
     const sub = rest[0] || 'list';
     const list = currentRecords(loadStore('frontier').records);
     if (sub === 'due') {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayLocal();
       const due = frontierDue(today);
       print(due, due.length ? due.map(r => `[${r.status}] ${r.id} 复审≤${r.next_review} ${r.title}`).join('\n') : '（今日无到期）');
     } else if (sub === 'recheck') {
       const id = rest[1];
       const status = flags.status;
       if (!id || !status) { console.log('用法：node akasha.mjs frontier recheck <id> --status <已实践|已复现|高引用|待验证> [--next-review YYYY-MM-DD] [--note ...]'); code = 1; break; }
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayLocal();
       const plusDays = (d, n) => new Date(Date.parse(d) + n * 86400000).toISOString().slice(0, 10);
       const patch = {
         status,
@@ -564,8 +564,8 @@ switch (cmd) {
   }
   case 'diff': {
     // I-03（2026-10-13 批次 1）：两时点「库变了什么」——只读。
-    const rSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: new Date().toISOString().slice(0, 10) };
-    const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: new Date().toISOString().slice(0, 10) };
+    const rSel = flags.since ? normalizeDateArg(flags.since) : { ok: true, day: todayLocal() };
+    const rUnt = flags.until ? normalizeDateArg(flags.until) : { ok: true, day: todayLocal() };
     if (!rSel.ok || !rUnt.ok) { console.error(rSel.error || rUnt.error); code = 1; break; }
     let d;
     try { d = memoryDiff({ since: rSel.day, until: rUnt.day, stores: flags.store ? [String(flags.store)] : undefined }); }
@@ -786,7 +786,7 @@ switch (cmd) {
       if (!s.record) { print(null, `（未找到：${s.note || ''}）`); code = 1; break; }
       store = s.store;
       if (verdict === '维持') {
-        const rec = revise(s.store, s.id, { last_reviewed: new Date().toISOString().slice(0, 10) });
+        const rec = revise(s.store, s.id, { last_reviewed: todayLocal() });
         touched = rec.id;
       }
       const entry = { store, id: s.id, verdict, by, note: typeof flags.note === 'string' ? flags.note : null, touched };

@@ -7,7 +7,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { ROOT, LOGS_DIR, STORES, appendReviewLog, audit, credibilityMap, credibilityTodos, currentRecords, isProtocolId, isRecallRecord, isSelfLayerRecord, loadStore, parseJsonl, recallSignals, recordCitedIds, redact, redactDeep, retireRecord, revise, revokeRetire, storePath, tokenize, writeFileAtomic } from './lib.mjs';
+import { ROOT, LOGS_DIR, STORES, appendReviewLog, audit, credibilityMap, credibilityTodos, currentRecords, isProtocolId, isRecallRecord, isSelfLayerRecord, loadStore, parseJsonl, recallSignals, recordCitedIds, redact, redactDeep, retireRecord, revise, revokeRetire, storePath, tokenize, writeFileAtomic, todayLocal } from './lib.mjs';
 
 export const SLEEP_DEFAULTS = {
   log: join(LOGS_DIR, 'hooks.jsonl'),
@@ -475,7 +475,7 @@ function usageFromLog(buf) {
  */
 export function sleepPlan(opts = {}) {
   try {
-    const today = opts.today ? String(opts.today).slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const today = opts.today ? String(opts.today).slice(0, 10) : todayLocal();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(today) || Number.isNaN(Date.parse(today))) return { ok: false, error: 'today 须为 YYYY-MM-DD：' + opts.today };
     const num = (v, d) => (v === undefined || v === null || v === true || v === '' ? d : Number(v));
     const params = {

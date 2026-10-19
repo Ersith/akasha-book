@@ -1,7 +1,7 @@
 // 阿卡夏之书（Akasha）v0 —— 最小 MCP stdio server（JSON-RPC 2.0 逐行）。
 // 工具（23）：check / lookup / price / stats / orphan_add / frontier_due / audit / brief / kit / promote / revise / cross / summary / show / mirror_match / metrics / session_lookup / sleep_plan / review_pack / review_log / review_list / now
 import { createInterface } from 'node:readline';
-import { checkAll, lookupDetailed, multiRecall, normalizeDateArg, dayArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, frontierDue, stripGenre, reviewPack, appendReviewLog, readReviewLog, nowSnapshot } from './lib.mjs';
+import { checkAll, lookupDetailed, multiRecall, normalizeDateArg, dayArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, frontierDue, stripGenre, reviewPack, appendReviewLog, readReviewLog, nowSnapshot, todayLocal } from './lib.mjs';
 import { hindsightHttpHooks, openvikingHttpHooks } from './adapters.mjs';
 import { lookupSegmentsDetailed } from './session.mjs';
 import { sleepPlan } from './sleep.mjs';
@@ -204,7 +204,7 @@ async function handle(msg) {
           would_confirm: a.would_confirm || '（待补）',
           would_refute: a.would_refute || '（待补）',
           severity: a.severity || '中',
-          created: new Date().toISOString().slice(0, 10),
+          created: todayLocal(),
           ...(oe.day ? { event_time: oe.day } : {})
         });
       }

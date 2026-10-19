@@ -324,6 +324,17 @@ if (lib) {
     assert.equal(r.degraded, false);
     assert.ok(urls[1].includes('/auto-bank/knowledge-base/search'), urls[1]);
   });
+  t('日期口径：logged_at 按本地日切（本地 00:00–08:00 不得把今天记成未来）', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-tz-'));
+    const file = join(dir, 'canon.jsonl');
+    const today = lib.todayLocal();
+    // 本地今天 00:30 的 UTC 时刻（UTC 日期仍是昨天）
+    const logged = new Date(today + 'T00:30:00').toISOString();
+    writeFileSync(file, JSON.stringify({ id: 'canon-tz-1', claim: 'tz', source: { type: '复现', ref: 'r' }, last_reviewed: today, logged_at: logged }) + String.fromCharCode(10));
+    const d = lib.memoryDiff({ since: today, until: today, stores: ['canon'], files: { canon: file } });
+    assert.equal(d.stores.canon.added.length, 1, '本地今天的 logged_at 必须入窗：' + JSON.stringify(d.stores.canon));
+    rmSync(dir, { recursive: true, force: true });
+  });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));
     const tmp = join(dir, '.tmp-test.jsonl');
@@ -4481,7 +4492,7 @@ t('C 小面：summary / diff 读侧默认剥皮 + --reflect 给原文（夹具�
   const dir = mkdtempSync(join(SCRATCH, 'akasha-smallfaces-'));
   const dataDir = join(dir, 'data'); mkdirSync(dataDir, { recursive: true });
   const logsDir = join(dir, 'logs'); mkdirSync(logsDir, { recursive: true });
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   writeFileSync(join(dataDir, 'canon.jsonl'), JSON.stringify({ id: 'canon-sf-1', claim: '小面夹具 ⇒ 收口 ✓。好。', source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today }) + '\n');
   const env = { ...process.env, AKASHA_ROOT: dataDir, AKASHA_LOGS: logsDir, AKASHA_QUERY_LOG: 'off' };
   const run = (...args) => spawnSync(process.execPath, [join(ROOT, 'akasha.mjs'), ...args], { cwd: ROOT, encoding: 'utf8', env });
@@ -4504,7 +4515,7 @@ t('K1 严格版：逐字保真（show --reflect 逐字 / 默认剥皮）+ 编造
   const dir = mkdtempSync(join(SCRATCH, 'akasha-k1-'));
   const dataDir = join(dir, 'data'); mkdirSync(dataDir, { recursive: true });
   const logsDir = join(dir, 'logs'); mkdirSync(logsDir, { recursive: true });
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const claim = 'K1 保真夹具：唯一短语「青雀衔环速记」——逐字可核。收口 ⇒ 留痕 ✓。好。';
   writeFileSync(join(dataDir, 'canon.jsonl'), JSON.stringify({ id: 'canon-k1-fixture', claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today }) + '\n');
   const env = { ...process.env, AKASHA_ROOT: dataDir, AKASHA_LOGS: logsDir, AKASHA_QUERY_LOG: 'off' };
@@ -4541,7 +4552,7 @@ t('计分守卫：单字 token 不参整词（防「的」洪水；2026-10-14 K1
 
 t('K3：可复查/可修订实际使用计数（复审线/退役/近7天修订/矛盾检测调用；夹具注入；能红）', () => {
   const dir = mkdtempSync(join(SCRATCH, 'akasha-k3-'));
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const canonFile = join(dir, 'canon.jsonl');
   writeFileSync(canonFile, [
     { id: 'canon-k3-root', claim: 'A', source: { type: '复现', ref: 'r' }, logged_at: '2026-10-01T00:00:00Z' },
@@ -4589,7 +4600,7 @@ t('睡眠 apply · merge 验收（A 档）：keep 逐字不动 / 墓碑 / 幂等
   const dir = mkdtempSync(join(SCRATCH, 'akasha-apply-merge-'));
   const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
   for (const n of lib.STORES) writeFileSync(files[n], '');
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const mk = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
   writeFileSync(files.canon, [
     mk('canon-ap-keep', '青雀衔环速记：夹具同文甲。'),
@@ -4653,7 +4664,7 @@ t('睡眠 apply · discard 验收（独立）：退役生效 / 链历史仍在 /
   const dir = mkdtempSync(join(SCRATCH, 'akasha-apply-disc-'));
   const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
   for (const n of lib.STORES) writeFileSync(files[n], '');
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const mk = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
   writeFileSync(files.canon, [mk('canon-dc-old-20261001', '旧快照。'), mk('canon-dc-new-20261005', '新快照。')].join('\n') + '\n');
   const planned = sleepMod.sleepPlan({ files, out: false, today });
@@ -4689,7 +4700,7 @@ t('睡眠 R4：keep 按代际（三代际判例 + 端到端；不得自吸收）
   const dir = mkdtempSync(join(SCRATCH, 'akasha-r4-'));
   const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
   for (const n of lib.STORES) writeFileSync(files[n], '');
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const mk = (id, claim, at) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today, logged_at: at });
   writeFileSync(files.canon, [
     mk('canon-r4-src-v0-3-20261007', '同源两代材料：青雀衔环速记骨架。', '2026-10-06T00:00:00Z'),
@@ -4719,7 +4730,7 @@ t('睡眠 apply 复检三修：回执合并（force 重跑后仍可 revoke）/ �
   const dir = mkdtempSync(join(SCRATCH, 'akasha-apply-recheck-'));
   const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
   for (const n of lib.STORES) writeFileSync(files[n], '');
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const mk = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
   writeFileSync(files.canon, [mk('canon-rc-keep', '回执合并夹具。'), mk('canon-rc-absorb', '回执合并夹具二。')].join('\n') + '\n');
   const planned = sleepMod.sleepPlan({ files, out: false, today });
@@ -4784,7 +4795,7 @@ t('查询日志读侧不受写侧开关影响（AKASHA_QUERY_LOG=off 时 metrics
 t('diff（memoryDiff）：撤销记录单列「revoked」，不得计入 added（2026-10-14 整体复检修）', () => {
   const dir = mkdtempSync(join(SCRATCH, 'akasha-diff-rev-'));
   const file = join(dir, 'canon.jsonl');
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   writeFileSync(file, JSON.stringify({ id: 'canon-dv-1', claim: 'x', source: { type: '复现', ref: 'r' }, last_reviewed: today }) + '\n');
   lib.retireRecord('canon', 'canon-dv-1', { file, reason: 't' });
   lib.revokeRetire('canon', 'canon-dv-1', { file });
@@ -4824,7 +4835,7 @@ t('内置时钟：nowSnapshot 字段/对照锚/at 换算（注入时刻）+ 脉�
 t('GPT 审查修复批 A（F01 状态字段守卫/F03 回滚链聚合/F14 退役不复活/F15 硬删闭包/F02 引号与按键脱敏）', () => {
   const dir = mkdtempSync(join(SCRATCH, 'akasha-gptfix-'));
   const file = join(dir, 'canon.jsonl');
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const rec = (id, extra = {}) => ({ id, claim: 'x ' + id, source: { type: '复现', ref: 'r' }, last_reviewed: today, ...extra });
   const writeAll = (arr) => writeFileSync(file, arr.map((x) => JSON.stringify(x)).join('\n') + '\n');
   // F01：普通 patch 夹带状态字段 ⇒ 拒
@@ -4869,7 +4880,7 @@ t('GPT 审查修复批 B（F04 合并资格共用检查/F05 回执并集/F11 水
   const dir = mkdtempSync(join(SCRATCH, 'akasha-gptfixb-'));
   const files = Object.fromEntries(lib.STORES.map((n) => [n, join(dir, n + '.jsonl')]));
   for (const n of lib.STORES) writeFileSync(files[n], '');
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const mk = (id, claim, extra = {}) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today, ...extra });
   // F04 单元：跨来源拒、同源过、正负定价拒
   assert.equal(sleepMod.mergeEligiblePair('canon', { source: { type: '复现' } }, { source: { type: '官方' } }).ok, false, 'F04：跨来源必须拒');
@@ -4932,7 +4943,7 @@ t('F08 修复批（预算账实 ≤cap / 整条上账 / 分页原始序号口径
   const dir = mkdtempSync(join(SCRATCH, 'akasha-f08-'));
   const dataDir = join(dir, 'data'); mkdirSync(dataDir, { recursive: true });
   const logsDir = join(dir, 'logs'); mkdirSync(logsDir, { recursive: true });
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const mk = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
   const lines = [];
   for (let i = 1; i <= 6; i += 1) lines.push(mk('canon-f08-s' + i, '青雀速记：短夹具第 ' + i + ' 号。'));
@@ -5350,7 +5361,7 @@ t('GPT 复核二轮批（R7 分页不漏 / R8 账实对齐 / R6 退役链拒回�
   // R6：revise→retire→rollback ⇒ refused:'retired'；不得把退役链带回当前集
   const dir = mkdtempSync(join(SCRATCH, 'akasha-r6t-'));
   const f = join(dir, 'canon.jsonl');
-  const today = new Date().toISOString().slice(0, 10);
+  const today = lib.todayLocal();
   const row = (id, claim) => JSON.stringify({ id, claim, source: { type: '复现', ref: 'r' }, last_reviewed: today, event_time: today });
   writeFileSync(f, row('canon-r6t-a', 'R6t 甲') + '\n' + row('canon-r6t-b', 'R6t 乙') + '\n');
   lib.revise('canon', 'canon-r6t-b', { claim: 'R6t 乙 v2' }, { file: f });
@@ -6051,6 +6062,49 @@ t('日志面脱敏：negative / review-log 不得原样落凭据（#13）', () =
   assert.ok(!rlText.includes('G'.repeat(24)), 'review-log 不得原样落 sk-proj：' + rlText.slice(0, 200));
   rmSync(dir, { recursive: true, force: true });
 });
+
+// ── P1（2026-10-20）：链索引复用 vs 每条重建索引，必须逐条同结果 ────────────────
+// 背景：credibilityMap 原实现在循环里对每条记录调 chainEndingAt，而后者每次调用都
+// `new Map(records…)` 重建全库索引 ⇒ canon 941 条约 88 万次 Map 插入（实测 43.4ms）。
+// 改为循环外建一次索引传入。本用例钉住「等价性」：结果必须与旧写法逐字段相同。
+t('P1 链索引：credibilityMap 与「每条重建索引」逐条同结果（含四层修订链）', () => {
+  // 参考实现＝P1 之前的写法：每次调用都重建 byId
+  const refChain = (records, rec) => {
+    const byId = new Map(records.filter((r) => typeof r.id === 'string').map((r) => [r.id, r]));
+    const chain = [];
+    let c = rec;
+    const seen = new Set();
+    while (c && typeof c.id === 'string' && !seen.has(c.id)) {
+      seen.add(c.id);
+      chain.unshift(c);
+      c = typeof c.supersedes === 'string' ? byId.get(c.supersedes) : null;
+    }
+    return chain;
+  };
+  const recs = [
+    { id: 'p1-a1', claim: 'v1', source: { type: '官方', ref: 'r' }, last_reviewed: '2026-10-01' },
+    { id: 'p1-a2', claim: 'v2', source: { type: '官方', ref: 'r' }, supersedes: 'p1-a1', last_reviewed: '2026-10-02' },
+    { id: 'p1-a3', claim: 'v3', source: { type: '他人', ref: 'r' }, supersedes: 'p1-a2', last_reviewed: '2026-10-03' },
+    { id: 'p1-a4', claim: 'v4', source: { type: '复现', ref: 'r' }, supersedes: 'p1-a3', last_reviewed: '2026-10-04', verification: { kind: 'replay' } },
+    { id: 'p1-b1', claim: 'solo', source: { type: '他人', ref: 'y' } },
+    { id: 'p1-c1', claim: 'consensus', source: { type: '共识', ref: 'z' } },
+    { id: 'p1-d1', claim: 'dangling', source: { type: '官方', ref: 'q' }, supersedes: 'p1-not-exist' },
+  ];
+  const opts = { today: '2026-10-20' };
+  const got = lib.credibilityMap('canon', recs, opts);
+  const ref = new Map();
+  for (const r of lib.currentRecords(recs)) {
+    if (typeof r.id !== 'string') continue;
+    ref.set(r.id, lib.credibilityOf('canon', refChain(recs, r), opts));
+  }
+  assert.equal(got.size, ref.size, `当前集条目数应一致（新 ${got.size} / 参考 ${ref.size}）`);
+  assert.ok(got.has('p1-a4'), '四层链的链尾 p1-a4 必须在当前集');
+  assert.ok(!got.has('p1-a1'), '被 supersede 的 p1-a1 不得在当前集');
+  for (const [id, cred] of ref) {
+    assert.deepEqual(got.get(id), cred, `${id} 的可信度必须与逐条重建索引的结果逐字段相同`);
+  }
+});
+
 // 全局死线（复核 VERIFY-B2 §⑥）：**一个永不落定的 async 用例会把整轮挂住**（进程不退出、CI 卡死）。
 //   ⇒ 有界等待；超时记一条 FAIL 后继续收尾——不假装绿，也不无限等。
 const DEADLINE_MS = 120000;

@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
 import { skipTagsFor, resolvePorts } from './companion.mjs';
-import { ROOT, DATA, STORES, loadStore, storePath, tokenize, scoreTokens, matchParts, redact, redactDeep, writeFileAtomic, appendRecord, retiredIds, withFileLock, quarantineTail, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary, recordQuery, readDepthOf, projectText, agePrefix, READ_TIER, genreRenderOf } from './lib.mjs';
+import { ROOT, DATA, STORES, loadStore, storePath, tokenize, scoreTokens, matchParts, redact, redactDeep, writeFileAtomic, appendRecord, retiredIds, withFileLock, quarantineTail, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary, recordQuery, readDepthOf, projectText, agePrefix, READ_TIER, genreRenderOf, todayLocal } from './lib.mjs';
 
 export const SESSION_DEFAULTS = {
   // 2026-10-15（GPT 复核 session N1）：默认值必须与核心**同口径**——`AKASHA_ROOT` 指向放 jsonl 的目录本身；
@@ -880,7 +880,7 @@ export function sessionThemes({ storeFile = SESSION_DEFAULTS.storeFile, session,
     .sort((a, b) => b[1] - a[1]).slice(0, seedTopN).map(([term, count]) => ({ term, count }));
   const counts = {};
   for (const x of themes) counts[x.store] = (counts[x.store] || 0) + 1;
-  return { themes: themes.slice(0, limit), suggested, window: { lo: new Date(lo).toISOString().slice(0, 10), hi: new Date(hi).toISOString().slice(0, 10) }, counts, total: themes.length };
+  return { themes: themes.slice(0, limit), suggested, window: { lo: todayLocal(new Date(lo)), hi: todayLocal(new Date(hi)) }, counts, total: themes.length };
 }
 
 /** (b'') 话题簇：**跨会话持久 + 增量修缮**（2026-10-11 用户口径）。
