@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { runCheckerSelftest } from './tools-checker-selftest.mjs';
 
 // ── 可选依赖：akasha-gate 插件（D2，2026-10-19 发布面 P1）─────────────────────────────────
@@ -220,6 +220,46 @@ if (lib) {
       would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-06'
     }, { file: tmp });
     assert.ok(readFileSync(tmp, 'utf8').includes('orphan-test'));
+    rmSync(dir, { recursive: true, force: true });
+  });
+  t('P0 损坏隔离：截断半行被搬进 .corrupt-*，后续追加不粘行', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-corrupt-'));
+    const tmp = join(dir, '.tmp-corrupt.jsonl');
+    lib.appendRecord('orphan', { id: 'orphan-pre', summary: 'x', observed: 'x', hypothesis: 'x', would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-19' }, { file: tmp });
+    appendFileSync(tmp, '{"id":"orphan-hal');
+    const q = lib.quarantineTail(tmp);
+    assert.ok(q && q.quarantined, '半行应被隔离');
+    assert.ok(readFileSync(q.quarantined, 'utf8').includes('orphan-hal'), '隔离文件应保留原字节');
+    lib.appendRecord('orphan', { id: 'orphan-post', summary: 'x', observed: 'x', hypothesis: 'x', would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-19' }, { file: tmp });
+    const raw = readFileSync(tmp, 'utf8');
+    const rows = raw.trim().split(new RegExp('\r?\n')).map(l => JSON.parse(l));
+    assert.deepEqual(rows.map(r => r.id), ['orphan-pre', 'orphan-post'], '后续追加不得粘在坏行后');
+    assert.ok(!raw.includes('orphan-hal'), '坏行不得留在主文件');
+    rmSync(dir, { recursive: true, force: true });
+  });
+  t('P0 损坏隔离：合法 JSON 末尾缺换行 ⇒ 补换行、不隔离', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-newline-'));
+    const tmp = join(dir, '.tmp-nl.jsonl');
+    lib.appendRecord('orphan', { id: 'orphan-a', summary: 'x', observed: 'x', hypothesis: 'x', would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-19' }, { file: tmp });
+    const body = readFileSync(tmp, 'utf8');
+    writeFileSync(tmp, body.endsWith(String.fromCharCode(10)) ? body.slice(0, -1) : body, 'utf8');
+    const r = lib.quarantineTail(tmp);
+    assert.ok(r && r.repaired, '合法尾行应只补换行');
+    lib.appendRecord('orphan', { id: 'orphan-b', summary: 'x', observed: 'x', hypothesis: 'x', would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-19' }, { file: tmp });
+    const rows = readFileSync(tmp, 'utf8').trim().split(new RegExp('\r?\n')).map(l => JSON.parse(l));
+    assert.deepEqual(rows.map(x => x.id), ['orphan-a', 'orphan-b']);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  t('P0 锁：活持有者不抢（超时报错）；死持有者接管', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-lock-'));
+    const tmp = join(dir, '.tmp-lock.jsonl');
+    writeFileSync(tmp + '.lock', JSON.stringify({ pid: process.pid, host: hostname(), token: 'other', at: Date.now() }), 'utf8');
+    assert.throws(() => lib.withFileLock(tmp, () => {}, { timeoutMs: 150 }), /锁超时/, '活持有者不能被抢');
+    writeFileSync(tmp + '.lock', JSON.stringify({ pid: 999999, host: hostname(), token: 'dead', at: Date.now() }), 'utf8');
+    let ran = false;
+    lib.withFileLock(tmp, () => { ran = true; }, { timeoutMs: 2000 });
+    assert.equal(ran, true, '死持有者的锁应被接管');
+    assert.equal(existsSync(tmp + '.lock'), false, '正常释放后不留锁');
     rmSync(dir, { recursive: true, force: true });
   });
   t('双时态：logged_at 缺则自动盖 / 自带保留；event_time 保留', () => {

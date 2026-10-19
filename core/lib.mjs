@@ -1,9 +1,10 @@
 // 阿卡夏之书（Akasha）v0 核心库。零依赖（仅 Node stdlib）。
 // 数据：data/*.jsonl（append-only）。规范见 SCHEMA.md / PROTOCOL.md。
-import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync, statSync, openSync, closeSync, writeSync, readSync, fsyncSync, renameSync, unlinkSync, constants } from 'node:fs';
+import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync, statSync, openSync, closeSync, writeSync, readSync, fsyncSync, renameSync, unlinkSync, ftruncateSync, constants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { createRedactor } from './json-redaction.mjs';
 
 export const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -127,23 +128,105 @@ export function writeFileAtomic(file, text) {
   renameSync(tmp, file);
 }
 
-/** 排他锁。陈锁（>30s）清掉；等待上限 5s。同进程不可重入同一文件。 */
-export function withFileLock(file, fn) {
+/** 锁持有者信息（写进 .lock；用于「按持有者判活」而不是「按 mtime 判死」）。 */
+function readLockInfo(lock) {
+  try { return JSON.parse(readFileSync(lock, 'utf8')); } catch { return null; }
+}
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e && e.code === 'EPERM'; }
+}
+function lockAgeMs(lock) {
+  try { return Date.now() - statSync(lock).mtimeMs; } catch { return 0; }
+}
+
+/** 尾部完整性修复（2026-10-19 P0）：JSONL 最后一行若被截断，下一次追加会粘成坏行。
+ *  - 尾部是合法 JSON（只是缺换行）⇒ 补 '\n'，不搬移任何记录；
+ *  - 尾部不是合法 JSON ⇒ 原字节搬进 `<file>.corrupt-<ts>`，文件截断到最后一个换行后。
+ *  返回 { repaired } / { quarantined, bytes } / null（无需处理）。
+ */
+export function quarantineTail(file) {
+  if (!existsSync(file)) return null;
+  let size = 0;
+  try { size = statSync(file).size; } catch { return null; }
+  if (!size) return null;
+  const fd = openSync(file, 'r+');
+  try {
+    const last = Buffer.alloc(1);
+    readSync(fd, last, 0, 1, size - 1);
+    if (last[0] === 10) return null;
+    const CHUNK = 64 * 1024;
+    let pos = size;
+    let lastNL = -1;
+    while (pos > 0 && lastNL < 0) {
+      const take = Math.min(CHUNK, pos);
+      const buf = Buffer.alloc(take);
+      readSync(fd, buf, 0, take, pos - take);
+      const i = buf.lastIndexOf(10);
+      if (i >= 0) lastNL = pos - take + i;
+      pos -= take;
+    }
+    const tailStart = lastNL + 1;
+    const tailLen = size - tailStart;
+    const tail = Buffer.alloc(tailLen);
+    readSync(fd, tail, 0, tailLen, tailStart);
+    const text = tail.toString('utf8');
+    let parsed = null;
+    try { parsed = JSON.parse(text.trim()); } catch { /* 真坏行 */ }
+    if (parsed && typeof parsed === 'object') {
+      appendFileSync(file, '\n');
+      return { repaired: true, bytes: tailLen };
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const q = `${file}.corrupt-${stamp}`;
+    appendFileSync(q, JSON.stringify({ quarantined_at: new Date().toISOString(), source: file, bytes: tailLen, tail: text }) + '\n', 'utf8');
+    ftruncateSync(fd, tailStart);
+    return { quarantined: q, bytes: tailLen };
+  } finally { closeSync(fd); }
+}
+
+/** 排他锁（2026-10-19 P0）：持有者身份 + 存活判定；不再「30s 按 mtime 抢锁」。
+ *  - 同机：持有者 pid 已死 ⇒ 立即接管；活着的持有者 ⇒ 等到 timeout 报明确错误（不抢）。
+ *  - 异机/旧格式：无法判活 ⇒ 超过 60s / 30s 视为陈锁（网络盘回退）。
+ *  - 释放：只删内容仍是自己的 token 的锁文件（避免删掉被接管后的新锁）。
+ */
+export function withFileLock(file, fn, opts = {}) {
   mkdirSync(dirname(file), { recursive: true });
   const lock = file + '.lock';
+  const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 5000;
+  const token = randomUUID();
+  const host = hostname();
   const start = Date.now();
-  let fd;
   for (;;) {
-    try { fd = openSync(lock, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY); break; }
-    catch (e) {
+    let fd;
+    try {
+      fd = openSync(lock, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+      writeSync(fd, JSON.stringify({ pid: process.pid, host, token, at: Date.now() }));
+      fsyncSync(fd);
+      break;
+    } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      try { if (Date.now() - statSync(lock).mtimeMs > 30000) { unlinkSync(lock); continue; } } catch { /* 锁刚被取走 */ }
-      if (Date.now() - start > 5000) throw new Error('锁超时：' + lock);
+      const info = readLockInfo(lock);
+      const age = lockAgeMs(lock);
+      const stale = info
+        ? (info.host === host ? !pidAlive(info.pid) : age > 60000)
+        : age > 30000;
+      if (stale) {
+        const claim = lock + '.stale-' + process.pid;
+        try { renameSync(lock, claim); unlinkSync(claim); continue; } catch { /* 别人先接管 */ }
+      }
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`锁超时：${lock}（持有者 pid=${info && info.pid ? info.pid : '未知'} host=${info && info.host ? info.host : '?'}，已等 ${Date.now() - start}ms；不抢活锁）`);
+      }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    } finally {
+      if (fd !== undefined) { try { closeSync(fd); } catch { /* 已关 */ } }
     }
   }
   try { return fn(); }
-  finally { try { closeSync(fd); } catch { /* 已关 */ } try { unlinkSync(lock); } catch { /* 已删 */ } }
+  finally {
+    try { const info = readLockInfo(lock); if (info && info.token === token) unlinkSync(lock); } catch { /* 已被接管/已删 */ }
+  }
 }
 
 export function parseJsonl(text) {
@@ -4516,6 +4599,7 @@ function appendRecordUnlocked(store, obj, file, opts = {}) {
   const errs = validateRecord(store, record);
   if (errs.length) throw new Error('校验失败：' + errs.join('；'));
   mkdirSync(dirname(file), { recursive: true });
+  quarantineTail(file);
   const fd = openSync(file, 'a');
   try { writeSync(fd, JSON.stringify(record) + '\n'); fsyncSync(fd); }
   finally { closeSync(fd); }
