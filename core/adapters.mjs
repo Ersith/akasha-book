@@ -94,8 +94,8 @@ export function hindsightHttpHooks({ baseUrl, bankId, token, fetchImpl = globalT
         const r = await fetchImpl(bankUrl('/knowledge-base/search' + q), { headers });
         if (!r.ok) return { hits: [], via: 'hindsight-http', degraded: true, reason: 'HTTP ' + r.status };
         const j = await r.json();
-        const rows = Array.isArray(j?.results) ? j.results : [];
-        return { hits: rows.map((x) => ({ id: x.id ?? null, title: x.name ?? '', text: x.snippet ?? '', raw: x })), via: 'hindsight-http', degraded: false };
+        if (!Array.isArray(j?.results)) return { hits: [], via: 'hindsight-http', degraded: true, reason: '响应无 results 数组', raw: j };
+        return { hits: j.results.map((x) => ({ id: x.id ?? null, title: x.name ?? '', text: x.snippet ?? '', raw: x })), via: 'hindsight-http', degraded: false };
       } catch (e) { return { hits: [], via: 'hindsight-http', degraded: true, reason: '请求失败：' + e.message }; }
     },
     read: async (id) => {

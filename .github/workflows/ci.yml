@@ -28,6 +28,14 @@ jobs:
       - name: Core check
         run: node core/akasha.mjs check
 
+      - name: Companion CLI smoke (no args expects exit 2)
+        run: |
+          set +e
+          node core/tools-companion-recall.mjs > /dev/null 2>&1
+          code=$?
+          set -e
+          test "$code" = "2"
+
       - name: Plugin selftests
         run: |
           set -e

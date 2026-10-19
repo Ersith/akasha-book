@@ -275,6 +275,8 @@ if (lib) {
     assert.ok(urls[0].includes('/v1/default/banks/coding-agent%3A%3AHarness/knowledge-base/search'));
     const bad = adapters.hindsightHttpHooks({ baseUrl: 'http://unit.test', bankId: 'b', fetchImpl: async () => ({ ok: false, status: 503 }) });
     const e = await bad.search('x'); assert.equal(e.degraded, true); assert.deepEqual(e.hits, []);
+    const unknown = adapters.hindsightHttpHooks({ baseUrl: 'http://unit.test', bankId: 'b', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ foo: 1 }) }) });
+    const u = await unknown.search('x'); assert.equal(u.degraded, true); assert.deepEqual(u.hits, []); assert.deepEqual(u.raw, { foo: 1 });
   });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));

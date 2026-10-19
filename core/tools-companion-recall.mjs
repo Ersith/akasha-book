@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // companion-recall.mjs —— Hindsight REST 只读检索 CLI（CompanionPort adapter 的直接可用入口）。
 // 用法：
-//   node tools/companion-recall.mjs "查询词" [--limit 5] [--bank <bankId>] [--base <url>] [--token <t>] [--json]
+//   node tools/companion-recall.mjs（OSS 仓：node core/tools-companion-recall.mjs） "查询词" [--limit 5] [--bank <bankId>] [--base <url>] [--token <t>] [--json]
 // 环境变量默认值：
 //   HINDSIGHT_API_URL  例 http://127.0.0.1:<PORT>
 //   HINDSIGHT_API_PORT 未设 URL 时用 http://127.0.0.1:<port>（默认 9077）
@@ -9,7 +9,7 @@
 //   HINDSIGHT_API_TOKEN 可选
 // 退出码：0=有命中；1=无命中/降级；2=参数错误。
 
-import { hindsightHttpHooks } from '../adapters.mjs';
+import { hindsightHttpHooks } from './adapters.mjs';
 
 function parse(argv) {
   const out = { query: '', limit: 5, json: false, base: '', bank: '', token: '' };
