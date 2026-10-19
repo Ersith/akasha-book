@@ -308,12 +308,13 @@ export function parseJsonl(text) {
 }
 
 // ── 库签名缓存（P3，2026-10-20）────────────────────────────────────────────
-// 缓存「文件内容解析结果」，键 = 文件 mtimeMs + size（即**库签名**）。
+// 缓存「文件内容解析结果」，键 = 文件 mtimeMs + size（即**库签名**；真正判别是 size，mtime 本机仅 1–4ms 粒度）。
 // 口径（重要，决定它能不能长久存在）：
 //   · **纯派生、可丢弃**：只活在进程内，不落盘。删掉缓存 / 重启 ⇒ 行为完全不变，只变慢。
 //     所以它是**可选优化**，不引入任何新状态，不破坏 append-only 与可审计定位。
 //   · 收益主要在**长驻进程**（MCP 面每次调用都复用）；CLI 每进程新起，首次仍是冷读。
-//   · 签名变化自动失效；写路径**主动** invalidate（同毫秒内写入可能 mtime 不变，只靠签名会读到旧值）。
+//   · 签名变化自动失效。常规 append 必然改 size；但 quarantine 截断可抵消长度 ⇒ append 后主动失效。原「无需主动失效」注释已按 2026-10-20 复核修正。
+//     去掉签名比较 ⇒ 34 条用例转红）。只有「原地重写且长度不变」的写入才会漏 —— 当前无此路径。
 //   · `AKASHA_NOCACHE=1` 关闭 —— 诊断与前后对照用。
 //   · 返回对象与 records 数组被多处共享；已核：全库无任何 `.records.push/sort/splice` 原地修改，
 //     故不拷贝（拷贝会把 23.6ms 的收益又吃掉一半）。
@@ -801,13 +802,18 @@ export function valenceTip(r) {
 }
 
 // 时间过滤（2026-10-07）：时间戳 = event_time（事件时间，优先）|| logged_at（记录时间，ISO UTC）。
-// 带过滤参数时，无时间戳的条目被排除；比较按日期级字符串（UTC 口径）。
+// 带过滤参数时，无时间戳的条目被排除；比较按「记录本地日」（event_time 纯日期原样）。
 function tsOf(r) { return r.event_time || r.logged_at || null; }
 function recordDay(r) {
   const ts = tsOf(r);
   if (!ts) return null;
   // event_time 是作者写的日期（YYYY-MM-DD）⇒ 原样；logged_at 是 ISO 时刻 ⇒ 按本地日切（与 todayLocal 同口径）。
-  if (r.event_time) return String(ts).slice(0, 10);
+  if (r.event_time) {
+    const ev = String(ts);
+    if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(ev)) return ev;
+    const ed = new Date(ev);
+    return Number.isNaN(ed.getTime()) ? ev.slice(0, 10) : todayLocal(ed);
+  }
   const d = new Date(ts);
   return Number.isNaN(d.getTime()) ? String(ts).slice(0, 10) : todayLocal(d);
 }
@@ -985,7 +991,7 @@ function chainEndingAt(records, rec, byId) {
 
 /**
  * 一条链（根在前）的可信度。纯函数。
- * opts.today（YYYY-MM-DD，缺省 UTC 今天）、snapshotDays、evergreenDays。
+ * opts.today（YYYY-MM-DD，缺省本地今天）、snapshotDays、evergreenDays。
  * 返回 { tier（存储层，排序用）, displayTier（展示层，过期降一档）, weight, refuted, stale, cls, anchor, steps }。
  * 升格没有加成：promoted_from 不参与，层级就是 source.type + verification。
  */
@@ -2474,7 +2480,8 @@ export function show(id, opts = {}) {
     const old = records.find(r => r.id === target);
     if (old) {
       let tip = old;
-      for (;;) { const next = records.find(r => r.supersedes === tip.id); if (!next) break; tip = next; }
+      const seen = new Set([tip.id]);
+      for (;;) { const next = records.find(r => r.supersedes === tip.id); if (!next || seen.has(next.id)) break; seen.add(next.id); tip = next; }
       // 退役态优先判定（2026-10-08）：链尾被墓碑 retires 时，不能再提示「当前版本：<链尾>」——链尾本身也已退役。
       const tomb = records.find(r => r.retires === tip.id);
       if (tomb) {
@@ -3098,7 +3105,8 @@ export function expandRecord(store, id, opts = {}) {
     if (!any) return { found: false, id: String(id), store, origin: null, chain: [], note: '未找到该 id（链上任意版本都没有）' };
     tip = any;
   }
-  for (;;) { const next = records.find((r) => isStr(r.supersedes) && r.supersedes === tip.id); if (!next) break; tip = next; }
+  const seenTip = new Set([tip.id]);
+  for (;;) { const next = records.find((r) => isStr(r.supersedes) && r.supersedes === tip.id); if (!next || seenTip.has(next.id)) break; seenTip.add(next.id); tip = next; }
   const sessionFile = opts.sessionFile !== undefined ? opts.sessionFile : join(DATA, 'session.jsonl');
   const segs = new Set();
   try { for (const r of loadStore('session', sessionFile).records) if (isStr(r.id)) segs.add(r.id); } catch { /* 文件缺失 ⇒ 全部标 dangling */ }
@@ -3407,7 +3415,7 @@ function diffFields(a, b) {
 
 /** I-03 记忆 diff（2026-10-13，批次 1；B 线 P1-①）：对比任意两时点，输出「库变了什么」。
  *  轴＝logged_at（何时被写 / 被改）；缺戳回退 event_time（记 anchor）；两无 ⇒ 不入窗、计入 undated（如实三分，不静默）。
- *  窗口按日、**含两端**（UTC）。分类：added（链根）/ revised（修订版，附与前一版的变化字段）/ retired（墓碑）。
+ *  窗口按日、**含两端**（本地日）。分类：added（链根）/ revised（修订版，附与前一版的变化字段）/ retired（墓碑）。
  *  只读——不改数据。 */
 export function memoryDiff(opts = {}) {
   const today = todayLocal();
@@ -3793,7 +3801,7 @@ export function rollbackBatch(store, opts = {}) {
   if (!STORES.includes(store)) throw new Error('未知存储：' + store);
   if (isProtocolId(opts.id) || isProtocolId(opts.since)) throw new Error('协议条不可批量回滚（用法条改写须人工 --allow-protocol）');
   const file = opts.file || storePath(store);
-  const day = opts.since ? String(opts.since).slice(0, 10) : todayLocal();
+  const day = opts.since ? dayArg(opts.since, 'since') : todayLocal();
   const need = opts.apply === true;
   return withFileLock(file, () => {
     const records = loadStore(store, file).records;
@@ -3834,7 +3842,8 @@ export function rollbackBatch(store, opts = {}) {
     for (const [rootId, root] of roots) {
       const ch = [root];
       let c = root;
-      for (;;) { const n = records.find((x) => x.supersedes === c.id); if (!n) break; c = n; ch.push(n); }
+      const seenChain = new Set([root.id]);
+      for (;;) { const n = records.find((x) => x.supersedes === c.id); if (!n || seenChain.has(n.id)) break; seenChain.add(n.id); c = n; ch.push(n); }
       const tip = ch[ch.length - 1];
       if (!isStr(tip.id) || tip.id === rootId) continue;                                          // 只有追加、无修订 ⇒ 无可回滚
       // R12 幂等由 N06 的 coveredIds 统一接管（重跑：窗口内修订全被覆盖 ⇒ 无候选 ⇒ 零新增）。
@@ -4025,9 +4034,11 @@ export function reviewPack(id, opts = {}) {
   let tip = s.record;
   try {
     const recs = loadStore(s.store).records;
+    const seenRecs = new Set([tip.id]);
     for (;;) {
       const next = recs.find((r) => r && r.supersedes === tip.id);
-      if (!next) break;
+      if (!next || seenRecs.has(next.id)) break;
+      seenRecs.add(next.id);
       tip = next;
     }
   } catch { /* 读不出就退回所查版本 */ }
@@ -4384,9 +4395,11 @@ function reviseUnlocked(store, id, patch, opts) {
   const illegal = STATE_FIELDS.filter((k) => patch && patch[k] !== undefined);
   if (illegal.length) throw new Error('状态迁移字段不可经普通修订写入（' + illegal.join(' / ') + '）：退役用 retire、撤销用 revoke、回滚用 rollback、修订用 revise');
   let tip = found;
+  const seenRevise = new Set([tip.id]);
   for (;;) {
     const next = records.find((r) => r.supersedes === tip.id);
-    if (!next) break;
+    if (!next || seenRevise.has(next.id)) break;
+    seenRevise.add(next.id);
     tip = next;
   }
   // F14（2026-10-14 外部审查 · GPT）：**退役链默认拒绝普通修订**——否则用历史 id 修订会悄悄生成新版本复活
@@ -4563,9 +4576,11 @@ function retireRecordUnlocked(store, id, opts, file) {
 
   // 链尾（与 revise 同语义：从任意链上版本出发都落到链尾）
   let tip = byId.get(id);
+  const seenTip2 = new Set([tip.id]);
   for (;;) {
     const next = records.find((r) => r.supersedes === tip.id);
-    if (!next) break;
+    if (!next || seenTip2.has(next.id)) break;
+    seenTip2.add(next.id);
     tip = next;
   }
   // 已退役的判定只对「软退役」短路（2026-10-08 二次修复：硬删必须继续走下去——
@@ -4722,17 +4737,19 @@ function appendRecordUnlocked(store, obj, file, opts = {}) {
   const fd = openSync(file, 'a');
   try { writeSync(fd, JSON.stringify(record) + '\n'); fsyncSync(fd); }
   finally { closeSync(fd); }
+  // P3 补（2026-10-20）：quarantineTail 截断长度可与新行列抵消 ⇒ 主动失效（O(1)）；其余写入签名本就必变。
+  invalidateStoreCache(store);
   return { store, file, id: record.id, ...(quar && quar.quarantined ? { quarantine: quar } : {}) };
 }
 
 export function appendRecord(store, obj, opts = {}) {
   if (!STORES.includes(store)) throw new Error('未知存储：' + store);
   const file = opts.file || storePath(store);
-  const r = opts.locked ? appendRecordUnlocked(store, obj, file, opts) : withFileLock(file, () => appendRecordUnlocked(store, obj, file, opts));
-  // P3（2026-10-20）：写入后主动失效。只靠 mtime+size 签名不够——同毫秒内追加且长度相同时签名不变，
-  // 长驻进程会读到自己刚写之前的旧快照。失效成本 O(1)，写入频率远低于读，不值得优化。
-  invalidateStoreCache(store);
-  return r;
+  // P3（2026-10-20）：这里**不需要**主动 invalidate —— append 必然改变文件长度，
+  //   而签名含 size ⇒ 下次 loadStore 必然 miss。
+  //   首版曾在此调用 invalidateStoreCache，变异自证发现「删掉后三条守卫仍全绿」⇒ 判为冗余，已删。
+  //   （invalidateStoreCache 仍导出，留给「原地重写且长度不变」的未来写入路径；当前无此路径。）
+  return opts.locked ? appendRecordUnlocked(store, obj, file, opts) : withFileLock(file, () => appendRecordUnlocked(store, obj, file, opts));
 }
 
 /** 审核戳链校验（tripwire，2026-10-17）——**独立于工作区**的完整性守卫。

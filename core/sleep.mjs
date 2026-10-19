@@ -467,7 +467,7 @@ function usageFromLog(buf) {
  * 生成睡眠计划（只读）。opts：
  *   files    —— { <store>: 路径 }（缺省 storePath；测试注入临时库）
  *   log      —— hooks.jsonl（canon-stale 的引用计数来源；缺省 logs/hooks.jsonl）
- *   today    —— YYYY-MM-DD（缺省 UTC 今天；进 params 与 planId）
+ *   today    —— YYYY-MM-DD（缺省本地今天；进 params 与 planId）
  *   theta / maxOps / orphanDays / staleDays —— 见 PLAN_DEFAULTS
  *   out      —— 计划文件路径；缺省 logs/sleep-plan-<today>.json；false = 不落盘（纯计算）
  *   now      —— createdAt 用的时间（缺省 new Date()；不进 planId）

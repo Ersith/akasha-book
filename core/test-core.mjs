@@ -3627,7 +3627,7 @@ t('#19 rollback --batch：按日回滚（追加反向修订）+ 幂等 + 不留�
   const dir = mkdtempSync(join(SCRATCH, 'akasha-rb-'));
   const file = join(dir, 'canon.jsonl');
   const base = { id: 'canon-rb-1', claim: '原始主张', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-01', logged_at: '2026-10-01T00:00:00Z' };
-  // 2026-10-13 修（时间炸弹）：rollbackBatch 默认按 **UTC 当日**筛「今天新增的修订」——
+  // 2026-10-13 修（时间炸弹）：rollbackBatch 默认按 **本地当日**筛「今天新增的修订」——
   // 夹具写死 2026-10-12 后，次日跑必红（写用例的当天能过）。改为运行时取当前时刻。
   const rev = { ...base, id: 'canon-rb-1-r1', claim: '今天改过的主张（应被回滚）', supersedes: 'canon-rb-1', logged_at: new Date().toISOString() };
   const other = { id: 'canon-rb-2', claim: '别的条目（不该被动）', source: { type: '复现', ref: 'r' }, last_reviewed: '2026-10-12', logged_at: '2026-10-12T11:00:00Z' };
@@ -6102,6 +6102,41 @@ t('P1 链索引：credibilityMap 与「每条重建索引」逐条同结果（�
   assert.ok(!got.has('p1-a1'), '被 supersede 的 p1-a1 不得在当前集');
   for (const [id, cred] of ref) {
     assert.deepEqual(got.get(id), cred, `${id} 的可信度必须与逐条重建索引的结果逐字段相同`);
+  }
+});
+
+// ── P3（2026-10-20）：库签名缓存必须不改变任何可观测行为 ──────────────────
+// 缓存是「纯派生可丢弃」的：删掉/重启行为完全不变。本用例钉住三条最容易错的边界——
+// ① 写入后必须失效（否则长驻进程读到自己刚写之前的快照）；② 同一 store 名指向不同文件不得串库；
+// ③ 外部直写（绕过 appendRecord）也要靠签名变化失效。
+t('P3 库签名缓存：写后失效 / 跨文件不串库 / 外部直写靠签名失效', () => {
+  const dir = mkdtempSync(join(SCRATCH, 'akasha-cache-'));
+  const f1 = join(dir, 'c1.jsonl');
+  const f2 = join(dir, 'c2.jsonl');
+  try {
+    const mk = (id, claim) => ({ id, claim, source: { type: '官方', ref: 'x' }, event_time: '2026-10-20', last_reviewed: '2026-10-20' });
+
+    // ① 写后必失效
+    lib.appendRecord('canon', mk('cache-a', 'first'), { file: f1 });
+    assert.equal(lib.loadStore('canon', f1).records.length, 1, '首次读取应有 1 条');
+    lib.appendRecord('canon', mk('cache-b', 'second'), { file: f1 });
+    assert.equal(lib.loadStore('canon', f1).records.length, 2, '写后读必须看到 2 条（缓存已被 invalidate）');
+
+    // ② 同一 store 名、不同文件 ⇒ 不得串库
+    lib.appendRecord('canon', mk('other-1', 'other'), { file: f2 });
+    assert.equal(lib.loadStore('canon', f1).records.length, 2, 'f1 不得被 f2 的记录污染');
+    assert.equal(lib.loadStore('canon', f2).records.length, 1, 'f2 应独立为 1 条');
+
+    // ③ 外部直写（绕过 appendRecord，只有 size/mtime 会变）也必须失效
+    appendFileSync(f2, JSON.stringify(mk('other-2', 'third')) + '\n', 'utf8');
+    assert.equal(lib.loadStore('canon', f2).records.length, 2, '外部追加后应读到 2 条（签名变化触发失效）');
+
+    // ④ 显式清缓存后重读：结果必须与缓存命中时一致
+    lib.clearStoreCache();
+    assert.equal(lib.loadStore('canon', f1).records.length, 2, '清缓存后重读结果不变');
+  } finally {
+    lib.clearStoreCache();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
