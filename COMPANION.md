@@ -54,6 +54,8 @@
 `GET /v1/default/banks/{bank}/knowledge-base/search?q=&limit=` 与 `/pages/{id}`。
 非 2xx/网络失败 ⇒ `{hits:[], degraded:true, reason}`；不重试、不缓存。
 
+CLI：`node tools/companion-recall.mjs "查询词" [--limit 3] [--bank …] [--json]`（默认 `HINDSIGHT_API_URL`/`HINDSIGHT_API_PORT` + `HINDSIGHT_BANK_ID`）。
+
 2026-10-19 实测：`http://127.0.0.1:<PORT>` + bank `coding-agent::Harness`，
 query `CompanionPort 适配层` → 3 条真实 hits（`kp-…`），health HTTP 200。
 配置口径：bank 默认取 `HINDSIGHT_BANK_ID`/运行目录银行；token 取 `HINDSIGHT_API_TOKEN`。
