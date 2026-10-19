@@ -82,16 +82,28 @@ export function hindsightHooks(callTool) {
  */
 export function hindsightHttpHooks({ baseUrl, bankId, token, fetchImpl = globalThis.fetch, limit = 5 } = {}) {
   const base = String(baseUrl ?? '').replace(/\/+$/, '');
-  const bank = String(bankId ?? '');
-  if (!base || !bank) throw new Error('hindsightHttpHooks 需要 baseUrl + bankId');
+  if (!base) throw new Error('hindsightHttpHooks 需要 baseUrl');
   if (typeof fetchImpl !== 'function') throw new Error('hindsightHttpHooks 需要 fetch');
   const headers = token ? { authorization: 'Bearer ' + token } : {};
-  const bankUrl = (suffix) => `${base}/v1/default/banks/${encodeURIComponent(bank)}${suffix}`;
+  let bankPromise = bankId ? Promise.resolve(String(bankId)) : null;
+  const resolveBank = () => {
+    if (bankPromise) return bankPromise;
+    bankPromise = (async () => {
+      const r = await fetchImpl(base + '/v1/default/banks', { headers });
+      if (!r.ok) throw new Error('banks HTTP ' + r.status);
+      const j = await r.json();
+      const ids = (Array.isArray(j?.banks) ? j.banks : []).map((x) => x.bank_id).filter(Boolean);
+      if (ids.length === 1) return ids[0];
+      throw new Error('需要 HINDSIGHT_BANK_ID（发现 ' + ids.length + ' 个 bank）');
+    })();
+    return bankPromise;
+  };
+  const bankUrl = async (suffix) => `${base}/v1/default/banks/${encodeURIComponent(await resolveBank())}${suffix}`;
   return {
     search: async (query, opts = {}) => {
       const q = '?q=' + encodeURIComponent(String(query ?? '')) + '&limit=' + encodeURIComponent(String(opts.limit ?? limit));
       try {
-        const r = await fetchImpl(bankUrl('/knowledge-base/search' + q), { headers });
+        const r = await fetchImpl(await bankUrl('/knowledge-base/search' + q), { headers });
         if (!r.ok) return { hits: [], via: 'hindsight-http', degraded: true, reason: 'HTTP ' + r.status };
         const j = await r.json();
         if (!Array.isArray(j?.results)) return { hits: [], via: 'hindsight-http', degraded: true, reason: '响应无 results 数组', raw: j };
@@ -100,7 +112,7 @@ export function hindsightHttpHooks({ baseUrl, bankId, token, fetchImpl = globalT
     },
     read: async (id) => {
       try {
-        const r = await fetchImpl(bankUrl('/knowledge-base/pages/' + encodeURIComponent(String(id ?? ''))), { headers });
+        const r = await fetchImpl(await bankUrl('/knowledge-base/pages/' + encodeURIComponent(String(id ?? ''))), { headers });
         if (!r.ok) return { record: null, via: 'hindsight-http', degraded: true, reason: 'HTTP ' + r.status };
         return { record: await r.json(), depth: 'summary', id, via: 'hindsight-http' };
       } catch (e) { return { record: null, via: 'hindsight-http', degraded: true, reason: '请求失败：' + e.message }; }

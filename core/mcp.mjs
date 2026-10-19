@@ -146,7 +146,7 @@ async function handle(msg) {
         const fetchT = (u, o = {}) => fetch(u, { ...o, signal: AbortSignal.timeout(4000) });
         const want = a.driver || 'all';
         const jobs = [];
-        if (want === 'all' || want === 'hindsight') jobs.push(['hindsight', hindsightHttpHooks({ baseUrl: process.env.HINDSIGHT_API_URL || `http://127.0.0.1:${process.env.HINDSIGHT_API_PORT || 9077}`, bankId: process.env.HINDSIGHT_BANK_ID || 'coding-agent::Harness', token: process.env.HINDSIGHT_API_TOKEN || '', fetchImpl: fetchT })]);
+        if (want === 'all' || want === 'hindsight') jobs.push(['hindsight', hindsightHttpHooks({ baseUrl: process.env.HINDSIGHT_API_URL || `http://127.0.0.1:${process.env.HINDSIGHT_API_PORT || 9077}`, bankId: process.env.HINDSIGHT_BANK_ID || '', token: process.env.HINDSIGHT_API_TOKEN || '', fetchImpl: fetchT })]);
         if (want === 'all' || want === 'openviking') jobs.push(['openviking', openvikingHttpHooks({ baseUrl: process.env.OPENVIKING_BASE_URL || `http://127.0.0.1:${process.env.OPENVIKING_PORT || 1933}`, token: process.env.OPENVIKING_BEARER_TOKEN || '', fetchImpl: fetchT })]);
         if (!jobs.length) throw new Error('driver 非法：' + want);
         const out = await Promise.all(jobs.map(async ([d, h]) => [d, await h.search(q, { limit })]));

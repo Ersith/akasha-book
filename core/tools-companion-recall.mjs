@@ -38,7 +38,7 @@ if (args.help || !args.query) {
 if (!['hindsight', 'openviking'].includes(args.driver)) { console.error('未知 driver：' + args.driver); process.exit(2); }
 const isOv = args.driver === 'openviking';
 const base = args.base || (isOv ? (process.env.OPENVIKING_BASE_URL || ('http://127.0.0.1:' + (process.env.OPENVIKING_PORT || 1933))) : (process.env.HINDSIGHT_API_URL || `http://127.0.0.1:${process.env.HINDSIGHT_API_PORT || 9077}`));
-const bank = isOv ? '' : (args.bank || process.env.HINDSIGHT_BANK_ID || 'coding-agent::Harness');
+const bank = isOv ? '' : (args.bank || process.env.HINDSIGHT_BANK_ID || '');
 const token = args.token || (isOv ? (process.env.OPENVIKING_BEARER_TOKEN || '') : (process.env.HINDSIGHT_API_TOKEN || ''));
 
 const fetchT = (u, o = {}) => fetch(u, { ...o, signal: AbortSignal.timeout(4000) });

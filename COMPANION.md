@@ -64,7 +64,7 @@ CLI：活树 `node tools/companion-recall.mjs "查询词" [--driver hindsight|op
 
 2026-10-19 实测：`http://127.0.0.1:<PORT>` + bank `coding-agent::Harness`，
 query `CompanionPort 适配层` → 3 条真实 hits（`kp-…`），health HTTP 200。
-配置口径：bank 默认取 `HINDSIGHT_BANK_ID`/运行目录银行；token 取 `HINDSIGHT_API_TOKEN`。
+配置口径：bank 未显式给时**自动发现**（GET `/v1/default/banks`，唯一 bank 直接用；多个时要求 `HINDSIGHT_BANK_ID`）；token 取 `HINDSIGHT_API_TOKEN`。
 
 ## 4. 切主条件（写死）
 

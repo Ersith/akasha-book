@@ -140,6 +140,13 @@ function lockAgeMs(lock) {
   try { return Date.now() - statSync(lock).mtimeMs; } catch { return 0; }
 }
 
+/** 锁告警（2026-10-19 人工复检）：只进 logs/lock-warn.jsonl + stderr，绝不写六库。 */
+function recordLockWarn(file, msg) {
+  const rec = { at: new Date().toISOString(), pid: process.pid, host: hostname(), file, msg };
+  try { console.error('[akasha:lock] ' + msg + ' :: ' + file); } catch { /* 无 stderr */ }
+  try { mkdirSync(LOGS_DIR, { recursive: true }); appendFileSync(join(LOGS_DIR, 'lock-warn.jsonl'), JSON.stringify(rec) + String.fromCharCode(10)); } catch { /* 日志失败不遮主流程 */ }
+}
+
 /** 尾部完整性修复（2026-10-19 P0）：JSONL 最后一行若被截断，下一次追加会粘成坏行。
  *  - 尾部是合法 JSON（只是缺换行）⇒ 补 '\n'，不搬移任何记录；
  *  - 尾部不是合法 JSON ⇒ 原字节搬进 `<file>.corrupt-<ts>`，文件截断到最后一个换行后。
@@ -257,8 +264,12 @@ export function withFileLock(file, fn, opts = {}) {
       if (fd !== undefined) { try { closeSync(fd); } catch { /* 已关 */ } }
     }
   }
+  const lockT0 = Date.now();
   try { return fn(); }
   finally {
+    const lockMs = Date.now() - lockT0;
+    const warnAfter = Number.isFinite(opts.warnAfterMs) ? opts.warnAfterMs : 5000;
+    if (lockMs > warnAfter) recordLockWarn(file, `长临界区 ${lockMs}ms（超 ${warnAfter}ms）`);
     const gate = lock + '.steal';
     let gfd;
     const releaseDeadline = Date.now() + 1000;
@@ -270,6 +281,7 @@ export function withFileLock(file, fn, opts = {}) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
       }
     }
+    if (gfd === undefined) recordLockWarn(file, '释放失败：.steal 闸被占用 >1s，锁保留（fail-closed）');
     if (gfd !== undefined) {
       try {
         const info = readLockInfo(lock);
