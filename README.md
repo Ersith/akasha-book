@@ -30,7 +30,7 @@ stores. For raw session lookup it defers to the host's built-in `session_search`
 
 - 六类 append-only 数据：`canon`（稳定库）/ `mirror`（镜像库）/ `orphan`（孤案）/ `pricing`（定价表）/ `lexicon`（情绪词表）/ `frontier`（前沿层）；
 - 工具面：检索（`lookup` / `brief` / `cross` / `summary` / `show`；前三个支持 `--since/--until` 时间过滤）、镜像匹配（`mirror match`）、校验（`check`）、定价与情绪回写（`price [--apply-store/--apply-id]`）、修订链（`revise`）、退役与删除（`retire [--hard]`）、蒸馏（`sleep`）、结果计数器（`metrics`，含查询维度）、复审到期清单（`audit --due`，I-01 原型：信任级 × 时龄）；
-- 一个最小 MCP stdio server——模型侧「先查再答」的现成入口（**22 工具**；2026-10-14 重启核数）；
+- 一个最小 MCP stdio server——模型侧「先查再答」的现成入口（**23 工具**；2026-10-19 加 companion_recall）；
 - **前沿层（frontier）**：收集的前沿论文——「**文献即基石**」（现行数量以 `stats` 为准；由 `tools\import-frontier.mjs` 从设计稿 §4 生成 + 手工补录，幂等追加）。
 
 ## 安装（必读）
@@ -64,7 +64,7 @@ akasha\
   sleep.mjs    睡眠蒸馏核心（sleepRun + 纯函数；手动 `node akasha.mjs sleep [--dry]`；计划执行 `sleep --apply <planId|文件> [--yes]` / 复位 `sleep --revoke`，规则见 research/sleep-merge-rules-draft-20261014.md）
   akasha.mjs   CLI
   session.mjs  会话层（单会话记忆：读取 / 提取 / 索引 / 检索；`node akasha.mjs session …`）
-  mcp.mjs      MCP stdio server（**22 工具**：check / lookup / price / stats / orphan_add / frontier_due / audit / brief / kit / promote / revise / cross / summary / show / mirror_match / metrics / session_lookup / sleep_plan / **review_pack / review_log / review_list / now**）
+  mcp.mjs      MCP stdio server（**23 工具**：check / lookup / price / stats / orphan_add / frontier_due / audit / brief / kit / promote / revise / cross / summary / show / mirror_match / metrics / session_lookup / sleep_plan / **review_pack / review_log / review_list / now / companion_recall**）
   test.mjs     自检（核心 / session / CLI / MCP / sleep；下界与自洽断言，防写死漂移）
   tools\       生成与留痕脚本群（import-frontier.mjs / verify-frontier-urls.mjs / frontier-audit-revise.mjs / harvest-*.mjs …）——全部幂等、只追加；文件清单见目录
   data\        canon / mirror / orphan / pricing / lexicon / frontier / session（JSONL，append-only；session＝会话层）

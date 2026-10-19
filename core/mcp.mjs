@@ -1,7 +1,8 @@
 // 阿卡夏之书（Akasha）v0 —— 最小 MCP stdio server（JSON-RPC 2.0 逐行）。
-// 工具（22）：check / lookup / price / stats / orphan_add / frontier_due / audit / brief / kit / promote / revise / cross / summary / show / mirror_match / metrics / session_lookup / sleep_plan / review_pack / review_log / review_list / now
+// 工具（23）：check / lookup / price / stats / orphan_add / frontier_due / audit / brief / kit / promote / revise / cross / summary / show / mirror_match / metrics / session_lookup / sleep_plan / review_pack / review_log / review_list / now
 import { createInterface } from 'node:readline';
 import { checkAll, lookupDetailed, multiRecall, normalizeDateArg, dayArg, price, stats, appendRecord, loadStore, audit, brief, kit, promoteInbox, revise, cross, summary, show, mirrorMatch, metrics, frontierDue, stripGenre, reviewPack, appendReviewLog, readReviewLog, nowSnapshot } from './lib.mjs';
+import { hindsightHttpHooks, openvikingHttpHooks } from './adapters.mjs';
 import { lookupSegmentsDetailed } from './session.mjs';
 import { sleepPlan } from './sleep.mjs';
 
@@ -27,13 +28,14 @@ const TOOLS = [
   { name: 'akasha_review_pack', description: '复审输入包（只读）：条目**链尾**全文 + 来源 + 因果/链邻居 + 三问协议——交给 **fresh 子 agent** 做零上下文审查（I-10 流程第一件）。**体裁隔离**：默认剥皮；reflect:true＝原文。', inputSchema: { type: 'object', properties: { id: { type: 'string' }, reflect: { type: 'boolean' } }, required: ['id'] } },
   { name: 'akasha_review_log', description: '复审留痕（写 logs/review-log.jsonl，**不写六库**）：主会话裁决后记录一条（verdict ∈ 维持/修正/升级/合并/退役/回滚…；by/note 可选）。维持会自动给 last_reviewed 打复审戳由 CLI 侧 `review log` 处理，本工具只追加一行。', inputSchema: { type: 'object', properties: { store: { type: 'string' }, id: { type: 'string' }, verdict: { type: 'string' }, by: { type: 'string' }, note: { type: 'string' } }, required: ['store', 'id', 'verdict'] } },
   { name: 'akasha_review_list', description: '复审留痕读回（只读）：默认最近 20 条，`since`（YYYY-MM-DD）过滤；返回 {ts, store, id, verdict, by, note}。', inputSchema: { type: 'object', properties: { limit: { type: 'number' }, since: { type: 'string' } }, additionalProperties: false } },
-  { name: 'akasha_session_lookup', description: '小阿卡夏（会话层，同库分层，不是第二套库）：默认在全部已索引会话的蒸馏段中检索（session 可限定单个会话；命中的 session 是裸 id；all 是历史全貌/动作版本开关，不是会话范围），结论优先。与主库 akasha_lookup/brief 分开调用、分开分级。返回 { hits, matched, sessionTotal, withheld, reflect, dose }。**体裁隔离**：P0 process 段默认不回放（withheld＝「存在 N 段过程记录」+ 指引）+ 默认剥皮（结论/过程/节点；用户原话与工具记录不剥）；P1 剂量闸（长会话自动收紧档，超阈后条目摘要化）；rawProcess:true＝反思通道（含过程段原文、不剥皮、不受闸）。**路由**：结论/决策/教训/跨会话导航→用它；**原始事件 / 逐字引文 / 精确过滤**（session_ids、时间、事件类型）→优先官方宿主工具 `session_search`（温查快；宿主重启后首搜需冷建内存索引 ≈85s，非数据丢失）。官方 session_ids 需 session-<裸id>；官方报 session history storage is unavailable / session search index is unavailable 时，重试仍失败就回落到本工具（不要当成「没有匹配」）；官方只回每会话最强命中，逐字原文用 session_event_read。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, process: { type: 'boolean' }, rawProcess: { type: 'boolean' }, reflect: { type: 'boolean' }, depth: { type: 'string', enum: ['pointer', 'summary', 'full'] }, doseThreshold: { type: 'number' }, all: { type: 'boolean' }, limit: { type: 'number' } }, required: ['query'] } }
+  { name: 'akasha_session_lookup', description: '小阿卡夏（会话层，同库分层，不是第二套库）：默认在全部已索引会话的蒸馏段中检索（session 可限定单个会话；命中的 session 是裸 id；all 是历史全貌/动作版本开关，不是会话范围），结论优先。与主库 akasha_lookup/brief 分开调用、分开分级。返回 { hits, matched, sessionTotal, withheld, reflect, dose }。**体裁隔离**：P0 process 段默认不回放（withheld＝「存在 N 段过程记录」+ 指引）+ 默认剥皮（结论/过程/节点；用户原话与工具记录不剥）；P1 剂量闸（长会话自动收紧档，超阈后条目摘要化）；rawProcess:true＝反思通道（含过程段原文、不剥皮、不受闸）。**路由**：结论/决策/教训/跨会话导航→用它；**原始事件 / 逐字引文 / 精确过滤**（session_ids、时间、事件类型）→优先官方宿主工具 `session_search`（温查快；宿主重启后首搜需冷建内存索引 ≈85s，非数据丢失）。官方 session_ids 需 session-<裸id>；官方报 session history storage is unavailable / session search index is unavailable 时，重试仍失败就回落到本工具（不要当成「没有匹配」）；官方只回每会话最强命中，逐字原文用 session_event_read。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, since: { type: 'string' }, until: { type: 'string' }, process: { type: 'boolean' }, rawProcess: { type: 'boolean' }, reflect: { type: 'boolean' }, depth: { type: 'string', enum: ['pointer', 'summary', 'full'] }, doseThreshold: { type: 'number' }, all: { type: 'boolean' }, limit: { type: 'number' } }, required: ['query'] } },
+  { name: 'akasha_companion_recall', description: '跨源只读检索（CompanionPort adapter）：driver=all 合并 Hindsight（仓）与 OpenViking（人）；失败源返回 degraded/reason，不静默空。阿卡夏自身仍用 akasha_lookup/brief。默认 limit=5。', inputSchema: { type: 'object', properties: { query: { type: 'string' }, driver: { type: 'string', enum: ['all', 'hindsight', 'openviking'] }, limit: { type: 'number' } }, required: ['query'] } },
 ];
 
 // I-11 体裁隔离 P0-②（2026-10-13）：MCP 面＝模型侧**真正读到的返回** ⇒ 读工具默认剥皮（reflect/rawProcess 走反思通道）。
 // 2026-10-13 复查补齐：`akasha_cross`（主行＝全文，六库对位最重文本面）同属读侧，纳入。
 // 2026-10-14 C 小面：`akasha_summary`（最近条目行）· `akasha_kit`（病史行）· `akasha_sleep_plan`（why 串）——小体量但同类；`frontier_due` **不剥**（题名是外部文本，剥它损引用准确性）。
-const STRIP_TOOLS = new Set(['akasha_lookup', 'akasha_brief', 'akasha_show', 'akasha_session_lookup', 'akasha_cross', 'akasha_mirror_match', 'akasha_summary', 'akasha_kit', 'akasha_sleep_plan', 'akasha_review_pack']);
+const STRIP_TOOLS = new Set(['akasha_lookup', 'akasha_brief', 'akasha_show', 'akasha_session_lookup', 'akasha_cross', 'akasha_mirror_match', 'akasha_summary', 'akasha_kit', 'akasha_sleep_plan', 'akasha_review_pack', 'akasha_companion_recall']);
 // 叙事文本字段白名单（GPT N3：只对 schema 里明确列出的叙事字段处理）——不在表内的字符串一律视为机器字段，原样保留。
 const NARRATIVE_KEYS = new Set(['claim', 'quote', 'why', 'gist', 'summary', 'observed', 'hypothesis', 'would_confirm', 'would_refute', 'story', 'situation', 'behavior', 'outcome', 'social_reaction', 'emotion', 'patterns', 'title', 'note', 'hint', 'extra', 'reason', 'content', 'text', 'resolution',
   // 2026-10-15（GPT 第二份·优先⑤）：**`line` 漏了** ✗ —— `akasha_summary` 每条最近记录的 `line` 就是叙事正文，
@@ -63,7 +65,7 @@ for (const t of TOOLS) {
   if (t.name === 'akasha_mirror_match' && props && !('notApplicable' in props)) props.notApplicable = { type: 'object' };
 }
 
-function handle(msg) {
+async function handle(msg) {
   // 2026-10-10 加固：先做形状校验——JSON 合法但形状不对（null / 数字 / 字符串 / 缺 method）时
   // 必须回 JSON-RPC 错误，而不是解构抛 TypeError（那会冒成未捕获异常、整台服务器死掉）。
   if (msg === null || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.method !== 'string') {
@@ -135,6 +137,24 @@ function handle(msg) {
           : cross(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth ?? (a.reflect === true ? 'full' : 'summary'), perStore: a.perStore, since: cs.day, until: cu.day, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
       }
       else if (name === 'akasha_summary') value = summary({ per: a.per });
+      else if (name === 'akasha_companion_recall') {
+        const q = String(a.query ?? '');
+        if (!q.trim()) throw new Error('query 不能为空');
+        const limit = Math.min(50, Math.max(1, Number(a.limit) || 5));
+        const fetchT = (u, o = {}) => fetch(u, { ...o, signal: AbortSignal.timeout(4000) });
+        const want = a.driver || 'all';
+        const jobs = [];
+        if (want === 'all' || want === 'hindsight') jobs.push(['hindsight', hindsightHttpHooks({ baseUrl: process.env.HINDSIGHT_API_URL || `http://127.0.0.1:${process.env.HINDSIGHT_API_PORT || 9077}`, bankId: process.env.HINDSIGHT_BANK_ID || 'coding-agent::Harness', token: process.env.HINDSIGHT_API_TOKEN || '', fetchImpl: fetchT })]);
+        if (want === 'all' || want === 'openviking') jobs.push(['openviking', openvikingHttpHooks({ baseUrl: process.env.OPENVIKING_BASE_URL || `http://127.0.0.1:${process.env.OPENVIKING_PORT || 1933}`, token: process.env.OPENVIKING_BEARER_TOKEN || '', fetchImpl: fetchT })]);
+        if (!jobs.length) throw new Error('driver 非法：' + want);
+        const out = await Promise.all(jobs.map(async ([d, h]) => [d, await h.search(q, { limit })]));
+        value = {
+          query: q, driver: want,
+          hits: out.flatMap(([d, r]) => (r.hits || []).map((x) => ({ ...x, via: d }))),
+          sources: Object.fromEntries(out.map(([d, r]) => [d, { hits: (r.hits || []).length, degraded: !!r.degraded, reason: r.reason }])),
+          degraded: out.some(([, r]) => !!r.degraded),
+        };
+      }
       else if (name === 'akasha_show') value = show(String(a.id ?? ''), { reflect: a.reflect === true, depth: a.depth, today: a.today });
       else if (name === 'akasha_mirror_match') value = mirrorMatch(String(a.text ?? ''), { reflect: a.reflect === true, limit: a.limit, mode: a.mode, role: a.role, evidence: a.evidence, era: a.era, context: a.context, notApplicable: a.notApplicable && typeof a.notApplicable === 'object' ? a.notApplicable : undefined });
       else if (name === 'akasha_now') value = nowSnapshot({ at: Array.isArray(a.at) ? a.at : undefined });
@@ -209,15 +229,16 @@ function handle(msg) {
 const rl = createInterface({ input: process.stdin });
 // 大响应（cross / show 全文）write 可能只进缓冲。stdin 一关就 exit 会把最后一行截断。
 let pendingWrites = 0;
+let pendingHandlers = 0;
 let stdinClosed = false;
-const finish = () => { if (stdinClosed && pendingWrites === 0) process.exit(0); };
+const finish = () => { if (stdinClosed && pendingWrites === 0 && pendingHandlers === 0) process.exit(0); };
 const emit = (reply) => {
   if (!reply) return;
   const payload = JSON.stringify(reply) + '\n';
   pendingWrites += 1;
   process.stdout.write(payload, () => { pendingWrites -= 1; finish(); });
 };
-rl.on('line', line => {
+rl.on('line', async line => {
   const s = line.trim();
   if (!s) return;
   let msg;
@@ -226,10 +247,13 @@ rl.on('line', line => {
     return;
   }
   // 2026-10-10 加固：handle 本身也要兜底——任何未预期异常都回错误，绝不让它冒成未捕获异常打死服务器
+  pendingHandlers += 1;
   let reply;
-  try { reply = handle(msg); }
+  try { reply = await handle(msg); }
   catch (e) { reply = { jsonrpc: '2.0', id: (msg && typeof msg === 'object' && 'id' in msg) ? msg.id : null, error: { code: -32603, message: '内部错误：' + String(e?.message ?? e).slice(0, 200) } }; }
   emit(reply);
+  pendingHandlers -= 1;
+  finish();
 });
 
 // 2026-10-10 加固（与 mcp-akasha 桥同族）：客户端先退出时，写 stdout 会以**异步 'error' 事件**抛 EPIPE——

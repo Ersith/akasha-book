@@ -29,7 +29,7 @@ assert.ok(CORE, '找不到 akasha 核心 lib.mjs/mcp.mjs；候选：' + CORE_CAN
 //   AKASHA_LINK_GUARD=strict ⇒ 连「非自嵌套链接」也判红（默认只判自嵌套类：派生副本里的
 //   node_modules junction 属正常布局，只点名不拦）。
 const LINK_GUARD_STRICT = process.env.AKASHA_LINK_GUARD === 'strict';
-const COPY_WHITELIST = ['lib.mjs', 'json-redaction.mjs', 'mcp.mjs', 'session.mjs', 'sleep.mjs', 'loop-detect.mjs', 'akasha.mjs', 'init-example.mjs', 'companion.mjs'];
+const COPY_WHITELIST = ['lib.mjs', 'json-redaction.mjs', 'mcp.mjs', 'session.mjs', 'sleep.mjs', 'loop-detect.mjs', 'akasha.mjs', 'init-example.mjs', 'companion.mjs', 'adapters.mjs'];
 
 // 内联最小示例库（MIX#4·2026-10-17）：源 core 没有 init-example.mjs 时，用它就地播种数据面，
 //   让「注册桥端到端」段默认执行而不是整段 SKIP。字段形状取自 init-example.mjs 的同名字段，
@@ -145,7 +145,7 @@ assert.match(publicToolName('akasha', 'a b/c'), /^mcp__akasha__a_b_c_[0-9a-f]{12
 }
 assert.equal(renderText([{ type: 'text', text: 'a' }, { type: 'image', data: 'x' }]), 'a\n[image]', '非文本块降级为占位符（不丢值）');
 
-// —— ③b 占位符守卫（2026-10-19 发布面 P0）：`args: ['<AKASHA_DIR>/mcp.mjs']` 照抄 ⇒ spawn 失败、22 工具静默消失 ——
+// —— ③b 占位符守卫（2026-10-19 发布面 P0）：`args: ['<AKASHA_DIR>/mcp.mjs']` 照抄 ⇒ spawn 失败、23 工具静默消失 ——
 assert.equal(findPlaceholders({ args: ['<AKASHA_DIR>/mcp.mjs'] }).length, 1, 'args 数组里的占位符必须被识别');
 assert.equal(findPlaceholders({ args: ['node', '/opt/akasha/mcp.mjs'] }).length, 0, '正常路径不得误报');
 assert.throws(() => assertNoPlaceholders({ args: ['<AKASHA_DIR>/mcp.mjs'] }), /未替换的占位符 <AKASHA_DIR>/, '占位符配置必须抛错');
@@ -159,7 +159,7 @@ await assert.rejects(apply({ logger: { info() {} } }, { args: ['<AKASHA_DIR>/mcp
 //   跳过去了（差点漏检）。现在示例库**自足**：源有 init-example 就用它；没有就用文件内联的
 //   最小示例库就地播种（只用核心自有 CLI 面 `add --store/--data`，不碰 lib.mjs 内部 API）。
 let skipCount = 0;
-const REQUIRED_CORE = ['lib.mjs', 'json-redaction.mjs', 'mcp.mjs', 'session.mjs', 'sleep.mjs', 'akasha.mjs', 'init-example.mjs', 'companion.mjs'];
+const REQUIRED_CORE = ['lib.mjs', 'json-redaction.mjs', 'mcp.mjs', 'session.mjs', 'sleep.mjs', 'akasha.mjs', 'init-example.mjs', 'companion.mjs', 'adapters.mjs'];
 const missingCore = REQUIRED_CORE.filter((f) => !existsSync(join(CORE, f)));
 const INIT_EXAMPLE = existsSync(join(CORE, 'init-example.mjs')) ? join(CORE, 'init-example.mjs') : null;
 if (missingCore.length) {

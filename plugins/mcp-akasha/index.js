@@ -65,7 +65,7 @@ export function assertNoPlaceholders(config) {
     `mcp-akasha: 配置里还有未替换的占位符 ${hits[0].token}（${fields}）。` +
     '请先把 cordis.patch.yml 里的 <AKASHA_DIR> / <LOCAL_PATH> 改成你的实际路径；' +
     '或删掉这些字段，改用 AKASHA_DIR 环境变量。' +
-    '（宁可启动失败，也不静默降级——照抄占位符会让 MCP 拉不到 mcp.mjs，22 个工具静默消失。）'
+    '（宁可启动失败，也不静默降级——照抄占位符会让 MCP 拉不到 mcp.mjs，23 个工具静默消失。）'
   );
 }
 

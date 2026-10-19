@@ -201,7 +201,7 @@ const SANDBOX = mkdtempSync(join(tmpdir(), "akasha-health-"));
   //   ⇒ 体检表面「✓ 端到端通过」，实际测的是真核（点错对象），且真核里再出现自嵌套链接就重演
   //   errno 112 爆盘事故（见 selftest.test.mjs 顶部链接守卫）。现改为：先校验源件齐全，
   //   缺一件即**判红并拒绝 spawn**——绝不回退真核（本项失败时体检整体 exit 1）。
-  const CORE_MIN_FILES = ["akasha.mjs", "lib.mjs", "mcp.mjs", "session.mjs", "sleep.mjs", "init-example.mjs", "json-redaction.mjs", "loop-detect.mjs", "companion.mjs"];
+  const CORE_MIN_FILES = ["akasha.mjs", "lib.mjs", "mcp.mjs", "session.mjs", "sleep.mjs", "init-example.mjs", "json-redaction.mjs", "loop-detect.mjs", "companion.mjs", "adapters.mjs"];
   const CORE_MIN_STORES = ["canon", "mirror", "orphan", "pricing", "lexicon", "frontier"];
   const coreMinMissing = [
     ...CORE_MIN_FILES.filter((f) => !existsSync(join(H, "akasha", f))).map((f) => "akasha/" + f),
