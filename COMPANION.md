@@ -46,7 +46,7 @@
 - 注入 `health` ⇒ `health()` 透传；异常记为 `{ok:false, mode:'degraded'}`。
 - 未注入 ⇒ 保持 `degraded`（v1 默认）。**核心不 import 任何外部 SDK**；宿主（DSH 插件）负责把 MCP 工具包成 hooks。
 
-宿主侧薄适配在 `adapters.mjs`：`hindsightHooks(callTool)` / `openvikingHooks(callTool)` 把 MCP 工具包成 `{search, read, health}`，只做形状映射、不重试不缓存。核心仍零依赖。
+宿主侧薄适配在 `adapters.mjs`：`hindsightHooks(callTool)` 把 MCP 工具包成 `{search, read, health}`。**OpenViking 暂不接**——其 MCP 工具返回「Found N item(s)…」格式化文本，不是结构化 hits；v1 避免把文本当 hits 静默空，等 REST 或文本解析器。核心仍零依赖。
 
 ## 4. 切主条件（写死）
 

@@ -255,17 +255,16 @@ if (lib) {
     assert.equal(repo.read('h1').record.id, 'h1');
     rmSync(dir, { recursive: true, force: true });
   });
-  t('Adapt 器：hindsight/openviking hooks 映射工具名与 hits', () => {
+  t('Adapt 器：hindsight hooks 映射工具名/参数；async callTool 可用', async () => {
     const calls = [];
-    const h = adapters.hindsightHooks((name, args) => { calls.push([name, args]); return { pages: [{ id: 'p1' }] }; });
-    const r = h.search('门控', { limit: 2 });
+    const h = adapters.hindsightHooks((name, args) => { calls.push([name, args]); return Promise.resolve({ pages: [{ id: 'p1' }] }); });
+    const r = await h.search('门控');
     assert.equal(r.hits[0].id, 'p1');
-    assert.deepEqual(calls[0], ['hindsight_search_knowledge_pages', { query: '门控', limit: 2 }]);
+    assert.deepEqual(calls[0], ['hindsight_search_knowledge_pages', { query: '门控' }]);
     h.read('p1'); assert.equal(calls[1][0], 'hindsight_read_knowledge_page');
-    const o = adapters.openvikingHooks((name, args) => { calls.push([name, args]); return { results: [{ uri: 'viking://x' }] }; });
-    assert.equal(o.search('记忆').hits[0].uri, 'viking://x');
-    assert.equal(calls[calls.length - 1][0], 'openviking_search');
+    assert.equal(typeof adapters.openvikingHooks, 'undefined');
   });
+
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));
     const tmp = join(dir, '.tmp-test.jsonl');

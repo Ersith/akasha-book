@@ -53,7 +53,7 @@ export function hindsightHooks(callTool) {
   return mcpHooks({
     callTool,
     searchTool: 'hindsight_search_knowledge_pages',
-    searchArgs: (query, opts) => ({ query, ...(opts.limit ? { limit: opts.limit } : {}) }),
+    searchArgs: (query) => ({ query }),
     mapSearch: (raw, query) => ({ hits: normalizeHits(raw), via: 'hindsight', query, degraded: false }),
     readTool: 'hindsight_read_knowledge_page',
     readArgs: (id) => ({ page_id: id }),
@@ -61,15 +61,5 @@ export function hindsightHooks(callTool) {
   });
 }
 
-/** OpenViking：用户/身份/偏好（只读）。 */
-export function openvikingHooks(callTool) {
-  return mcpHooks({
-    callTool,
-    searchTool: 'openviking_search',
-    searchArgs: (query, opts) => ({ query, mode: 'list', ...(opts.limit ? { limit: opts.limit } : {}) }),
-    mapSearch: (raw, query) => ({ hits: normalizeHits(raw), via: 'openviking', query, degraded: false }),
-    readTool: 'openviking_read',
-    readArgs: (id) => ({ uris: [id] }),
-    mapRead: (raw, id) => ({ record: raw, depth: 'summary', id, via: 'openviking' }),
-  });
-}
+// OpenViking（2026-10-19 复核）：其 MCP 工具返回「Found N item(s)…」格式化文本，不是结构化 hits；
+// v1 不接（避免把文本当 hits 静默空）。等 REST 或文本解析器落地后再加 openvikingHooks。

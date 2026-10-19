@@ -31,7 +31,8 @@ function readConfig(file) {
 }
 
 /** 解析配置：显式 file **独占**（给了就只读它，便于测试与环境隔离）；否则 AKASHA_COMPANIONS → AKASHA_DIR/companions.json。 */
-export function resolvePorts({ file, hooks = {} } = {}) {
+export function resolvePorts({ file, hooks } = {}) {
+  const hookMap = hooks && typeof hooks === 'object' ? hooks : {};
   const candidates = file
     ? [file]
     : [
@@ -44,7 +45,7 @@ export function resolvePorts({ file, hooks = {} } = {}) {
   for (const kind of ['repo', 'persona']) {
     const c = companions[kind] && typeof companions[kind] === 'object' ? companions[kind] : {};
     const driver = typeof c.driver === 'string' && c.driver.trim() ? c.driver.trim() : 'none';
-    ports.push(makePort(kind, driver, c, hooks[driver]));
+    ports.push(makePort(kind, driver, c, hookMap[driver]));
   }
   return ports;
 }
@@ -69,6 +70,7 @@ export function makePort(kind, driver = 'none', cfg = {}, hooks = null) {
     skipTags() { return [...new Set(tags)]; },
     health() {
       if (live && typeof hooks.health === 'function') { try { return { ...hooks.health(), mode }; } catch (e) { return { ok: false, mode: 'degraded', detail: 'health 失败：' + e.message }; } }
+      if (live) return { ok: true, mode, detail: 'hooks 已注入（未提供 health 探测）' };
       return { ok: !configured, mode, detail: configured ? `driver=${driver} 已配置，v1 未接 adapter` : '未配置（absent）' };
     },
     recall(query, opts = {}) {
