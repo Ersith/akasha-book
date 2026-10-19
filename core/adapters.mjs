@@ -54,7 +54,12 @@ export function hindsightHooks(callTool) {
     callTool,
     searchTool: 'hindsight_search_knowledge_pages',
     searchArgs: (query) => ({ query }),
-    mapSearch: (raw, query) => ({ hits: normalizeHits(raw), via: 'hindsight', query, degraded: false }),
+    mapSearch: (raw, query) => ({
+      hits: normalizeHits(raw).map((p) => (p && typeof p === 'object'
+        ? { id: p.page_id ?? p.id ?? null, title: p.page ?? p.title ?? '', text: p.snippet ?? p.description ?? '', raw: p }
+        : { id: null, title: '', text: String(p), raw: p })),
+      via: 'hindsight', query, degraded: false,
+    }),
     readTool: 'hindsight_read_knowledge_page',
     readArgs: (id) => ({ page_id: id }),
     mapRead: (raw, id) => ({ record: raw, depth: 'summary', id, via: 'hindsight' }),

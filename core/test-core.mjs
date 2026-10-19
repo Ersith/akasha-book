@@ -257,9 +257,9 @@ if (lib) {
   });
   t('Adapt 器：hindsight hooks 映射工具名/参数；async callTool 可用', async () => {
     const calls = [];
-    const h = adapters.hindsightHooks((name, args) => { calls.push([name, args]); return Promise.resolve({ pages: [{ id: 'p1' }] }); });
+    const h = adapters.hindsightHooks((name, args) => { calls.push([name, args]); return Promise.resolve({ pages: [{ page_id: 'p1', page: '标题', snippet: '片段' }] }); });
     const r = await h.search('门控');
-    assert.equal(r.hits[0].id, 'p1');
+    assert.equal(r.hits[0].id, 'p1'); assert.equal(r.hits[0].title, '标题'); assert.equal(r.hits[0].text, '片段');
     assert.deepEqual(calls[0], ['hindsight_search_knowledge_pages', { query: '门控' }]);
     h.read('p1'); assert.equal(calls[1][0], 'hindsight_read_knowledge_page');
     assert.equal(typeof adapters.openvikingHooks, 'undefined');
