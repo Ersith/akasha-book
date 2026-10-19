@@ -52,7 +52,7 @@
 
 `openvikingHttpHooks({ baseUrl, token })`：`POST /api/v1/search/search`（mode=list）+ `GET /api/v1/content/read?uri=`。
 响应 `{status:'ok',result:{memories:[{uri,abstract,score}]}}` ⇒ hits `{id:uri,title:末段,text:abstract,raw}`；无 memories ⇒ degraded+raw。
-实测：`http://127.0.0.1:<PORT>`，query「阿卡夏 记忆」→ 2 条真实 hits（identity.md 等），health 200。
+实测：`http://127.0.0.1:1933`，query「阿卡夏 记忆」→ 2 条真实 hits（identity.md 等），health 200。
 
 ### 3.2 Hindsight REST（已真实冒烟）
 
@@ -62,7 +62,7 @@
 
 CLI：活树 `node tools/companion-recall.mjs "查询词" [--driver hindsight|openviking] [--limit 3] [--bank …] [--json]`；OSS 仓为 `node core/tools-companion-recall.mjs`（默认 `HINDSIGHT_API_URL`/`HINDSIGHT_API_PORT` + `HINDSIGHT_BANK_ID`）。
 
-2026-10-19 实测：`http://127.0.0.1:<PORT>` + bank `coding-agent::Harness`，
+2026-10-19 实测：`http://127.0.0.1:9077` + bank `coding-agent::Harness`，
 query `CompanionPort 适配层` → 3 条真实 hits（`kp-…`），health HTTP 200。
 配置口径：bank 未显式给时**自动发现**（GET `/v1/default/banks`，唯一 bank 直接用；多个时要求 `HINDSIGHT_BANK_ID`）；token 取 `HINDSIGHT_API_TOKEN`。
 
