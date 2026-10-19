@@ -61,6 +61,20 @@
 | CI | GitHub Actions → **success** |
 | 已知限制 | 运行中的 MCP 子进程需重启宿主才加载新默认；budget 为字符/既有 token 口径混用（字段已标注） |
 
+
+
+## v0.1.7（2026-10-19）
+
+| 项 | 值 |
+|---|---|
+| tag | `v0.1.7` |
+| commit | `0d3aea0`（CompanionPort v1 只读契约；skipTags 配置化；doctor 配套检查；MCP 默认 summary 契约同步） |
+| core 测试 | `node core/test.mjs` → **299 passed / 0 failed / 0 skipped** |
+| 插件自检 | 5/5 通过（mcp 夹具白名单补 `companion.mjs`） |
+| 发布检查 | `oss-release-check` → **23/23 PASS** |
+| CI | GitHub Actions → **success** |
+| 已知限制 | 端口为只读契约：driver 配置只到 degraded，adapter 未接；运行中的 MCP 子进程需重启才加载新默认 |
+
 ## 发布流程（此后每版照抄）
 
 1. 冻结改动，跑 `node core/test.mjs` + `node core/akasha.mjs check` + 五个插件 selftest + 活树 `oss-release-check`。
