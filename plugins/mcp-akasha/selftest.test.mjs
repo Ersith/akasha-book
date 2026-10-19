@@ -22,7 +22,7 @@ assert.ok(CORE, '找不到 akasha 核心 lib.mjs/mcp.mjs；候选：' + CORE_CAN
 // —— ④-1 源树链接守卫：复制之前的一次性 reparse 检测（只读、绝不跟进）——
 // 事故（2026-10-16）：核心目录内一颗 junction（…/derived/akasha → <AKASHA_DIR>）被下面那段
 //   全量 cpSync 跟进 ⇒ 无限自嵌套 ⇒ 临时副本涨到 GB 级 ⇒ Windows errno 112「磁盘已满」（42s 崩）；
-//   D:\dsh-temp 留下 62.5GB / 163 万文件残骸（D 盘一度只剩 1.41GB）。
+//   <LOCAL_PATH> 留下 62.5GB / 163 万文件残骸（D 盘一度只剩 1.41GB）。
 // 白名单复制（batch7-B）已让深层链接不再被触碰；本守卫再补一道：复制**之前**扫一遍源树，命中
 //   「指向 Core 内 / 包含 Core / 就是 Core」的链接（自嵌套类）⇒ 立即报错退出，一个字节都不复制。
 // 代价：dirent 扫描 + 逐目录 realpath 交叉校验，实测 ≈0.5s / 1 万条目 / 3.4 千目录（不读文件内容）。

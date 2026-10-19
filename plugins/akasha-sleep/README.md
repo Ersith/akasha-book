@@ -29,7 +29,7 @@
 
 - **会话身份隔离（第五轮 · V02）**：C3 与指代检索仅按完整宿主 ID 精确匹配；当前会话无 intent 时保持静默。`session-1`、`1`、`session-session-1` 不互作别名。此前的单前缀兜底也会误读新版完整 ID 记录，现已移除。33037b3 中无身份格式标记但保留完整 ID 的记录仍可精确读取；更早被剥前缀的记录需要人工核对原会话档案后重索引，不自动猜归属或迁移生产库。
 - **v1.10.18-h1（2026-10-17，batch14 · H4-E 睡眠 TEMP 陷阱目录泄漏修复；产源自清—四件测试套件，**未安装、未重启**）**：四套（gate / preflight / route / stateful）在**模块顶层** `mkdtempSync('<名>-default-trap-')` 建陷阱目录、**从无清理** ⇒ 每跑一轮就在 `%TEMP%` 留一个空目录（batch13 清单实测：存量 255、单日 +134）。修法各一行：三件（gate / preflight / stateful）补 `process.on('exit')` 兜底 `rmSync`；route **已有** exit 钩子但 `DEFAULT_TRAP` 从未 push 进 `cleanupDirs` ⇒ 补 push。
-  - **两态实测**（`runs/audit-1016-batch14/seg-sleep/landing/logs/regression-run.json`）：`D:\dsh-temp` 跑前 255 → 跑后 255、五套逐套即时比对新增 0；**负对照**（去补丁副本，`logs/neg-control.json`）四件各 +1 ⇒ 补丁是「零残余」的有效因子。真家目录（`~/.akasha/logs/` 的 `hooks.jsonl` + `sleep-state.json`）bytes/lines/mtime/sha 四属性**跑前=跑后**；`akasha/test.mjs` 276-0、`node --check` ×7 全绿。
+  - **两态实测**（`runs/audit-1016-batch14/seg-sleep/landing/logs/regression-run.json`）：`<TEMP_DIR>` 跑前 255 → 跑后 255、五套逐套即时比对新增 0；**负对照**（去补丁副本，`logs/neg-control.json`）四件各 +1 ⇒ 补丁是「零残余」的有效因子。真家目录（`~/.akasha/logs/` 的 `hooks.jsonl` + `sleep-state.json`）bytes/lines/mtime/sha 四属性**跑前=跑后**；`akasha/test.mjs` 276-0、`node --check` ×7 全绿。
 - **v1.10.17-h1（2026-10-17，batch10 · 处置 batch8 复核 `VERIFY-S4` §5 的三条低级别；改动仅 `route.test.mjs` 一件，**未安装、未重启**）**：
   - **F-S4-2（H+++ "半牙" ⇒ 真增量）**：H+++ 原有三条断言（`{status:3}` / `{code:'ETIMEDOUT'}` / `{code:'ETIMEDOUT',signal:'SIGTERM'}`）与**集成路重复**（分别由 H-5「exit 3 ⇒ raw 3」与 H-3「超时 ⇒ raw 'ETIMEDOUT'；真实形状同时带 code+signal」驱动）⇒ 删去，换三条**集成路产不出的类型守卫格**：`{status:0}`（合法退出码，防真假陷阱）/ `{status:'3'}`（非数字 status）/ `{code:42,signal:'SIGKILL'}`（非字符串 code ⇒ 落 signal 格）。
     - **两态 × 四变异实测**（`runs/audit-1016-batch10/seg-sleep/landing/tools/probe-F-S4-2-teeth.mjs`）：旧套件对「真假陷阱 / 松类型 status / 松类型 code」三个变异**全绿（抓不到）**；新套件分别在 **421 / 422 / 423** 行当场红。而「signal 提前于 code」的变异**两版都由 H-3（344 行）**抓住 ⇒ 删掉的三条不承重、新加的三条各有独立分辨力。
@@ -96,7 +96,7 @@
     - 齿：阈值**放宽 30 s**（`6*3600_000 + 30_000`，一条很现实的"容差"改动）⇒ **只红 6h00m 格**（`:257`）；5h59m / 6h01m 不变（thr5 仍红 `:245`；把 6h00m 格摘掉后 thr7 仍红 6h01m `:259`）。
     - ⚠ 顺序登记：新增格排在 6h01m **之前** ⇒ thr7 变异的**首个**红点由 6h01m 前移到 6h00m（两格对 thr7 都红，先后只由断言顺序决定）。
   - **6.2 · 测试侧两份 6h 常量 ⇒ 合并成一份**（`SIX_H` 提到 `refStamp` 前，refStamp 与 C2b 格偏移共用）。**判断：能安全合并** —— ① 格级探针是**外部**脚本（直接 import 产品件、自造偏移），不读本常量；② 套件的齿来自 `RE_FRESH` / `RE_DATED` 两条语义锚定的正则，**不来自常量** ⇒ 常量改错时格点跟着常量一起移、移完那格落在**另一侧**边界必红（实测 5h ⇒ `:257` 红、7h ⇒ `:245` 红，不是静默绿）；反之留两份的代价是**误导性红点**（只改 refStamp 时红在 6h01m 格、文案却指向"参考实现反算"，不指向真因＝常量漂移）。
-  - **变异盘**：`runs/audit-1016-batch18/seg-sleep/landing/logs/b18-plates.json`（10 格；派生副本在 `landing/derived/`，每格**只打一处**变异，记 rc / 红点行 / 断言原文）。**回归**：`node --check` ×9 · 包内 5 套 rc0 · `akasha/test.mjs` 276-0（沙箱副本带 `dist/akasha-oss` 兄弟仓）· `sleep-state.json` 四字段跑前=跑后 · `D:\dsh-temp` 九类前缀 0→0。
+  - **变异盘**：`runs/audit-1016-batch18/seg-sleep/landing/logs/b18-plates.json`（10 格；派生副本在 `landing/derived/`，每格**只打一处**变异，记 rc / 红点行 / 断言原文）。**回归**：`node --check` ×9 · 包内 5 套 rc0 · `akasha/test.mjs` 276-0（沙箱副本带 `dist/akasha-oss` 兄弟仓）· `sleep-state.json` 四字段跑前=跑后 · `<TEMP_DIR>` 九类前缀 0→0。
 - **v1.10.21-h1（2026-10-17 batch17 · **只补测试齿**：拆严格正则 + 6h 边界两格；`lib/` **一字未动**、未安装、未重启）**：`route.test.mjs` 的格式正则原把日期写成**可选**（`(?:\d{2}-\d{2} )?`）⇒ 它自己**不带齿**（"恒带日期"也能过），真正钉住「新鲜态不许带日期」的只剩 refStamp 等式，红点文案还看不出意图（VERIFY-S8 §7 O-1）。现**拆两条严格正则**：`RE_FRESH`（新鲜 ⇒ 括号内**无**日期）/ `RE_DATED`（跨日 ⇒ **有**日期），并各配一条「另一式必不匹配」的反向齿。
   - **补 6h 阈值边界两格**（VERIFY-S8 §7 O-2；此前 C2 只测 26h）：`5h59m` ⇒ **无**日期、`6h01m` ⇒ **有**日期。方向以源码实际比较符为准 —— `stampOf` 是 `Date.now() - ms < 6 * 3600_000 ? HH:MM : MM-DD HH:MM` ⇒ **≥6h 带日期**（**6h00m 整归带日期一侧**）。
   - **变异验齿**（`runs/audit-1016-batch17/seg-sleep/landing/logs/b17-plates.json`）：阈值改 **5h** ⇒ **只有** `5h59m` 格转红；改 **7h** ⇒ **只有** `6h01m` 格转红；「恒带日期」变异 ⇒ 新鲜格（含新反向齿）红。
@@ -106,7 +106,7 @@
   - **时点仍看得见**：`lag-long` 满 **80** 字、尾 `…`，时点仍在**前缀括号内**（行尾会被 clip 先吃掉）；跨日时前缀由 14 → 31 字 ⇒ 该格可显示明细 55 → **49 字**（新鲜态不变，仍是 55；属登记代价，不修）。
   - **断言同批放宽 + 加齿**（`route.test.mjs`）：格式正则 `检于 \d{2}:\d{2}` → `检于 (?:\d{2}-\d{2} )?\d{2}:\d{2}`；原「显示时点＝检查时点」改为**参考实现反算**（测试侧独立实现同一规则）；新增 **C2 段**要求跨日**必须带日期**。负控三条实测：① `checkedAt` 再挪一天 ⇒ 期望串不同（断言必红）；② 旧形态（只有 `HH:MM`）不匹配；③ 修前发布件在跨日格上严格日期正则 = **false**。
   - 已知边界（如实）：6h 内的时点不带日期 —— 该窗口内「今天 HH:MM」不会与「昨天同 HH:MM」同形（要混淆须错位 ≥18h），故不补日期。
-- **v1.10.19（2026-10-17 batch15）**：① 测试件残留兜底两件——`gate.test.mjs` 的 `gate-reg-*`（`mkFix`）纳入 `cleanupDirs` + `exit` 钩子（原只走 happy path，失败/早退即留，化石 3 个：10-15）；`selftest.test.mjs` 退出时补一次「非空则留」的 `rmdir`（`D:\dsh-temp\akasha-sleep-selftest` 空容器此前常驻）。② 脉搏「⚠ 审核面滞后」行**附检查时点**`（检于 HH:MM）`——判定（`code`/`raw`/是否显示）与 60s 节流一律不动，只让"这结论是什么时候的"可见（消 VERIFY-A4 §5-O1 的显示面时序分歧：旧结果在 turn/end 驱动的窗口里与实跑 `exit 0` 分歧）。
+- **v1.10.19（2026-10-17 batch15）**：① 测试件残留兜底两件——`gate.test.mjs` 的 `gate-reg-*`（`mkFix`）纳入 `cleanupDirs` + `exit` 钩子（原只走 happy path，失败/早退即留，化石 3 个：10-15）；`selftest.test.mjs` 退出时补一次「非空则留」的 `rmdir`（`<TEMP_DIR>\akasha-sleep-selftest` 空容器此前常驻）。② 脉搏「⚠ 审核面滞后」行**附检查时点**`（检于 HH:MM）`——判定（`code`/`raw`/是否显示）与 60s 节流一律不动，只让"这结论是什么时候的"可见（消 VERIFY-A4 §5-O1 的显示面时序分歧：旧结果在 turn/end 驱动的窗口里与实跑 `exit 0` 分歧）。
 - ⚠️ 注意：`ctx.on('tools/result')` 与 `ctx.on('agent/error')` 的监听是 v1.5 新增——宿主 Event 名以 `cordis_inspect_query`（host Event 目录）为准，两个事件均为 emit 语义（失败不打断宿主）。
 
 ## 打包 / 安装

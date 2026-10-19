@@ -2,7 +2,8 @@
 // 做法：构造一个 akashaDir 夹具（lib.mjs + logs/hooks.jsonl），用桩 ctx 捕获注册，直接驱动 text()。
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync, copyFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 // F（2026-10-16 batch6 修复）：本套件原先只传 `akashaDir` ⇒ 插件 DEFAULTS 的 log/stateFile/inboxFile
@@ -22,8 +23,9 @@ const cfgOf = (dir, over = {}) => ({
   stateFile: join(dir, 'state.json'), inboxFile: join(dir, 'inbox.jsonl'), ...over,
 });
 
-const REAL = '<AKASHA_DIR>';
-const FIXBASE = 'H:\\Harness\\_ab\\preflight-fixture';
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REAL = [join(HERE, '..', 'akasha'), join(HERE, '..', '..', 'core')].find((d) => existsSync(d)) || join(HERE, '..', 'akasha');
+const FIXBASE = join(tmpdir(), 'akasha-preflight-fixture');
 // ⚠ 每轮夹具必须**换独立目录**：插件用 createRequire 加载 `lib.mjs`，而目标是 .mjs ⇒ Node 走 **ESM 加载器缓存**，
 //   `require.cache` 里没有它（清理无效）⇒ 只能换 specifier 才能拿到新桩。
 //   2026-10-11 实测：不换目录时 ⑥–⑨ 全挂（拿到上一轮没有 loadStore 的桩）。
@@ -188,7 +190,7 @@ for (const fn of cap13.handlers['tools/result'] || []) fn({ name: 'mcp__akasha__
 T('⑭ 召回后「距上次查库」归零', !!extRow && extRow.text().includes('距今 0 轮'), String(extRow && extRow.text()));
 for (const fn of cap13.handlers['session/event'] || []) fn({ type: 'compaction/end' });
 T('⑭ 压缩事件计数入行', !!extRow && extRow.text().includes('压缩=1'), String(extRow && extRow.text()));
-for (const fn of cap13.handlers['tools/result'] || []) fn({ name: 'pwsh', args: { command: 'node H:/Harness/akasha/akasha.mjs check' } }, { isError: false });
+for (const fn of cap13.handlers['tools/result'] || []) fn({ name: 'pwsh', args: { command: 'node <AKASHA_DIR>/akasha.mjs check' } }, { isError: false });
 T('⑭ CLI 查库也计召回', !!extRow && extRow.text().includes('距今 0 轮'), String(extRow && extRow.text()));
 T('⑭ ≤80 字', (extRow.text() || '').length <= 80);
 
