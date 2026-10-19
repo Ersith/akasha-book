@@ -3,7 +3,7 @@
 //   node tools/canon-io.mjs add    payload.json            # payload: {id, claim, source?, tags?, event_time?}
 //   node tools/canon-io.mjs append payload.json            # payload: {id, text}（把 text 追加到该条目当前版本 claim 末尾）
 import { readFileSync } from "node:fs";
-import { loadStore, currentRecords, appendRecord, revise } from './lib.mjs';
+import { loadStore, currentRecords, appendRecord, revise, todayLocal } from './lib.mjs';
 
 const [mode, file] = process.argv.slice(2);
 if (!mode || !file) { console.log("用法：node tools/canon-io.mjs <add|append> <payload.json>"); process.exit(2); }
@@ -15,8 +15,8 @@ if (mode === "add") {
   const rec = appendRecord("canon", {
     id: p.id, claim: p.claim,
     source: p.source || { type: "他人", ref: "n/a" },
-    event_time: p.event_time || new Date().toISOString().slice(0, 10),
-    last_reviewed: p.event_time || new Date().toISOString().slice(0, 10),
+    event_time: p.event_time || todayLocal(),
+    last_reviewed: p.event_time || todayLocal(),
     tags: p.tags || [],
   });
   console.log("+ " + rec.id);
@@ -25,6 +25,6 @@ if (mode === "add") {
   const hit = recs.filter((r) => String(r.id).startsWith(p.id)).pop();
   if (!hit) { console.log("未找到条目：" + p.id); process.exit(1); }
   if (String(hit.claim).includes(p.text.slice(0, 24))) { console.log("= 已包含（跳过）"); process.exit(0); }
-  const next = revise("canon", hit.id, { claim: hit.claim + " " + p.text, last_reviewed: new Date().toISOString().slice(0, 10) });
+  const next = revise("canon", hit.id, { claim: hit.claim + " " + p.text, last_reviewed: todayLocal() });
   console.log(hit.id + " → " + next.id);
 } else { console.log("mode 只支持 add / append"); process.exit(2); }

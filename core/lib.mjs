@@ -307,9 +307,39 @@ export function parseJsonl(text) {
   return { records, errors };
 }
 
+// ── 库签名缓存（P3，2026-10-20）────────────────────────────────────────────
+// 缓存「文件内容解析结果」，键 = 文件 mtimeMs + size（即**库签名**）。
+// 口径（重要，决定它能不能长久存在）：
+//   · **纯派生、可丢弃**：只活在进程内，不落盘。删掉缓存 / 重启 ⇒ 行为完全不变，只变慢。
+//     所以它是**可选优化**，不引入任何新状态，不破坏 append-only 与可审计定位。
+//   · 收益主要在**长驻进程**（MCP 面每次调用都复用）；CLI 每进程新起，首次仍是冷读。
+//   · 签名变化自动失效；写路径**主动** invalidate（同毫秒内写入可能 mtime 不变，只靠签名会读到旧值）。
+//   · `AKASHA_NOCACHE=1` 关闭 —— 诊断与前后对照用。
+//   · 返回对象与 records 数组被多处共享；已核：全库无任何 `.records.push/sort/splice` 原地修改，
+//     故不拷贝（拷贝会把 23.6ms 的收益又吃掉一半）。
+const STORE_CACHE = process.env.AKASHA_NOCACHE === '1' ? null : new Map();
+
+function storeSig(file) {
+  try { const st = statSync(file); return st.mtimeMs + ':' + st.size; } catch { return null; }
+}
+
+/** 写路径调用：让该库缓存失效（不传 name ⇒ 全清）。 */
+export function invalidateStoreCache(name) {
+  if (!STORE_CACHE) return;
+  if (name === undefined) STORE_CACHE.clear(); else STORE_CACHE.delete(name);
+}
+export function clearStoreCache() { invalidateStoreCache(undefined); }
+
 export function loadStore(name, file = storePath(name)) {
   if (!existsSync(file)) return { name, records: [], errors: [{ line: 0, error: '文件不存在：' + file }] };
-  return { name, ...parseJsonl(readFileSync(file, 'utf8')) };
+  if (!STORE_CACHE) return { name, ...parseJsonl(readFileSync(file, 'utf8')) };
+  const sig = storeSig(file);
+  const hit = STORE_CACHE.get(name);
+  // 同一 name 可能指向不同 file（opts.files / 测试夹具 / 沙箱根）⇒ file 必须一起比，否则串库
+  if (hit && hit.file === file && hit.sig === sig) return hit.value;
+  const value = { name, ...parseJsonl(readFileSync(file, 'utf8')) };
+  if (sig !== null) STORE_CACHE.set(name, { file, sig, value });
+  return value;
 }
 
 /**
@@ -4698,8 +4728,11 @@ function appendRecordUnlocked(store, obj, file, opts = {}) {
 export function appendRecord(store, obj, opts = {}) {
   if (!STORES.includes(store)) throw new Error('未知存储：' + store);
   const file = opts.file || storePath(store);
-  if (opts.locked) return appendRecordUnlocked(store, obj, file, opts);
-  return withFileLock(file, () => appendRecordUnlocked(store, obj, file, opts));
+  const r = opts.locked ? appendRecordUnlocked(store, obj, file, opts) : withFileLock(file, () => appendRecordUnlocked(store, obj, file, opts));
+  // P3（2026-10-20）：写入后主动失效。只靠 mtime+size 签名不够——同毫秒内追加且长度相同时签名不变，
+  // 长驻进程会读到自己刚写之前的旧快照。失效成本 O(1)，写入频率远低于读，不值得优化。
+  invalidateStoreCache(store);
+  return r;
 }
 
 /** 审核戳链校验（tripwire，2026-10-17）——**独立于工作区**的完整性守卫。
