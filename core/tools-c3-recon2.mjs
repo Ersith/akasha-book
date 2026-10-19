@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = "H:\\Harness\\dist\\akasha-oss";
+const OSS = "<LOCAL_PATH>\\dist\\akasha-oss";
 const P = OSS + "\\docs\\c1-c3-schedule.md";
 let doc = readFileSync(P, "utf8");
 if (!doc.includes("## 9. C3 触发源侦察")) {
@@ -29,7 +29,7 @@ if (!doc.includes("## 9. C3 触发源侦察")) {
     "",
   ].join("\n");
   writeFileSync(P, doc + block, "utf8");
-  writeFileSync("H:\\Harness\\docs\\c1-c3-schedule.md", doc + block, "utf8");
+  writeFileSync("<LOCAL_PATH>\\docs\\c1-c3-schedule.md", doc + block, "utf8");
   console.log("  [plan] §9 已写（双份）");
 } else console.log("  [plan] already");
 

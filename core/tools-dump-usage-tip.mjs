@@ -2,7 +2,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { loadStore, currentRecords } from './lib.mjs';
 
-const OUT_DIR = 'H:/Harness/_scratch';
+const OUT_DIR = '<LOCAL_PATH>/_scratch';
 mkdirSync(OUT_DIR, { recursive: true });
 const tip = currentRecords(loadStore('canon').records).find((r) => r.id.startsWith('canon-akasha-usage'));
 if (!tip) { console.log('未找到用法条目'); process.exit(1); }

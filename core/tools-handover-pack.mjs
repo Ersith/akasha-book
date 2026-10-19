@@ -14,11 +14,11 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { join, basename } from 'node:path';
 
-const AK = 'H:/Harness/akasha';
+const AK = '<AKASHA_DIR>';
 const args = process.argv.slice(2);
 const flag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const DRY = args.includes('--dry');
-const DEST = flag('--dest', 'D:/个人资料整理_20260924/文档/Codex/2026-10-15/jia/inputs-akasha-20261015');
+const DEST = flag('--dest', '<LOCAL_PATH>');
 
 // ── 1. 计数：**从切片重生成**（不信任任何手写数字）────────────────────────────
 const S = join(AK, 'gate-out/full-check-20261015/slices');
@@ -32,7 +32,7 @@ let recount = null;
 {
   // 2026-10-18（GPT 第三轮 / ④）：用**本次新建**的输出目录（先清残留旧裁决），
   //   并读**新产物**的 verdict；旧实现只正则抠 stdout 数字、不查退出码、校验的是另一处旧文件 ⇒ 无效输入可出包。
-  const OUT = join('D:/dsh-temp', 'handover-' + process.pid);
+  const OUT = join('<LOCAL_PATH>', 'handover-' + process.pid);
   rmSync(OUT, { recursive: true, force: true });
   const a = ['tools/gate.mjs', 'escalate', ...FILES.flatMap((f) => ['--slices', join(SDIR, f)]),
     '--task', 'handover-recount', '--out', OUT];

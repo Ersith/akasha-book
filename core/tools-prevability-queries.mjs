@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { lookupDetailed } from './lib.mjs';
 
-const OUT = 'H:\\Harness\\_scratch\\prevability';
+const OUT = '<LOCAL_PATH>\\_scratch\\prevability';
 mkdirSync(OUT, { recursive: true });
 const cases = readFileSync(OUT + '\\cases.jsonl', 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l));
 const snap = JSON.parse(readFileSync(OUT + '\\library-snapshot.json', 'utf8'));
@@ -17,8 +17,8 @@ const loadIds = (file) => {
   }
   return rows;
 };
-const canonRows = loadIds('H:\\Harness\\akasha\\data\\canon.jsonl');
-const orphanRows = loadIds('H:\\Harness\\akasha\\data\\orphan.jsonl');
+const canonRows = loadIds('<AKASHA_DIR>\\data\\canon.jsonl');
+const orphanRows = loadIds('<AKASHA_DIR>\\data\\orphan.jsonl');
 const allowedAt = (asOf) => new Set([...canonRows, ...orphanRows].filter((r) => r.stamp && r.stamp <= asOf).map((r) => r.id));
 const stripRev = (id) => id.replace(/-r\d+$/, '');
 

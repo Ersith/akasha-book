@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { loadStore, currentRecords, appendRecord } from './lib.mjs';
 
 // ---------- ① 门控收窄 ----------
-const G = ["H:\\Harness\\dist\\akasha-oss\\plugins\\akasha-gate\\index.js", "H:\\Harness\\dsh-akasha-gate\\index.js"];
+const G = ["<LOCAL_PATH>\\dist\\akasha-oss\\plugins\\akasha-gate\\index.js", "<LOCAL_PATH>\\dsh-akasha-gate\\index.js"];
 const G_ANCHOR = "const WRITE_IDIOM = ";
 const G_ADD = `// 2026-10-10 假阳性修复：shell 命令的写构造判定（收窄）——只认重定向与写/删类构造，
 // 不再用广义写词表（那张表会让「只读命令里出现 data 路径」也被拒；当日实测被误拦一次）。
@@ -31,7 +31,7 @@ if (!recs.some((r) => String(r.id).startsWith("canon-trap-pwsh-inline-js"))) {
   });
   console.log("  + " + r.id);
 } else console.log("  = pwsh 条目已存在");
-for (const f of ["H:\\Harness\\akasha\\lib.mjs", "H:\\Harness\\dist\\akasha-oss\\core\\lib.mjs"]) {
+for (const f of ["<AKASHA_DIR>\\lib.mjs", "<LOCAL_PATH>\\dist\\akasha-oss\\core\\lib.mjs"]) {
   let t = readFileSync(f, "utf8");
   const old = "  pwsh: ['canon-review-manual-20261010', 'canon-npm-publish-20261010', 'canon-dsh-store-remediation-20261010'],";
   const neu = "  pwsh: ['canon-trap-pwsh-inline-js', 'canon-review-manual-20261010', 'canon-npm-publish-20261010', 'canon-dsh-store-remediation-20261010'],";
@@ -40,7 +40,7 @@ for (const f of ["H:\\Harness\\akasha\\lib.mjs", "H:\\Harness\\dist\\akasha-oss\
 }
 
 // ---------- ③ C3 词表补自然说法 ----------
-const S = ["H:\\Harness\\dsh-akasha-sleep\\lib\\index.js", "H:\\Harness\\dist\\akasha-oss\\plugins\\akasha-sleep\\lib\\index.js"];
+const S = ["<LOCAL_PATH>\\dsh-akasha-sleep\\lib\\index.js", "<LOCAL_PATH>\\dist\\akasha-oss\\plugins\\akasha-sleep\\lib\\index.js"];
 const S_OLD = '      { cat: "开关", re: /开关|启用|禁用|默认开|默认关/ },';
 const S_NEW = '      { cat: "开关/运行", re: /开关|启用|禁用|默认开|默认关|开着|关着|在跑|跑着|还在吗|开着吗|装着吗|有没有开/ },';
 for (const f of S) {

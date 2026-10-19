@@ -2,8 +2,8 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = 'H:\\Harness\\dist\\akasha-oss';
-const AB = 'H:\\Harness\\_ab';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
+const AB = '<LOCAL_PATH>\\_ab';
 
 // ① 修 B10：v3 重建时漏了 files ⇒ 目标文件不存在（预筛如实报了）
 const b10 = AB + '\\tasks2\\B10\\data';
@@ -39,7 +39,7 @@ if (!t.includes('## 13. v3 预筛判定')) {
     '',
   ].join('\n');
   writeFileSync(P, t + block, 'utf8');
-  writeFileSync('H:\\Harness\\docs\\ab-task-battery.md', t + block, 'utf8');
+  writeFileSync('<LOCAL_PATH>\\docs\\ab-task-battery.md', t + block, 'utf8');
   console.log('  [battery] §13 已追加（双份）');
 } else console.log('  [battery] already');
 

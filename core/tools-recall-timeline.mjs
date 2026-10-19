@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isRecallRecord, sessionKeyOf, RECALL_TOOLS, RECALL_CLI } from './lib.mjs';
 
-const LOG = process.argv[2] ?? 'H:\\Harness\\akasha\\logs\\hooks.jsonl';
+const LOG = process.argv[2] ?? '<AKASHA_DIR>\\logs\\hooks.jsonl';
 const raw = readFileSync(LOG, 'utf8').split(/\r?\n/).filter(Boolean);
 const recs = [];
 for (const line of raw) { try { recs.push(JSON.parse(line)); } catch { /* 坏行跳过 */ } }

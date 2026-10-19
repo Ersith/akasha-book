@@ -5,13 +5,13 @@ import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const PLUGINS = [
-  { name: '@local/akasha-gate', src: 'H:/Harness/dsh-akasha-gate', code: ['index.js', 'prompt-safety.js'] },
-  { name: '@local/akasha-sleep', src: 'H:/Harness/dsh-akasha-sleep', code: ['lib/index.js', 'lib/prompt-safety.js'] },
-  { name: '@local/akasha-session', src: 'H:/Harness/dsh-akasha-session', code: ['lib/index.js'] },
-  { name: '@local/akasha-hooks', src: 'H:/Harness/dsh-akasha-hooks', code: ['index.js'] },
-  { name: '@local/mcp-akasha', src: 'H:/Harness/dsh-mcp-akasha', code: ['index.js', 'mcp.mjs'] },
+  { name: '@akasha-book/akasha-gate', src: '<LOCAL_PATH>/dsh-akasha-gate', code: ['index.js', 'prompt-safety.js'] },
+  { name: '@akasha-book/akasha-sleep', src: '<LOCAL_PATH>/dsh-akasha-sleep', code: ['lib/index.js', 'lib/prompt-safety.js'] },
+  { name: '@akasha-book/akasha-session', src: '<LOCAL_PATH>/dsh-akasha-session', code: ['lib/index.js'] },
+  { name: '@akasha-book/akasha-hooks', src: '<LOCAL_PATH>/dsh-akasha-hooks', code: ['index.js'] },
+  { name: '@akasha-book/mcp-akasha', src: '<LOCAL_PATH>/dsh-mcp-akasha', code: ['index.js', 'mcp.mjs'] },
 ];
-const PROFILE = 'H:/Harness/official-home/profiles/desktop/node_modules';
+const PROFILE = '<LOCAL_PATH>/official-home/profiles/desktop/node_modules';
 const quiet = process.argv.includes('--quiet');
 const say = (...a) => { if (!quiet) console.log(...a); };
 

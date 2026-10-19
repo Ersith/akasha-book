@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const OUT = 'H:/Harness/akasha';
+const OUT = '<AKASHA_DIR>';
 const G = join(OUT, 'gate-out/full-check-20261015');
 const slicesDir = join(G, 'slices');
 
@@ -71,7 +71,7 @@ lines.push('> **本文档供外部独立审计**：请沿"证据/falsifier"字�
 lines.push('');
 lines.push('## 0. 怎么跑的（可复现）');
 lines.push('```bash');
-lines.push('cd H:/Harness/akasha');
+lines.push('cd <AKASHA_DIR>');
 lines.push('node tools/gate.mjs p0 --task full-check-20261015 --out ./gate-out          # ① 零模型机检（13 项）');
 lines.push('node tools/gate.mjs briefs --task full-check-20261015 --units core,cli-mcp,session-tools,plugins --out ./gate-out   # ② 生成派单文本');
 lines.push('node tools/gate.mjs escalate --slices gate-out/full-check-20261015/slices/*.jsonl --task full-check-20261015 --out ./gate-out   # ③ 机检升级裁决');
@@ -129,7 +129,7 @@ lines.push('**验证必须在冻结的修订上做。** Lead 在 P2 裁决期间
 lines.push('⇒ 门档纪律补一条：**P2 期间锁树；要修先记切片，慢层收工再动手。**');
 lines.push('');
 lines.push('## 6. 仍未完成');
-lines.push('- `@local/akasha-sleep` **需重打包 + install + 重启**（词表与哨兵两处修复目前只在源码面生效，生产仍跑旧构建）；');
+lines.push('- `@akasha-book/akasha-sleep` **需重打包 + install + 重启**（词表与哨兵两处修复目前只在源码面生效，生产仍跑旧构建）；');
 lines.push('- `core S-core-4`：`OUTPUT_ID_RE` 不认 `frontier-` 前缀 ⇒ 13 条当前 id 在引用统计里"不存在"；');
 lines.push('- `core S-core-5`：49 条校验规则里 48 条的期望串不在测试内 ⇒ **规则能红 ≠ 套件在查**（覆盖缺口）；');
 lines.push('- `boundedInt` 目前**零调用＝死代码**（慢层点名）；');

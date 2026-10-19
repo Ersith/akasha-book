@@ -6,7 +6,7 @@ import { readFileSync, appendFileSync, writeFileSync, readdirSync, mkdirSync } f
 import { dirname, join } from 'node:path';
 import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
-import { ROOT, DATA, STORES, loadStore, storePath, tokenize, scoreTokens, matchParts, redact, redactDeep, writeFileAtomic, appendRecord, retiredIds, withFileLock, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary, recordQuery, readDepthOf, projectText, agePrefix, READ_TIER, genreRenderOf } from './lib.mjs';
+import { ROOT, DATA, STORES, loadStore, storePath, tokenize, scoreTokens, matchParts, redact, redactDeep, writeFileAtomic, appendRecord, retiredIds, withFileLock, quarantineTail, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary, recordQuery, readDepthOf, projectText, agePrefix, READ_TIER, genreRenderOf } from './lib.mjs';
 
 export const SESSION_DEFAULTS = {
   // 2026-10-15（GPT 复核 session N1）：默认值必须与核心**同口径**——`AKASHA_ROOT` 指向放 jsonl 的目录本身；
@@ -165,7 +165,7 @@ export function readSessionArchive(filePath) {
  *    ① 主会话：`session-<uuid>/session.v4.jsonl.zstd`（带前缀）
  *    ② 子代理：`<uuid>/session.v4.jsonl.zstd`（**裸 uuid，无前缀**）
  *  原实现假设"目录名恒为 `session-<id>`"，对子代理恒返回 null ⇒ 每回合刷一条错误。
- *  实测（H:\Harness\official-home\sessions\--H-Harness--）：176 目录 = 157 带前缀（主）+ 19 裸 uuid（今日子代理）。
+ *  实测（<LOCAL_PATH>\official-home\sessions\--H-Harness--）：176 目录 = 157 带前缀（主）+ 19 裸 uuid（今日子代理）。
  *  `child:true` 表示命中的是裸名目录 ⇒ 调用方据此**跳过**（子代理转录不是"我的会话"，不该进小阿卡夏）。 */
 export function resolveSessionArchive(sessionsRoot, sessionId) {
   const needle = String(sessionId ?? '');
@@ -385,6 +385,7 @@ export function extractSegments(records, { session, emitFrom = 0, completedCallS
 /** 段批量追加（append-only；自动盖 logged_at）。 */
 export function appendSegments(storeFile, segs) {
   mkdirSync(dirname(storeFile), { recursive: true });
+  quarantineTail(storeFile);   // 2026-10-19 审查 P1-7：最大 append-only 文件也要防「半行 + 后续追加粘行」（调用方持锁）
   let added = 0;
   let redacted = 0;
   for (const seg of segs) {
@@ -467,7 +468,7 @@ export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.store
     writeFileAtomic(metaFile, JSON.stringify(next, null, 2));
     return { session: sid, added: incoming.length, skipped, lastSeq: maxSeq, parseFails, frameFails, frameTruncated };
   };
-  return lock ? withFileLock(metaFile, run) : run();
+  return lock ? withFileLock(storeFile, () => withFileLock(metaFile, run)) : run();
 }
 
 /** 动作版本归并（**读取视图**；存储仍 append-only）：同一 call（session:ptr.callSeq）默认只回一版——
@@ -1176,6 +1177,7 @@ export function autoBuildTree({ session, storeFile = SESSION_DEFAULTS.storeFile,
 /** 节点批量追加（append-only；整批带 treegen 代际标记）。2026-10-18 起同 appendSegments 走脱敏（派生索引）。 */
 export function appendNodes(storeFile, nodes, treegen) {
   mkdirSync(dirname(storeFile), { recursive: true });
+  quarantineTail(storeFile);   // 同上：树节点批量追加前先清坏尾
   let added = 0;
   let redacted = 0;
   for (const n of nodes) {

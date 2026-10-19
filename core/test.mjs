@@ -1,7 +1,7 @@
 // 阿卡夏之书（Akasha）v0 自检。运行：node test.mjs
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as zlib from 'node:zlib';
@@ -250,16 +250,36 @@ if (lib) {
     assert.deepEqual(rows.map(x => x.id), ['orphan-a', 'orphan-b']);
     rmSync(dir, { recursive: true, force: true });
   });
-  t('P0 锁：活持有者不抢（超时报错）；死持有者接管', () => {
+  t('P0 隔离接线：只调 appendRecord 也会把半行搬进 .corrupt-*（不手动调 quarantineTail）', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-wire-'));
+    const tmp = join(dir, '.tmp-wire.jsonl');
+    lib.appendRecord('orphan', { id: 'orphan-w0', summary: 'x', observed: 'x', hypothesis: 'x', would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-19' }, { file: tmp });
+    appendFileSync(tmp, '{"id":"orphan-half');
+    const r = lib.appendRecord('orphan', { id: 'orphan-w1', summary: 'x', observed: 'x', hypothesis: 'x', would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-19' }, { file: tmp });
+    assert.ok(r.quarantine && r.quarantine.quarantined, 'appendRecord 应返回隔离信息');
+    const raw = readFileSync(tmp, 'utf8');
+    const rows = raw.trim().split(String.fromCharCode(10)).map((l) => JSON.parse(l));
+    assert.deepEqual(rows.map((x) => x.id), ['orphan-w0', 'orphan-w1'], '主文件只留完整行');
+    assert.ok(!raw.includes('orphan-half'), '坏行不得留在主文件');
+    assert.ok(readdirSync(dir).some((f) => f.includes('.corrupt-')), '应生成 .corrupt-* 隔离件');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  t('P0 锁：活持有者不抢（mtime 回拨也不抢）；死持有者接管', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-lock-'));
     const tmp = join(dir, '.tmp-lock.jsonl');
-    writeFileSync(tmp + '.lock', JSON.stringify({ pid: process.pid, host: hostname(), token: 'other', at: Date.now() }), 'utf8');
+    const lock = tmp + '.lock';
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, host: hostname(), token: 'other', at: Date.now() }), 'utf8');
+    const old = new Date(Date.now() - 3600 * 1000);
+    utimesSync(lock, old, old);
+    const t0 = Date.now();
     assert.throws(() => lib.withFileLock(tmp, () => {}, { timeoutMs: 150 }), /锁超时/, '活持有者不能被抢');
-    writeFileSync(tmp + '.lock', JSON.stringify({ pid: 999999, host: hostname(), token: 'dead', at: Date.now() }), 'utf8');
+    assert.ok(Date.now() - t0 < 1000, '应按 timeoutMs 拒绝，而不是按 mtime>30s 抢锁');
+    writeFileSync(lock, JSON.stringify({ pid: 999999, host: hostname(), token: 'dead', at: Date.now() }), 'utf8');
     let ran = false;
     lib.withFileLock(tmp, () => { ran = true; }, { timeoutMs: 2000 });
     assert.equal(ran, true, '死持有者的锁应被接管');
-    assert.equal(existsSync(tmp + '.lock'), false, '正常释放后不留锁');
+    assert.equal(existsSync(lock), false, '正常释放后不留锁');
     rmSync(dir, { recursive: true, force: true });
   });
   t('双时态：logged_at 缺则自动盖 / 自带保留；event_time 保留', () => {
@@ -611,7 +631,7 @@ if (lib) {
       const reportDir = join(dir, 'logs');
       // 夹具用**真实形态**的失败文案（2026-10-13 A2）：「x」这类无信息样本会被判成聚合型 ⇒ 不再进 orphan 候选，
       //   测 `todo >= 3` 就失真了。用带证据的文案（工具名 + 具体错误），语义与线上一致。
-      appendFileSync(logPath, JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, message: 'old_string was not found in "H:/Harness/x.mjs"' }) + '\n' + JSON.stringify({ kind: 'gate-denied', tool: 'write', message: '拒绝直写 akasha/data/canon.jsonl' }) + '\n', 'utf8');
+      appendFileSync(logPath, JSON.stringify({ kind: 'tool', tool: 'edit', ok: false, message: 'old_string was not found in "<LOCAL_PATH>/x.mjs"' }) + '\n' + JSON.stringify({ kind: 'gate-denied', tool: 'write', message: '拒绝直写 akasha/data/canon.jsonl' }) + '\n', 'utf8');
       const dry = sleepMod.sleepRun({ trigger: 'manual', log: logPath, stateFile: statePath, inboxFile: inboxPath, reportDir, dry: true });
       assert.equal(dry.ok, true);
       assert.equal(dry.report.counters.lines, 2);
@@ -3789,8 +3809,8 @@ t('A2（2026-10-13）候选分道：无具体样本 ⇒ aggregate（不转正）
   const sleepMod = await import('./sleep.mjs');
   const { hasConcreteSample } = sleepMod;
   // 谓词：正例
-  for (const s of ['工具失败 edit: old_string was not found in "H:/Harness/x.mjs"', '门控拦截 write: 拒绝直写 akasha/data/canon.jsonl',
-    'agent 错误: unknown tool "ops_read_many"', 'x exit 2: rg: H:/Harness/openviking-server', 'cannot read "tmp/a.log": binary file']) {
+  for (const s of ['工具失败 edit: old_string was not found in "<LOCAL_PATH>/x.mjs"', '门控拦截 write: 拒绝直写 akasha/data/canon.jsonl',
+    'agent 错误: unknown tool "ops_read_many"', 'x exit 2: rg: <LOCAL_PATH>/openviking-server', 'cannot read "tmp/a.log": binary file']) {
     assert.equal(hasConcreteSample([s]), true, '应判为有证据：' + s);
   }
   // 谓词：负例（通用文案 / 空 / 纯计数）
@@ -3799,7 +3819,7 @@ t('A2（2026-10-13）候选分道：无具体样本 ⇒ aggregate（不转正）
   }
   // 端到端（纯函数）：无样本 ⇒ aggregate；有样本 ⇒ orphan-candidate
   const c = { toolErrorsSubstantive: 1, denials: 1, agentErrors: 1, recallMisses: 0 };
-  const samples = { 'tool-error': ['工具失败 edit: old_string was not found in "H:/Harness/x.mjs"'], 'gate-denied': [], 'agent-error': [] };
+  const samples = { 'tool-error': ['工具失败 edit: old_string was not found in "<LOCAL_PATH>/x.mjs"'], 'gate-denied': [], 'agent-error': [] };
   const todos = sleepMod.buildTodos(c, ['n'], null, null, samples);
   const kinds = Object.fromEntries(todos.map((x) => [x.code, x.kind]));
   assert.equal(kinds['tool-error'], 'orphan-candidate', '有证据 ⇒ 可转正');
@@ -3857,7 +3877,7 @@ t('类⑤（2026-10-13）有证据的候选落库不得带 evidence:none（两�
   const ib = join(dir, 'inbox.jsonl');
   const sf = join(dir, 'orphan.jsonl');
   writeFileSync(ib, JSON.stringify({ ts: 't1', kind: 'todo', items: [
-    { kind: 'orphan-candidate', code: 'tool-error', count: 2, samples: ['工具失败 edit: old_string was not found in "H:/Harness/x.mjs"'] },
+    { kind: 'orphan-candidate', code: 'tool-error', count: 2, samples: ['工具失败 edit: old_string was not found in "<LOCAL_PATH>/x.mjs"'] },
   ] }) + '\n', 'utf8');
   const r = lib.promoteInbox({ inboxFile: ib, storeFile: sf });
   assert.equal(r.promoted.length, 1, JSON.stringify(r));

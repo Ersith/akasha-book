@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OSS = 'H:\\Harness\\dist\\akasha-oss';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
 const NL = '\n';
 
 // ① 计划文档追加

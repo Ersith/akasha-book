@@ -5,8 +5,8 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { isRecallRecord, sessionKeyOf } from './lib.mjs';
 
-const ROOT = 'H:\\Harness\\akasha';
-const OUT = 'H:\\Harness\\_scratch\\prevability';
+const ROOT = '<AKASHA_DIR>';
+const OUT = '<LOCAL_PATH>\\_scratch\\prevability';
 const LOG = join(ROOT, 'logs', 'hooks.jsonl');
 mkdirSync(OUT, { recursive: true });
 

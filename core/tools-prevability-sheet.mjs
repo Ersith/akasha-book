@@ -1,6 +1,6 @@
 // tools/prevability-sheet.mjs —— 步4 校准表：打印指定区间 case 的判定素材（紧凑）
 import { readFileSync } from 'node:fs';
-const OUT = 'H:\\Harness\\_scratch\\prevability';
+const OUT = '<LOCAL_PATH>\\_scratch\\prevability';
 const rows = readFileSync(OUT + '\\queries-hits.jsonl', 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l));
 const from = Number(process.argv[2] ?? 0), to = Number(process.argv[3] ?? 15);
 for (const r of rows.slice(from, to)) {

@@ -1,7 +1,7 @@
 // tools/prevability-counterfactual.mjs —— 反事实三档表（规则判定 + 与人工校准批一致性验证 + 两套 r）
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const OUT = 'H:\\Harness\\_scratch\\prevability';
+const OUT = '<LOCAL_PATH>\\_scratch\\prevability';
 const cases = readFileSync(OUT + '\\cases.jsonl', 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l));
 const byId = new Map(cases.map((c) => [c.case_id, c]));
 

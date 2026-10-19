@@ -4,7 +4,7 @@
 //   **现行规则**＝canon 中 tags 含「抽象规则」（L2 层，⑥ 已打标）∪ 含 {纪律,红线,判据,坑} 的条目 ∪ RECALL_TRAP_MAP（工具坑表）。
 //   判定（机械可复核）：事故的"触发词"（工具名/路径片段/关键词）能匹配到 ≥1 条现行规则 ⇒ **可预防**；否则 ⇒ **缺口**；
 //   规则触发词过度宽泛（仅 1 个 ≤2 字常见词）⇒ 标 **可能误杀**。
-// 2026-10-17 发版修：原为 `file:///H:/Harness/akasha/lib.mjs`（活树绝对路径）——
+// 2026-10-17 发版修：原为 `file:///<AKASHA_DIR>/lib.mjs`（活树绝对路径）——
 //   同步到 OSS 时会被替换成占位符 `<AKASHA_DIR>`，而 `file:///<AKASHA_DIR>/lib.mjs` 是**非法 file URL**
 //   （实测 ERR_INVALID_FILE_URL_PATH: must be absolute）。改成相对引用，两套布局都能由同步器映射。
 import { currentRecords, loadStore, recallToolTraps } from './lib.mjs';

@@ -5,9 +5,9 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const HERE = 'H:\\Harness\\akasha\\tools';
+const HERE = '<AKASHA_DIR>\\tools';
 const NODE = process.execPath;
-const OUTDIR = 'H:\\Harness\\docs\\observe';
+const OUTDIR = '<LOCAL_PATH>\\docs\\observe';
 // 基线 = C1/C3 上线**之前**（上线日 2026-10-10）；观察 = 从上线日当天起（不与基线重叠）。
 // 2026-10-11 修：早期版本把观察窗口算成「今天往前 7 天」，与基线重叠 ⇒ 差值恒为 0（假对照）。
 const BASE = '2026-10-06:2026-10-09';

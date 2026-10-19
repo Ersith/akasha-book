@@ -2,8 +2,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { loadStore, currentRecords, revise } from './lib.mjs';
 
-const OUT = 'H:\\Harness\\_ab';
-const OSS = 'H:\\Harness\\dist\\akasha-oss';
+const OUT = '<LOCAL_PATH>\\_ab';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
 const log = readFileSync(OUT + '\\ab-log.jsonl', 'utf8').trim().split(/\r?\n/).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 const tasks = log.filter((r) => /^T\d\d$/.test(r.task));
 const on = tasks.filter((r) => r.arm === 'on');
@@ -52,7 +52,7 @@ if (!t.includes('## 6. 第一批判定')) {
     '',
   ].join('\n');
   writeFileSync(P, t + block, 'utf8');
-  writeFileSync('H:\\Harness\\docs\\ab-task-battery.md', t + block, 'utf8');
+  writeFileSync('<LOCAL_PATH>\\docs\\ab-task-battery.md', t + block, 'utf8');
   console.log('  [battery] 第一批判定 + 第二批重设计 已追加（双份）');
 }
 

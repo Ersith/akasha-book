@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
-const ROOT = 'H:\\Harness\\_ab';
+const ROOT = '<LOCAL_PATH>\\_ab';
 const T = (n) => join(ROOT, 'tasks', 'T' + String(n).padStart(2, '0'));
 
 // 每题：{ files: {相对路径: 内容}, task: 任务描述（含判据） }

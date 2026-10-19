@@ -30,8 +30,8 @@ for (const s of ['canon', 'frontier', 'orphan', 'mirror', 'pricing', 'lexicon'])
 }
 const existingIds = new Set(currentRecords(loadStore('canon').records).map((r) => String(r.id)));
 
-const files = [...walk('H:/Harness/research'), ...walk('H:/Harness/docs')]
-  .map((p) => ({ p, rel: norm(p).replace('H:/Harness/', '') }))
+const files = [...walk('<LOCAL_PATH>/research'), ...walk('<LOCAL_PATH>/docs')]
+  .map((p) => ({ p, rel: norm(p).replace('<LOCAL_PATH>/', '') }))
   .filter((x) => !EXCLUDE.test('/' + x.rel) && IN_SCOPE.test(x.rel))
   .filter((x) => ![...refs].some((r) => r.endsWith(basename(x.p).toLowerCase())))
   .sort((a, b) => statSync(b.p).size - statSync(a.p).size);

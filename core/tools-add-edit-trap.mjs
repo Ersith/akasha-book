@@ -26,7 +26,7 @@ else {
 }
 
 // 挂进 C2 映射表（edit → 新条目）
-for (const F of ['H:\\Harness\\akasha\\lib.mjs', 'H:\\Harness\\dist\\akasha-oss\\core\\lib.mjs']) {
+for (const F of ['<AKASHA_DIR>\\lib.mjs', '<LOCAL_PATH>\\dist\\akasha-oss\\core\\lib.mjs']) {
   let t = readFileSync(F, 'utf8');
   const oldLine = "  edit: ['canon-review-manual-20261010'],";
   const newLine = "  edit: ['canon-trap-edit-context-mismatch', 'canon-review-manual-20261010'],";

@@ -48,7 +48,7 @@ const MAP = [
   ["  grep: ['canon-review-manual-20261010'],", "  grep: ['canon-trap-grep-exit2-path', 'canon-review-manual-20261010'],"],
   ["  'multi_tool_use.parallel': [],", "  'multi_tool_use.parallel': ['canon-trap-unknown-tool-name'],"], // 可能不存在，下面兜底
 ];
-for (const F of ['H:\\Harness\\akasha\\lib.mjs', 'H:\\Harness\\dist\\akasha-oss\\core\\lib.mjs']) {
+for (const F of ['<AKASHA_DIR>\\lib.mjs', '<LOCAL_PATH>\\dist\\akasha-oss\\core\\lib.mjs']) {
   let t = readFileSync(F, 'utf8');
   t = t.replace("  read: ['canon-review-manual-20261010'],", "  read: ['canon-trap-read-offset-range', 'canon-review-manual-20261010'],");
   t = t.replace("  grep: ['canon-review-manual-20261010'],", "  grep: ['canon-trap-grep-exit2-path', 'canon-review-manual-20261010'],");
@@ -73,7 +73,7 @@ for (const [q, id] of checks) {
 }
 
 // 反事实回测：忽略时间过滤，看"若当时已有这些条目"，多少 case 有覆盖性命中
-const rows = readFileSync('H:\\Harness\\_scratch\\prevability\\queries-hits.jsonl', 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l));
+const rows = readFileSync('<LOCAL_PATH>\\_scratch\\prevability\\queries-hits.jsonl', 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l));
 const NEW_IDS = ['canon-trap-edit-context-mismatch', 'canon-trap-read-offset-range', 'canon-trap-grep-exit2-path', 'canon-trap-unknown-tool-name', 'canon-trap-provider-method-list'];
 let cf = 0;
 const detail = [];
@@ -83,6 +83,6 @@ for (const r of rows) {
   const covered = (d.hits ?? []).some((h) => h.strong && NEW_IDS.some((n) => String(h.id).startsWith(n)));
   if (covered) { cf++; detail.push(r.case_id + '/' + r.tool); }
 }
-writeFileSync('H:\\Harness\\_scratch\\prevability\\counterfactual.json', JSON.stringify({ cases: rows.length, covered: cf, detail }, null, 1), 'utf8');
+writeFileSync('<LOCAL_PATH>\\_scratch\\prevability\\counterfactual.json', JSON.stringify({ cases: rows.length, covered: cf, detail }, null, 1), 'utf8');
 console.log('  [反事实回测] 49 条中 **' + cf + '** 条有"若当时有料则覆盖"的强命中（' + (cf / rows.length * 100).toFixed(0) + '%）');
 console.log('    明细（前 12）：' + detail.slice(0, 12).join(' , '));

@@ -1,7 +1,7 @@
 // akasha/tools/degradation-stats.mjs v2 —— 退化评测素材：每会话 轮/压缩/工具/索引/时间 + 本会话聚焦
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-const ROOT = process.env.AKASHA_ROOT || 'H:/Harness/akasha';
+const ROOT = process.env.AKASHA_ROOT || '<AKASHA_DIR>';
 const logs = process.env.AKASHA_LOGS || join(ROOT, 'logs');
 const lines = readFileSync(join(logs, 'hooks.jsonl'), 'utf8').trim().split('\n');
 const S = new Map();

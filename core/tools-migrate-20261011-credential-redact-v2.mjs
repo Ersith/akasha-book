@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync } from
 import { redact } from './lib.mjs';
 
 // ── ① 修 lib.mjs 的值侧 ──
-const LF = 'H:/Harness/akasha/lib.mjs';
+const LF = '<AKASHA_DIR>/lib.mjs';
 let src = readFileSync(LF, 'utf8');
 const OLD = "|\\d{1,4}\\b|-{1,3}\\s*$)(\\S+)/gi, '$1[redacted]'],";
 const NEW = "|\\d{1,4}\\b|-{1,3}\\s*$)([A-Za-z0-9_\\-./+:=]{6,})/gi, '$1[redacted]'],";
@@ -23,7 +23,7 @@ else {
 
 // ── ② 结构化回填（重新导入改后的 lib）──
 const lib = await import('./lib.mjs');
-const TARGET = 'H:/Harness/akasha/data/session.jsonl';
+const TARGET = '<AKASHA_DIR>/data/session.jsonl';
 const apply = process.argv.includes('--apply');
 const lines = readFileSync(TARGET, 'utf8').split(/\r?\n/).filter(Boolean);
 
@@ -56,7 +56,7 @@ console.log('   自检②幂等（再跑应 0）：' + (again === 0 ? '✓ 0 变
 if (stillBad || again) { console.log('   ⇒ 自检不过，**不写盘**'); process.exit(3); }
 if (!apply) { console.log('   （未加 --apply ⇒ 只报告）'); process.exit(0); }
 
-const trash = 'H:/Harness/akasha/data/_trash';
+const trash = '<AKASHA_DIR>/data/_trash';
 if (!existsSync(trash)) mkdirSync(trash, { recursive: true });
 const bak = trash + '/session.jsonl.pre-credential-redact2-2026-10-11';
 copyFileSync(TARGET, bak);

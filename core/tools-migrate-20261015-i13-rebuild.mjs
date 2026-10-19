@@ -7,10 +7,10 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as s from './session.mjs';
 
-const ROOT = 'H:/Harness/akasha';
+const ROOT = '<AKASHA_DIR>';
 const STORE = join(ROOT, 'data', 'session.jsonl');
 const META = join(ROOT, 'data', 'session-meta.json');
-const BAK = 'H:/Harness/_rollback-20261015-i13';
+const BAK = '<LOCAL_PATH>/_rollback-20261015-i13';
 const APPLY = process.argv.includes('--apply');
 
 const meta = JSON.parse(readFileSync(META, 'utf8'));

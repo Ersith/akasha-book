@@ -30,10 +30,10 @@ const walk = (dir) => {
 const norm = (p) => String(p).replace(/\\/g, '/');
 const EXCLUDE = /(node_modules|\/vendor\/|top20\/sources\/|awesome-|\/upstream\/|dsh-tavern|history\/AGENTS-|third[_-]?party|\.min\.)/i;
 const IN_SCOPE = /(akasha|memory-architecture|session-layer|superpowers\/plans|history\/akasha|PROTOCOL|MEMORY-TEST|mirror|lexicon|frontier)/i;
-const files = [...walk('H:/Harness/research'), ...walk('H:/Harness/docs')]
+const files = [...walk('<LOCAL_PATH>/research'), ...walk('<LOCAL_PATH>/docs')]
   .filter((x) => !EXCLUDE.test(norm(x.p)) && IN_SCOPE.test(norm(x.p)))
   .map(({ p, stat }) => {
-    const rel = p.replace(/\\/g, '/').replace('H:/Harness/', '');
+    const rel = p.replace(/\\/g, '/').replace('<LOCAL_PATH>/', '');
     const name = basename(p).toLowerCase();
     const hit = [...refs].some((r) => r.endsWith(name) || rel.toLowerCase().endsWith(r) || r.endsWith(rel.toLowerCase()));
     return { rel, kb: Math.round(stat.size / 1024), ref: hit, mtime: stat.mtime.toISOString().slice(0, 10) };

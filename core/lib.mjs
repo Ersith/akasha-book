@@ -171,6 +171,7 @@ export function quarantineTail(file) {
     const tail = Buffer.alloc(tailLen);
     readSync(fd, tail, 0, tailLen, tailStart);
     const text = tail.toString('utf8');
+    if (text.trim() === '') { ftruncateSync(fd, tailStart); return { repaired: true, bytes: tailLen }; }
     let parsed = null;
     try { parsed = JSON.parse(text.trim()); } catch { /* 真坏行 */ }
     if (parsed && typeof parsed === 'object') {
@@ -179,7 +180,11 @@ export function quarantineTail(file) {
     }
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const q = `${file}.corrupt-${stamp}`;
-    appendFileSync(q, JSON.stringify({ quarantined_at: new Date().toISOString(), source: file, bytes: tailLen, tail: text }) + '\n', 'utf8');
+    const qfd = openSync(q, 'a');
+    try {
+      writeSync(qfd, JSON.stringify({ quarantined_at: new Date().toISOString(), source: file, bytes: tailLen, tail: text, tail_b64: tail.toString('base64') }) + String.fromCharCode(10));
+      fsyncSync(qfd);
+    } finally { closeSync(qfd); }
     ftruncateSync(fd, tailStart);
     return { quarantined: q, bytes: tailLen };
   } finally { closeSync(fd); }
@@ -209,11 +214,35 @@ export function withFileLock(file, fn, opts = {}) {
       const info = readLockInfo(lock);
       const age = lockAgeMs(lock);
       const stale = info
-        ? (info.host === host ? !pidAlive(info.pid) : age > 60000)
+        ? (info.host === host ? (!pidAlive(info.pid) || (Number.isFinite(info.at) ? Date.now() - info.at > 10 * 60 * 1000 : age > 10 * 60 * 1000)) : age > 60000)
         : age > 30000;
       if (stale) {
-        const claim = lock + '.stale-' + process.pid;
-        try { renameSync(lock, claim); unlinkSync(claim); continue; } catch { /* 别人先接管 */ }
+        // 2026-10-19 审查 P0-1：判 stale 与「拿走锁」必须串行——否则 A 建新锁后、B 的 rename 会拿走 A 的活锁。
+        //   闸：<lock>.steal（O_EXCL）；拿到闸后重读锁确认仍 stale 才 rename/unlink，finally 释放闸。
+        const gate = lock + '.steal';
+        let gfd;
+        try { gfd = openSync(gate, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY); }
+        catch (e) {
+          if (e.code !== 'EEXIST') throw e;
+          try { if (lockAgeMs(gate) > 30000) unlinkSync(gate); } catch { /* 刚释放 */ }
+        }
+        if (gfd !== undefined) {
+          try {
+            const info2 = readLockInfo(lock);
+            const age2 = lockAgeMs(lock);
+            const stale2 = info2
+              ? (info2.host === host ? (!pidAlive(info2.pid) || (Number.isFinite(info2.at) ? Date.now() - info2.at > 10 * 60 * 1000 : age2 > 10 * 60 * 1000)) : age2 > 60000)
+              : age2 > 30000;
+            if (stale2) {
+              const claim = lock + '.stale-' + process.pid + '-' + token.slice(0, 8);
+              try { renameSync(lock, claim); unlinkSync(claim); } catch { /* 已被别的接管者处理 */ }
+            }
+          } finally {
+            try { closeSync(gfd); } catch { /* 已关 */ }
+            try { unlinkSync(gate); } catch { /* 已删 */ }
+          }
+          continue;
+        }
       }
       if (Date.now() - start > timeoutMs) {
         throw new Error(`锁超时：${lock}（持有者 pid=${info && info.pid ? info.pid : '未知'} host=${info && info.host ? info.host : '?'}，已等 ${Date.now() - start}ms；不抢活锁）`);
@@ -4437,6 +4466,7 @@ export function retireRecord(store, id, opts = {}) {
 }
 
 function retireRecordUnlocked(store, id, opts, file) {
+  quarantineTail(file);   // 2026-10-19 审查 P1-4：硬删会整文件重写——先把坏尾搬走，避免坏行被静默丢弃
   const hard = opts.hard === true;
   const reason = typeof opts.reason === 'string' && opts.reason.trim() ? opts.reason.trim() : '';
   const records = loadStore(store, file).records;
@@ -4599,11 +4629,12 @@ function appendRecordUnlocked(store, obj, file, opts = {}) {
   const errs = validateRecord(store, record);
   if (errs.length) throw new Error('校验失败：' + errs.join('；'));
   mkdirSync(dirname(file), { recursive: true });
-  quarantineTail(file);
+  const quar = quarantineTail(file);
+  if (quar && quar.quarantined) console.error('[akasha] 已隔离损坏尾行 ' + quar.bytes + 'B → ' + quar.quarantined);
   const fd = openSync(file, 'a');
   try { writeSync(fd, JSON.stringify(record) + '\n'); fsyncSync(fd); }
   finally { closeSync(fd); }
-  return { store, file, id: record.id };
+  return { store, file, id: record.id, ...(quar && quar.quarantined ? { quarantine: quar } : {}) };
 }
 
 export function appendRecord(store, obj, opts = {}) {

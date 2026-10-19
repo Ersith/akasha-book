@@ -2,7 +2,7 @@
 import { writeFileSync, readFileSync } from 'node:fs';
 import { loadStore, currentRecords, appendRecord, revise } from './lib.mjs';
 
-const OSS = 'H:\\Harness\\dist\\akasha-oss';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
 
 // ① canon：任务电池纪律（独立条目，便于检索）
 const recs = currentRecords(loadStore('canon').records);
@@ -40,7 +40,7 @@ const doc = [
   '- **做什么**：当**即将发生**的动作命中"已知坑映射表"（`RECALL_TRAP_MAP` 覆盖的工具）+ 高复发信号（如 24h 内同工具失败≥1），在**动作前**给一行**可执行提示**（例：「`edit` 前先读原文——库里 `canon-trap-edit-context-mismatch`」）。',
   '- **不做什么**：不做语义推理、不做全文注入；**不给建议清单**，只给**一条**最相关的。',
   '- **硬约束（Claude 要求）**：**短**（≤80 字）· **可关**（一枚开关 `preflightHints: false`）· **防膨胀**（同一坑 30 分钟内不重复；每回合最多 1 条）。',
-  '- **落点**：`@local/akasha-sleep` 的 context 行（order 135）或 gate 的 tool 前置钩子——**倾向前者**（渲染路径已验证、失败安全）。',
+  '- **落点**：`@akasha-book/akasha-sleep` 的 context 行（order 135）或 gate 的 tool 前置钩子——**倾向前者**（渲染路径已验证、失败安全）。',
   '- **验收**：① 关掉后零可见变化；② 触发率与误触发率可机检（hooks 线记 `preflight` 事件）；③ 连续 7 天观察"同坑复发率"是否下降。',
   '',
   '## C3｜断言前必查（stateful-fact gate）',
@@ -64,5 +64,5 @@ const doc = [
   '',
 ].join('\n');
 writeFileSync(P, doc, 'utf8');
-writeFileSync('H:\\Harness\\docs\\c1-c3-schedule.md', doc, 'utf8');
+writeFileSync('<LOCAL_PATH>\\docs\\c1-c3-schedule.md', doc, 'utf8');
 console.log('  [docs] C1/C3 排期已写（双份）');

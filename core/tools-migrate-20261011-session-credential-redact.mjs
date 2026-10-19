@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { redact } from './lib.mjs';   // ⚠️ 脚本在 tools/ 下 ⇒ 核心库是上一级 ../lib.mjs（本行踩过一次）
 
-const TARGET = 'H:/Harness/akasha/data/session.jsonl';
+const TARGET = '<AKASHA_DIR>/data/session.jsonl';
 const REASON = 'pre-credential-redact';
 const DATE = new Date().toISOString().slice(0, 10);
 const apply = process.argv.includes('--apply');
@@ -24,7 +24,7 @@ console.log('  总行 ' + lines.length + ' · 变更 ' + changed + ' 行');
 if (!changed) { console.log('  ✓ 无事可做（幂等）'); process.exit(0); }
 if (!apply) { console.log('  （未加 --apply ⇒ 只报告，不写盘）'); process.exit(0); }
 
-const trash = 'H:/Harness/akasha/data/_trash';
+const trash = '<AKASHA_DIR>/data/_trash';
 if (!existsSync(trash)) mkdirSync(trash, { recursive: true });
 const bak = trash + '/session.jsonl.' + REASON + '-' + DATE;
 copyFileSync(TARGET, bak);

@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
-const T2 = 'H:\\Harness\\_ab\\tasks2';
-const OSS = 'H:\\Harness\\dist\\akasha-oss';
+const T2 = '<LOCAL_PATH>\\_ab\\tasks2';
+const OSS = '<LOCAL_PATH>\\dist\\akasha-oss';
 
 // v2：task（runner 可见，**不含判据/答案**）；judge（判据，runner 不可见）；files
 const B = {
@@ -61,6 +61,6 @@ if (!doc.includes('## 9. 预筛（第一批次）')) {
     '',
   ].join('\n');
   writeFileSync(P, doc + block, 'utf8');
-  writeFileSync('H:\\Harness\\docs\\ab-task-battery.md', doc + block, 'utf8');
+  writeFileSync('<LOCAL_PATH>\\docs\\ab-task-battery.md', doc + block, 'utf8');
   console.log('  [battery] §9 已追加（双份）');
 } else console.log('  [battery] already');

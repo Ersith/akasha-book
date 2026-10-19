@@ -83,7 +83,7 @@ function print(rows) {
     if (r.abstract) console.log("     摘要：" + r.abstract.slice(0, 140) + (r.abstract.length > 140 ? "…" : ""));
   });
   if (has("--draft")) {
-    const dir = "H:\\Harness\\_scratch\\paper-drafts";
+    const dir = "<LOCAL_PATH>\\_scratch\\paper-drafts";
     mkdirSync(dir, { recursive: true });
     const next = new Date(Date.now() + 180 * 864e5).toISOString().slice(0, 10);
     const drafts = rows.map((r) => ({
