@@ -19,6 +19,21 @@
 
 安装见 [`docs/INSTALL.md`](docs/INSTALL.md)；内容边界见 [`CONTENTS.md`](CONTENTS.md)。
 
+
+
+## v0.1.4（2026-10-19）
+
+| 项 | 值 |
+|---|---|
+| tag | `v0.1.4` |
+| commit | `6af5a49`（P0 审查返工：锁接管竞态闸 / 长龄兜底按 at / 原字节 b64 / hard 前隔离 / session 追加前隔离 / CI 时区） |
+| npm 插件 | 与 v0.1.3 相同（gate 1.4.4 / hooks 1.2.10 / session 0.3.7 / sleep 1.10.32 / mcp 1.1.6） |
+| core 测试 | `node core/test.mjs` → **295 passed / 0 failed / 0 skipped** |
+| 插件自检 | 5/5 通过 |
+| 并发锁压力 | 6 轮 × 10 进程争抢陈锁：**0 重叠**（临时目录，临界区 8ms） |
+| CI | GitHub Actions `.github/workflows/ci.yml` → **success**（Linux / Node 24 / TZ=Asia/Shanghai） |
+| 已知限制 | 同 v0.1.3；另有 P2 已知项（Atomics.wait 阻塞事件循环、隔离件清理策略等）留待后续 |
+
 ## 发布流程（此后每版照抄）
 
 1. 冻结改动，跑 `node core/test.mjs` + `node core/akasha.mjs check` + 五个插件 selftest + 活树 `oss-release-check`。
