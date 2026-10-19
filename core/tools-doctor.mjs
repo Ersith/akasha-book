@@ -157,6 +157,19 @@ run('六库', () => {
   return { status: 'pass', detail: parts.join(' ') };
 });
 
+// ── 2.5 损坏隔离件（2026-10-19 P1-5）──
+run('损坏隔离件', () => {
+  const dirs = [...new Set([DATA, dirname(SESSION_DEFAULTS.storeFile)])].filter((d) => { try { return existsSync(d); } catch { return false; } });
+  const found = [];
+  for (const d of dirs) {
+    let names = [];
+    try { names = readdirSync(d); } catch { continue; }
+    for (const f of names) if (f.includes('.corrupt-')) found.push(join(d, f));
+  }
+  if (!found.length) return { status: 'pass', detail: '无 .corrupt-*（写前尾部检查未发现坏尾）' };
+  return { status: 'warn', detail: `发现 ${found.length} 个隔离件（最近：${basename(found[found.length - 1])}）`, fix: '确认坏尾已在 .corrupt-* 中留档后人工清理；不要直接删主文件' };
+});
+
 // ── 3. 会话索引 ──
 run('会话索引', () => {
   const f = SESSION_DEFAULTS.storeFile;
