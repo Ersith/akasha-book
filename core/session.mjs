@@ -418,17 +418,18 @@ function readMeta(metaFile) {
  *  锁序与 marks 路径一致（store → meta），无反向取锁；appendSegments 本身不再取锁，调用方必须持 storeFile。
  *  timeout 20s：大档案解压 + 58MB store load 约 2.5s，默认 5s 余量偏小（2026-10-19 复审 P2-5）。 */
 export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.storeFile, metaFile = SESSION_DEFAULTS.metaFile, full = false, lock = true } = {}) {
+  // 会话 id 归一（2026-10-15，P1 审计）：两种形态解析到同一档案 ⇒ 入口统一存裸形态，杜绝孪生重复。
+  const sid = normalizeSid(session);
+  const { text, frameFails, frameTruncated } = readSessionArchive(file);
+  const records = [];
+  let parseFails = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    try { records.push(JSON.parse(s)); } catch { parseFails += 1; }
+  }
+  // 2026-10-19 人工复检：档案读取/解压/JSON 解析移到锁外——锁内只做「水位 → 去重 → 追加 → 记账」。
   const run = () => {
-    // 会话 id 归一（2026-10-15，P1 审计）：两种形态解析到同一档案 ⇒ 入口统一存裸形态，杜绝孪生重复。
-    const sid = normalizeSid(session);
-    const { text, frameFails, frameTruncated } = readSessionArchive(file);
-    const records = [];
-    let parseFails = 0;
-    for (const line of text.split(/\r?\n/)) {
-      const s = line.trim();
-      if (!s) continue;
-      try { records.push(JSON.parse(s)); } catch { parseFails += 1; }
-    }
     const seqOf = (rec, i) => (Number.isInteger(rec.seq) ? rec.seq : i + 1);
     const meta = readMeta(metaFile);
     const prev = meta.sessions?.[sid] ?? {};
@@ -463,7 +464,8 @@ export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.store
     const incoming = segs.filter((x) => !existing.has(x.id) && !existingKeys.has(contentKey(x)));
     const skipped = segs.length - incoming.length;
     appendSegments(storeFile, incoming);
-    const ownedRecs = loadStore('session', storeFile).records.filter((r) => sessionMatches(r.session, sid));
+    // 追加后的 owned 集合 = 追加快照 + 本批 incoming（同 id；避免再 load 一次 58MB store）
+    const ownedRecs = [...inStore, ...incoming].filter((r) => sessionMatches(r.session, sid));
     const ownedIds = new Set(ownedRecs.map((r) => r.id));
     const conclIds = new Set(ownedRecs.filter((r) => r.kind === 'conclusion').map((r) => r.id));
     const next = {
