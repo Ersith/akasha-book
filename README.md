@@ -128,7 +128,7 @@ node ../tests/run-review5.mjs # 【仅开源仓】四套行为回归：redaction
 ## 数据纪律
 
 - append-only：只追加、不改行；更正 = `revise` 追加新版（supersedes），`currentRecords` 取链尾（对应设计稿「冲突不合并」）。
-- 并发：同机 `.lock` 文件锁（按 pid 判活）；锁告警写 `logs/lock-warn.jsonl`；跨主机共享库文件不支持。
+- 并发：同机 `.lock` 文件锁（按 pid 判活）；锁释放失败或临界区超预算记 `logs/lock-warn.jsonl`（不写六库）；跨主机共享库文件不支持。
 - 双时态：`event_time`（事件时间，可选、作者写）与 `logged_at`（记录时间，写入路径自动盖戳）两轴分开。
 - `check` 是「可机检层」的雏形：**能机检的才算硬约束**（设计稿 §10）。
 

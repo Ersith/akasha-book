@@ -313,6 +313,17 @@ if (lib) {
     assert.equal(existsSync(gate), false);
     rmSync(dir, { recursive: true, force: true });
   });
+  t('Adapt 器：Hindsight 未给 bank 时自动发现唯一 bank', async () => {
+    const urls = [];
+    const h = adapters.hindsightHttpHooks({ baseUrl: 'http://unit.test', fetchImpl: async (u) => {
+      urls.push(u);
+      if (u.endsWith('/v1/default/banks')) return { ok: true, status: 200, json: async () => ({ banks: [{ bank_id: 'auto-bank' }] }) };
+      return { ok: true, status: 200, json: async () => ({ results: [] }) };
+    } });
+    const r = await h.search('q');
+    assert.equal(r.degraded, false);
+    assert.ok(urls[1].includes('/auto-bank/knowledge-base/search'), urls[1]);
+  });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));
     const tmp = join(dir, '.tmp-test.jsonl');
