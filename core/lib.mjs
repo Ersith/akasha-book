@@ -321,7 +321,9 @@ export function parseJsonl(text) {
 const STORE_CACHE = process.env.AKASHA_NOCACHE === '1' ? null : new Map();
 
 function storeSig(file) {
-  try { const st = statSync(file); return st.mtimeMs + ':' + st.size; } catch { return null; }
+  // P3 修正（2026-10-20 Codex 审查）：加入 ino + ctimeMs——touch -r / cp -p / 解压保留时间 会改 ino 或 ctime，
+  // 单靠 mtimeMs+size 会漏；读路径另做 before/after 复核防 TOCTOU。
+  try { const st = statSync(file); return st.ino + ':' + st.mtimeMs + ':' + st.ctimeMs + ':' + st.size; } catch { return null; }
 }
 
 /** 写路径调用：让该库缓存失效（不传 name ⇒ 全清）。 */
@@ -334,12 +336,18 @@ export function clearStoreCache() { invalidateStoreCache(undefined); }
 export function loadStore(name, file = storePath(name)) {
   if (!existsSync(file)) return { name, records: [], errors: [{ line: 0, error: '文件不存在：' + file }] };
   if (!STORE_CACHE) return { name, ...parseJsonl(readFileSync(file, 'utf8')) };
-  const sig = storeSig(file);
   const hit = STORE_CACHE.get(name);
   // 同一 name 可能指向不同 file（opts.files / 测试夹具 / 沙箱根）⇒ file 必须一起比，否则串库
-  if (hit && hit.file === file && hit.sig === sig) return hit.value;
+  if (hit && hit.file === file) {
+    const now = storeSig(file);
+    if (now !== null && hit.sig === now) return hit.value;
+  }
+  // B6（2026-10-20 Codex 审查）：读路径不持写锁，append 可能正在写；用 stat→read→stat 复核，
+  // 且解析有错（半写尾行）不缓存，避免把截断结果冻结到下一次读取。
+  const before = storeSig(file);
   const value = { name, ...parseJsonl(readFileSync(file, 'utf8')) };
-  if (sig !== null) STORE_CACHE.set(name, { file, sig, value });
+  const after = storeSig(file);
+  if (before !== null && before === after && value.errors.length === 0) STORE_CACHE.set(name, { file, sig: after, value });
   return value;
 }
 
@@ -2021,11 +2029,11 @@ function recordsOf(name, opts = {}) {
 }
 
 /** 当前集 id → credibilityOf（链走到该条）。opts.today / files 透传。 */
-export function credibilityMap(store, records, opts = {}) {
+export function credibilityMap(store, records, opts = {}, current = null) {
   const map = new Map();
   // P1（2026-10-20）：索引建一次，循环内复用（原为每条记录重建全库 Map）
   const byId = new Map(records.filter((r) => isStr(r.id)).map((r) => [r.id, r]));
-  for (const r of currentRecords(records)) {
+  for (const r of (current || currentRecords(records))) {
     if (!isStr(r.id)) continue;
     map.set(r.id, credibilityOf(store, chainEndingAt(records, r, byId), opts));
   }
@@ -2300,9 +2308,10 @@ export function brief(query, opts = {}) {
   const rankOpts = loadBalanceEnabled(opts) ? { ...opts, usageWindow: opts.usageWindow || resolveUsageWindow(opts) } : opts;
   for (const name of STORES) {
     const records = recordsOf(name, opts);
-    const creds = credibilityMap(name, records, opts);
+    const cur = currentRecords(records);              // P2（2026-10-20）：只算一次，credibilityMap 复用
+    const creds = credibilityMap(name, records, opts, cur);
     const scored = [];
-    for (const r of currentRecords(records)) {
+    for (const r of cur) {
       const cred = creds.get(r.id);
       if (cred && cred.refuted && !opts.includeRefuted) { filtered.refuted += 1; continue; }
       if (!inRange(r, opts.since, opts.until) && tsOf(r)) { filtered.outOfRange += 1; continue; }   // #12 只数「有戳且超范围」；无戳走日期三分提示

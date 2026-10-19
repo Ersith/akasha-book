@@ -10,6 +10,7 @@ import { hostname, tmpdir } from 'node:os';
 import { runCheckerSelftest } from './tools-checker-selftest.mjs';
 import * as companion from './companion.mjs';
 import { SCAFFOLD_RE } from './session.mjs';
+import { checkImportDirection } from './contract.mjs';
 import * as adapters from './adapters.mjs';
 
 // ── 可选依赖：akasha-gate 插件（D2，2026-10-19 发布面 P1）─────────────────────────────────
@@ -119,6 +120,11 @@ function tz(name, fn) {
 }
 
 // B-②（2026-10-17）元测试：把"等不到必须是红"钉进套件自身——谁把 waitFor 改成静默 PASS，这条先红。
+t('contract：模块 import 方向 lint 全绿（能红）', () => {
+  const r = checkImportDirection();
+  assert.equal(r.ok, true, '契约错误：' + r.errors.join('；'));
+  assert.ok(r.checked >= 10, '检查模块数过少：' + r.checked);
+});
 t('B-②：waitFor 有界等待——条件永不成立 ⇒ 抛「等不到」（上限写死毫秒 ⇒ 红，不是 PASS）', async () => {
   let seen = null;
   await assert.rejects(
@@ -6130,6 +6136,12 @@ t('P3 库签名缓存：写后失效 / 跨文件不串库 / 外部直写靠签�
     // ③ 外部直写（绕过 appendRecord，只有 size/mtime 会变）也必须失效
     appendFileSync(f2, JSON.stringify(mk('other-2', 'third')) + '\n', 'utf8');
     assert.equal(lib.loadStore('canon', f2).records.length, 2, '外部追加后应读到 2 条（签名变化触发失效）');
+
+    // ⑤ B6（Codex 审查）：半写尾行不得被缓存成稳定结果
+    appendFileSync(f2, '{"id":"partial"', 'utf8');
+    assert.ok(lib.loadStore('canon', f2).errors.length > 0, '半写尾行应报解析错');
+    appendFileSync(f2, '}' + String.fromCharCode(10), 'utf8');
+    assert.equal(lib.loadStore('canon', f2).errors.length, 0, '补齐后必须读到干净结果（错误结果不得被缓存）');
 
     // ④ 显式清缓存后重读：结果必须与缓存命中时一致
     lib.clearStoreCache();
