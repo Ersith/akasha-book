@@ -236,6 +236,24 @@ if (lib) {
     for (const s of ['<ledger_knowledge>', '<persona_context>']) assert.ok(SCAFFOLD_RE.test(s), '新标签未命中：' + s);
     assert.ok(!SCAFFOLD_RE.test('普通用户消息'), '普通文本被误伤');
   });
+  t('CompanionPort：注入 hooks 后 mode=live，recall/read/health 走 adapter', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-adapter-'));
+    const f = join(dir, 'companions.json');
+    writeFileSync(f, JSON.stringify({ companions: { repo: { driver: 'fake' } } }), 'utf8');
+    const hooks = { fake: {
+      search: (q, opts) => ({ hits: [{ id: 'h1', text: q, opts }], via: 'fake' }),
+      read: (id) => ({ record: { id }, depth: 'summary' }),
+      health: () => ({ ok: true, detail: 'fake-live' }),
+    } };
+    const ports = companion.resolvePorts({ file: f, hooks });
+    const repo = ports.find((p) => p.kind === 'repo');
+    assert.equal(repo.health().mode, 'live'); assert.equal(repo.health().ok, true);
+    assert.equal(repo.capabilities().recall, true); assert.equal(repo.capabilities().read, true);
+    const r = repo.recall('门控', { limit: 1 });
+    assert.equal(r.hits[0].id, 'h1'); assert.equal(r.hits[0].text, '门控'); assert.deepEqual(r.hits[0].opts, { limit: 1 });
+    assert.equal(repo.read('h1').record.id, 'h1');
+    rmSync(dir, { recursive: true, force: true });
+  });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));
     const tmp = join(dir, '.tmp-test.jsonl');

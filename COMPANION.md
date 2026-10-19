@@ -38,6 +38,14 @@
 
 `skipTagsFor(ports)` 返回默认标签 ∪ 各端口标签——**默认标签始终在**，避免切主期漏跳异层注入块。阿卡夏会话索引的 `SCAFFOLD_RE` 已改成从这里取标签（不再写死品牌）。
 
+## 3.1 Adapter 注入（宿主提供，核心零依赖）
+
+`resolvePorts({ file, hooks })`：`hooks[driver] = { search(query, opts), read(id, opts), health() }`。
+- 注入 `search` ⇒ `mode: live`、`capabilities.recall=true`，`recall()` 直接透传 adapter 结果（不在此层改写/合并）。
+- 注入 `read` ⇒ `capabilities.read=true`。
+- 注入 `health` ⇒ `health()` 透传；异常记为 `{ok:false, mode:'degraded'}`。
+- 未注入 ⇒ 保持 `degraded`（v1 默认）。**核心不 import 任何外部 SDK**；宿主（DSH 插件）负责把 MCP 工具包成 hooks。
+
 ## 4. 切主条件（写死）
 
 1. 连续观察期内端口主路径失败率 ≤ 现配套；

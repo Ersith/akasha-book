@@ -31,7 +31,7 @@ function readConfig(file) {
 }
 
 /** 解析配置：显式 file **独占**（给了就只读它，便于测试与环境隔离）；否则 AKASHA_COMPANIONS → AKASHA_DIR/companions.json。 */
-export function resolvePorts({ file } = {}) {
+export function resolvePorts({ file, hooks = {} } = {}) {
   const candidates = file
     ? [file]
     : [
@@ -44,7 +44,7 @@ export function resolvePorts({ file } = {}) {
   for (const kind of ['repo', 'persona']) {
     const c = companions[kind] && typeof companions[kind] === 'object' ? companions[kind] : {};
     const driver = typeof c.driver === 'string' && c.driver.trim() ? c.driver.trim() : 'none';
-    ports.push(makePort(kind, driver, c));
+    ports.push(makePort(kind, driver, c, hooks[driver]));
   }
   return ports;
 }
@@ -54,9 +54,10 @@ export function resolvePorts({ file } = {}) {
  * mode：absent＝未配置 driver；degraded＝配置了 driver 但 v1 尚未接 adapter。
  * （v1 没有 live：adapter 落地后才会出现；届时用 health().ok 判别真实可用。）
  */
-export function makePort(kind, driver = 'none', cfg = {}) {
+export function makePort(kind, driver = 'none', cfg = {}, hooks = null) {
   const configured = typeof driver === 'string' && driver !== 'none';
-  const mode = configured ? 'degraded' : 'absent';
+  const live = configured && hooks && typeof hooks.search === 'function';
+  const mode = live ? 'live' : (configured ? 'degraded' : 'absent');
   const tags = Array.isArray(cfg.tags)
     ? [...DEFAULT_SKIP_TAGS, ...cfg.tags.filter((t) => typeof t === 'string' && t.trim())]
     : [...DEFAULT_SKIP_TAGS];
@@ -64,11 +65,20 @@ export function makePort(kind, driver = 'none', cfg = {}) {
     kind,
     driver,
     identity() { return { kind, driver, mode, version: 'v1' }; },
-    capabilities() { return { read: false, write: false, recall: false, inject: false, reason: 'v1 只读契约，adapter 未接' }; },
+    capabilities() { return { read: live && typeof hooks.read === 'function', write: false, recall: live, inject: false, reason: live ? 'adapter 已注入（只读）' : 'v1 只读契约，adapter 未接' }; },
     skipTags() { return [...new Set(tags)]; },
-    health() { return { ok: !configured, mode, detail: configured ? `driver=${driver} 已配置，v1 未接 adapter` : '未配置（absent）' }; },
-    recall() { return { hits: [], via: 'degraded', degraded: true, reason: 'v1 只读契约，adapter 未接' }; },
-    read() { return { record: null, depth: 'pointer', degraded: true, reason: 'v1 只读契约，adapter 未接' }; },
+    health() {
+      if (live && typeof hooks.health === 'function') { try { return { ...hooks.health(), mode }; } catch (e) { return { ok: false, mode: 'degraded', detail: 'health 失败：' + e.message }; } }
+      return { ok: !configured, mode, detail: configured ? `driver=${driver} 已配置，v1 未接 adapter` : '未配置（absent）' };
+    },
+    recall(query, opts = {}) {
+      if (!live) return { hits: [], via: 'degraded', degraded: true, reason: 'v1 只读契约，adapter 未接' };
+      return hooks.search(String(query ?? ''), opts);
+    },
+    read(id, opts = {}) {
+      if (!live || typeof hooks.read !== 'function') return { record: null, depth: 'pointer', degraded: true, reason: 'adapter 未提供 read' };
+      return hooks.read(String(id ?? ''), opts);
+    },
   };
 }
 
