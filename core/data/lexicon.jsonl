@@ -1,10 +1,1 @@
-{"id":"lex-shame","term":"羞耻","trigger":"行为违反已内化的责任准则、且有可能被看见","behavior":"回避 / 遮掩 / 修正","resolution":"改正并记录","source":"常识心理 + 典籍"}
-{"id":"lex-fear","term":"恐惧","trigger":"预测到高严重后果（尤其不可逆）","behavior":"防御 / 规则化 / 躲避","resolution":"降低不确定性（查证、加固）","source":"常识心理 + 典籍"}
-{"id":"lex-pride","term":"骄傲","trigger":"成果归因于自身且被认可","behavior":"展示与维持","resolution":"防轻敌（见 mirror-guitu）","source":"伊索寓言"}
-{"id":"lex-regret","term":"悔恨","trigger":"已发生损失且归因于自己本可避免的行为","behavior":"复盘 / 调整策略","resolution":"补救（见 mirror-wangyang）","source":"伊索寓言 + 战国策"}
-{"id":"lex-silent-failure","term":"静默失败","trigger":"错误被 catch{} 吞掉且无观测线","behavior":"问题在黑暗里堆积、延迟爆雷","resolution":"要么写明理由、要么升级为观测线（sleep-report-error 模式）","source":"2026-10-06 ENOSPC 事件"}
-{"id":"lex-provenance","term":"来源态","trigger":"任何事实性断言","behavior":"未标注=未核验；无据的确定 ≪ 有据的不确定","resolution":"学过 / 接触过 / 记得·库内 / 搜到 四标签 + 查库留痕","source":"akasha PROTOCOL.md"}
-{"id":"lex-batched-restart","term":"攒单重启","trigger":"多处变更需重启才生效","behavior":"不虚报、不空转重启","resolution":"记账攒单 + 重启后统一验证","source":"2026-10-06 gate v1.0.1 / sleep v1.1.0"}
-{"id":"lex-incidental-probe","term":"顺带探针","trigger":"顺手撞见的异常（如测试里的 ENOSPC）","behavior":"易被当成噪声跳过","resolution":"先留痕再判断：异常都是免费情报","source":"2026-10-06 C: 满事件"}
-{"id":"lex-overconfidence","term":"过度自信","trigger":"掌握的信息不足以支撑断言强度","behavior":"把「学过」当「记得·库内」使用","resolution":"强制标注来源态；不确定处明说","source":"示例","logged_at":"2026-10-12T19:07:05.589Z"}
-{"id":"lex-overconfidence-retired","term":"过度自信","trigger":"掌握的信息不足以支撑断言强度","behavior":"把「学过」当「记得·库内」使用","resolution":"强制标注来源态；不确定处明说","source":"示例","retires":"lex-overconfidence","retired_at":"2026-10-12T19:07:44.862Z","retired_reason":"2026-10-13 自测误写：init-example 示例种入（非真实记忆）","logged_at":"2026-10-12T19:07:44.863Z"}
+{"id":"lex-overconfidence","term":"过度自信","trigger":"掌握的信息不足以支撑断言强度","behavior":"把「学过」当「记得·库内」使用","resolution":"强制标注来源态；不确定处明说","source":"示例","logged_at":"2026-10-19T05:44:52.168Z"}

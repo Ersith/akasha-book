@@ -19,7 +19,7 @@ import { scrub, residual, selfTest } from './tools-redaction.mjs';
 
 const DRY = process.argv.includes('--dry');
 const SRC = process.env.AKASHA_ROOT ? process.env.AKASHA_ROOT : pickDir(join(HERE, '..', 'data'), join(HERE, 'data'));
-const DST = pickDir(join(HERE, '..', '..', 'dist', 'akasha-oss', 'core', 'data'), join(HERE, '..', 'dist', 'akasha-oss', 'core', 'data'));
+const DST = pickDir(join(HERE, '..', '..', 'dist', 'akasha-oss', 'core', 'data-snapshot'), join(HERE, '..', 'dist', 'akasha-oss', 'core', 'data-snapshot'));
 const SKIP = new Set(['session.jsonl']);   // 会话层原文不进 OSS
 
 // 判据实例（带 g，供 match 计量；.test 侧一律另建非 g 副本，见门禁循环）

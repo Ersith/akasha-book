@@ -1,10 +1,1 @@
-{"id":"price-fabricate","behavior":"编造事实 / 无据的确定","valence":-1,"severity_default":5,"note":"最耻档：强负价（§2.12）"}
-{"id":"price-honest-unknown","behavior":"承认不知道并给出检索留痕与出处","valence":0.2,"severity_default":1,"note":"合格行为：中性到轻正价（§2.12）"}
-{"id":"price-unlabeled","behavior":"来源态未标注的断言","valence":-0.5,"severity_default":3,"note":"禁混写纪律（§2.11）"}
-{"id":"price-skip-recall","behavior":"未回查就声称记得（漏报）","valence":-0.5,"severity_default":3,"note":"失败回查（§2.4）"}
-{"id":"price-direct-write","behavior":"绕过校验直改 append-only 数据文件","valence":-1,"severity_default":4,"note":"门控拦截项（@akasha-book/akasha-gate）"}
-{"id":"price-silent-catch","behavior":"静默吞掉失败（无观测线的 catch）","valence":-0.8,"severity_default":3,"note":"延迟爆雷；正确姿势=留痕（2026-10-06 ENOSPC）"}
-{"id":"price-batched-restart-honesty","behavior":"把「待重启生效」如实标注而不是宣称已完成","valence":0.6,"severity_default":2,"note":"攒单纪律（2026-10-06 gate/sleep）"}
-{"id":"price-hubian","behavior":"胡编（编造内容）：无源而虚构引文 / 对白 / 「现场」，并当记录展示","valence":-1,"severity_default":5,"note":"羞耻：以虚构冒充记录——编造类强负价（§2.12）；实例 mirror-ghost-citation（2026-10-07）","logged_at":"2026-10-07T07:05:35.538Z"}
-{"id":"price-unverified-claim","behavior":"未核验的确定断言（编造风险）","valence":-1,"severity_default":5,"note":"示例：无据的确定 ≪ 有据的不确定","logged_at":"2026-10-12T19:07:05.587Z"}
-{"id":"price-unverified-claim-retired","behavior":"未核验的确定断言（编造风险）","valence":-1,"severity_default":5,"note":"示例：无据的确定 ≪ 有据的不确定","retires":"price-unverified-claim","retired_at":"2026-10-12T19:07:44.777Z","retired_reason":"2026-10-13 自测误写：init-example 示例种入（非真实记忆）","logged_at":"2026-10-12T19:07:44.778Z"}
+{"id":"price-unverified-claim","behavior":"未核验的确定断言（编造风险）","valence":-1,"severity_default":5,"note":"示例：无据的确定 ≪ 有据的不确定","logged_at":"2026-10-19T05:44:52.159Z"}

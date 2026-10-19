@@ -1,2 +1,0 @@
-{"id":"neg-3c1fa81e","ts":"2026-10-12T06:08:10.035Z","kind":"rejected-write","reason":"gate-deny","what":"write → akasha/data/_gate-probe.jsonl（活体探针·2026-10-12）","ref":"gate 1.3.0-h5"}
-{"id":"neg-c5d80588","ts":"2026-10-12T06:54:55.531Z","kind":"undecided","reason":"source 核定收尾：5 条他人条目需补真引","what":"canon-weight-subspace-paper / drift-backlog / llm-brain-regions-verdict / external-lingshu-recall / self-identity-correction —— ref 仍是 n/a，待补 arXiv 或文档链接","ref":"tools/audit-source-types-20261012.mjs"}
