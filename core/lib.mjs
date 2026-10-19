@@ -333,6 +333,12 @@ export function invalidateStoreCache(name) {
 }
 export function clearStoreCache() { invalidateStoreCache(undefined); }
 
+function storeView(value) {
+  // P3 契约（2026-10-20 Codex B2/B5）：缓存是内部快照，对外每次返回新的数组壳；
+  // 调用方 push/sort 不会污染缓存，且 NOCACHE 与缓存分支的数组恒等性一致。
+  return { name: value.name, records: value.records.slice(), errors: value.errors.slice() };
+}
+
 export function loadStore(name, file = storePath(name)) {
   if (!existsSync(file)) return { name, records: [], errors: [{ line: 0, error: '文件不存在：' + file }] };
   if (!STORE_CACHE) return { name, ...parseJsonl(readFileSync(file, 'utf8')) };
@@ -340,7 +346,7 @@ export function loadStore(name, file = storePath(name)) {
   // 同一 name 可能指向不同 file（opts.files / 测试夹具 / 沙箱根）⇒ file 必须一起比，否则串库
   if (hit && hit.file === file) {
     const now = storeSig(file);
-    if (now !== null && hit.sig === now) return hit.value;
+    if (now !== null && hit.sig === now) return storeView(hit.value);
   }
   // B6（2026-10-20 Codex 审查）：读路径不持写锁，append 可能正在写；用 stat→read→stat 复核，
   // 且解析有错（半写尾行）不缓存，避免把截断结果冻结到下一次读取。
@@ -348,7 +354,7 @@ export function loadStore(name, file = storePath(name)) {
   const value = { name, ...parseJsonl(readFileSync(file, 'utf8')) };
   const after = storeSig(file);
   if (before !== null && before === after && value.errors.length === 0) STORE_CACHE.set(name, { file, sig: after, value });
-  return value;
+  return storeView(value);
 }
 
 /**

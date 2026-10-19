@@ -22,6 +22,8 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Contract lint
+        run: node core/tools-check-import-direction.mjs
       - name: Core tests
         run: |
           set -euo pipefail

@@ -6143,6 +6143,11 @@ t('P3 库签名缓存：写后失效 / 跨文件不串库 / 外部直写靠签�
     appendFileSync(f2, '}' + String.fromCharCode(10), 'utf8');
     assert.equal(lib.loadStore('canon', f2).errors.length, 0, '补齐后必须读到干净结果（错误结果不得被缓存）');
 
+    // ⑥ B2/B5：调用方改返回数组不得污染缓存（每次返回新数组壳）
+    const view = lib.loadStore('canon', f1);
+    view.records.push({ id: 'polluted' });
+    assert.equal(lib.loadStore('canon', f1).records.length, 2, '返回数组不得与缓存共享');
+
     // ④ 显式清缓存后重读：结果必须与缓存命中时一致
     lib.clearStoreCache();
     assert.equal(lib.loadStore('canon', f1).records.length, 2, '清缓存后重读结果不变');
