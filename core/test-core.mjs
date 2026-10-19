@@ -10,6 +10,7 @@ import { hostname, tmpdir } from 'node:os';
 import { runCheckerSelftest } from './tools-checker-selftest.mjs';
 import * as companion from './companion.mjs';
 import { SCAFFOLD_RE } from './session.mjs';
+import * as adapters from './adapters.mjs';
 
 // ── 可选依赖：akasha-gate 插件（D2，2026-10-19 发布面 P1）─────────────────────────────────
 // 原来这里是**静态** `import * as gateMod from '../plugins/akasha-gate/index.js'` ⇒ 扁平部署（core/ 单独拷到
@@ -253,6 +254,17 @@ if (lib) {
     assert.equal(r.hits[0].id, 'h1'); assert.equal(r.hits[0].text, '门控'); assert.deepEqual(r.hits[0].opts, { limit: 1 });
     assert.equal(repo.read('h1').record.id, 'h1');
     rmSync(dir, { recursive: true, force: true });
+  });
+  t('Adapt 器：hindsight/openviking hooks 映射工具名与 hits', () => {
+    const calls = [];
+    const h = adapters.hindsightHooks((name, args) => { calls.push([name, args]); return { pages: [{ id: 'p1' }] }; });
+    const r = h.search('门控', { limit: 2 });
+    assert.equal(r.hits[0].id, 'p1');
+    assert.deepEqual(calls[0], ['hindsight_search_knowledge_pages', { query: '门控', limit: 2 }]);
+    h.read('p1'); assert.equal(calls[1][0], 'hindsight_read_knowledge_page');
+    const o = adapters.openvikingHooks((name, args) => { calls.push([name, args]); return { results: [{ uri: 'viking://x' }] }; });
+    assert.equal(o.search('记忆').hits[0].uri, 'viking://x');
+    assert.equal(calls[calls.length - 1][0], 'openviking_search');
   });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));

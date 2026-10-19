@@ -46,6 +46,8 @@
 - 注入 `health` ⇒ `health()` 透传；异常记为 `{ok:false, mode:'degraded'}`。
 - 未注入 ⇒ 保持 `degraded`（v1 默认）。**核心不 import 任何外部 SDK**；宿主（DSH 插件）负责把 MCP 工具包成 hooks。
 
+宿主侧薄适配在 `adapters.mjs`：`hindsightHooks(callTool)` / `openvikingHooks(callTool)` 把 MCP 工具包成 `{search, read, health}`，只做形状映射、不重试不缓存。核心仍零依赖。
+
 ## 4. 切主条件（写死）
 
 1. 连续观察期内端口主路径失败率 ≤ 现配套；
