@@ -406,8 +406,9 @@ function readMeta(metaFile) {
 }
 
 /** 索引一个会话档案：水位 + id 去重 + meta 记账；full=true 忽略水位重扫（仍按 id 去重）。
- *  lock（默认 true）：以 metaFile 为锁对象串行化整个「读水位 → 追加 → 记账」序列（worker 与 CLI 互斥）。
- *  注意：不能锁 storeFile——appendSegments 内部已对 store 取锁，同进程嵌套会死等。 */
+ *  lock（默认 true）：先锁 storeFile、再锁 metaFile，串行化整个「读水位 → 追加 → 记账」序列（worker 与 CLI 互斥）。
+ *  锁序与 marks 路径一致（store → meta），无反向取锁；appendSegments 本身不再取锁，调用方必须持 storeFile。
+ *  timeout 20s：大档案解压 + 58MB store load 约 2.5s，默认 5s 余量偏小（2026-10-19 复审 P2-5）。 */
 export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.storeFile, metaFile = SESSION_DEFAULTS.metaFile, full = false, lock = true } = {}) {
   const run = () => {
     // 会话 id 归一（2026-10-15，P1 审计）：两种形态解析到同一档案 ⇒ 入口统一存裸形态，杜绝孪生重复。
@@ -468,7 +469,7 @@ export function indexSession({ file, session, storeFile = SESSION_DEFAULTS.store
     writeFileAtomic(metaFile, JSON.stringify(next, null, 2));
     return { session: sid, added: incoming.length, skipped, lastSeq: maxSeq, parseFails, frameFails, frameTruncated };
   };
-  return lock ? withFileLock(storeFile, () => withFileLock(metaFile, run)) : run();
+  return lock ? withFileLock(storeFile, () => withFileLock(metaFile, run), { timeoutMs: 20000 }) : run();
 }
 
 /** 动作版本归并（**读取视图**；存储仍 append-only）：同一 call（session:ptr.callSeq）默认只回一版——

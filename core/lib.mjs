@@ -196,6 +196,8 @@ export function quarantineTail(file) {
 /** 排他锁（2026-10-19 P0）：持有者身份 + 存活判定；不再「30s 按 mtime 抢锁」。
  *  - 同机：持有者 pid 已死 ⇒ 立即接管；活着的持有者 ⇒ 等到 timeout 报明确错误（不抢）。
  *  - 异机/旧格式：无法判活 ⇒ 超过 60s / 30s 视为陈锁（网络盘回退）。
+ *  - 不提供活锁心跳/抢占：临界区必须短；活持有者只等待，不按 at/mtime 抢（长临界区 fail-closed 报错）。
+ *  - 不支持多主机共享同一库文件：host 不同时按 60s 兜底，O_EXCL 在网络盘上的原子性未保证。
  *  - 释放：只删内容仍是自己的 token 的锁文件（避免删掉被接管后的新锁）。
  */
 export function withFileLock(file, fn, opts = {}) {

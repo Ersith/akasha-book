@@ -281,7 +281,36 @@ if (lib) {
     assert.equal(ran, true, '死持有者的锁应被接管');
     assert.equal(existsSync(lock), false, '正常释放后不留锁');
     rmSync(dir, { recursive: true, force: true });
+  });  t('P0 锁：活 pid + at 回拨 11min 仍不抢（长临界区 fail-closed）', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-at-'));
+    const tmp = join(dir, '.tmp-at.jsonl');
+    writeFileSync(tmp + '.lock', JSON.stringify({ pid: process.pid, host: hostname(), token: 'other', at: Date.now() - 11 * 60 * 1000 }), 'utf8');
+    assert.throws(() => lib.withFileLock(tmp, () => {}, { timeoutMs: 150 }), /锁超时/, '活持有者不能按 at 长龄被抢');
+    rmSync(dir, { recursive: true, force: true });
   });
+  t('P0 隔离：非 UTF-8 截断尾用 tail_b64 逐字节保留', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-b64-'));
+    const tmp = join(dir, '.tmp-b64.jsonl');
+    lib.appendRecord('orphan', { id: 'orphan-b64a', summary: 'x', observed: 'x', hypothesis: 'x', would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-19' }, { file: tmp });
+    appendFileSync(tmp, Buffer.from([0xe4, 0xb8]));
+    const r = lib.appendRecord('orphan', { id: 'orphan-b64b', summary: 'x', observed: 'x', hypothesis: 'x', would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-19' }, { file: tmp });
+    assert.ok(r.quarantine && r.quarantine.quarantined, '应产生隔离件');
+    const rec = JSON.parse(readFileSync(r.quarantine.quarantined, 'utf8').trim());
+    assert.deepEqual([...Buffer.from(rec.tail_b64, 'base64')], [0xe4, 0xb8], 'tail_b64 必须逐字节保留');
+    rmSync(dir, { recursive: true, force: true });
+  });
+  t('P0 隔离：retire --hard 前先隔离坏尾（不静默丢）', () => {
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-hard-'));
+    const tmp = join(dir, '.tmp-hard.jsonl');
+    lib.appendRecord('orphan', { id: 'orphan-hard1', summary: 'x', observed: 'x', hypothesis: 'x', would_confirm: 'x', would_refute: 'x', severity: '低', created: '2026-10-19' }, { file: tmp });
+    appendFileSync(tmp, '{"torn":');
+    lib.retireRecord('orphan', 'orphan-hard1', { file: tmp, hard: true, reason: 'test' });
+    const qs = readdirSync(dir).filter((f) => f.includes('.corrupt-'));
+    assert.ok(qs.length >= 1, 'hard 重写前应产生隔离件');
+    assert.ok(qs.map((f) => readFileSync(join(dir, f), 'utf8')).join('').includes('torn'), '坏尾字节应被保留');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   t('双时态：logged_at 缺则自动盖 / 自带保留；event_time 保留', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));
     const tmp = join(dir, '.tmp-time.jsonl');
