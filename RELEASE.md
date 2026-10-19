@@ -34,6 +34,20 @@
 | CI | GitHub Actions `.github/workflows/ci.yml` → **success**（Linux / Node 24 / TZ=Asia/Shanghai） |
 | 已知限制 | 同 v0.1.3；另有 P2 已知项（Atomics.wait 阻塞事件循环、隔离件清理策略等）留待后续 |
 
+
+
+## v0.1.5（2026-10-19）
+
+| 项 | 值 |
+|---|---|
+| tag | `v0.1.5` |
+| commit | `90af2fb`（第二轮复审返工：session 追加路径全部持锁 / quarantine 增长时放弃截断 / 活锁不再按 at 抢 / 释放走闸 / EPERM 重试 / gate TTL 5s） |
+| npm 插件 | 与 v0.1.3 相同（gate 1.4.4 / hooks 1.2.10 / session 0.3.7 / sleep 1.10.32 / mcp 1.1.6） |
+| core 测试 | `node core/test.mjs` → **295 passed / 0 failed / 0 skipped**（自动用 `data-snapshot/`） |
+| 数据面 | `core/data/` 中性示例；`core/data-snapshot/` 脱敏测试基线 |
+| CI | GitHub Actions → **success** |
+| 已知限制 | 跨主机锁语义未支持（同机优先）；P2 已知项（心跳/长临界区、隔离件清理策略）留待后续 |
+
 ## 发布流程（此后每版照抄）
 
 1. 冻结改动，跑 `node core/test.mjs` + `node core/akasha.mjs check` + 五个插件 selftest + 活树 `oss-release-check`。
