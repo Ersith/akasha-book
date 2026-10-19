@@ -10,4 +10,4 @@
         command: 'node'
         args: ['<AKASHA_DIR>/mcp.mjs']
         toolCallTimeoutMs: 600000
-        failOnStartupError: false
+        failOnStartupError: true
