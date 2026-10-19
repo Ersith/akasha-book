@@ -48,6 +48,19 @@
 | CI | GitHub Actions → **success** |
 | 已知限制 | 跨主机锁语义未支持（同机优先）；P2 已知项（心跳/长临界区、隔离件清理策略）留待后续 |
 
+
+
+## v0.1.6（2026-10-19）
+
+| 项 | 值 |
+|---|---|
+| tag | `v0.1.6` |
+| commit | `af990b8`（MCP 日常读默认 summary + 两跳协议；lookup 默认 6000 cap；session/brief/cross 预算回执） |
+| 行为变化 | **仅 MCP**：`akasha_lookup/brief/cross/session_lookup` 不传 depth 时默认 `summary`（reflect 自动 full）；CLI 与直调 lib 默认不变 |
+| core 测试 | `node core/test.mjs` → **295 passed / 0 failed / 0 skipped** |
+| CI | GitHub Actions → **success** |
+| 已知限制 | 运行中的 MCP 子进程需重启宿主才加载新默认；budget 为字符/既有 token 口径混用（字段已标注） |
+
 ## 发布流程（此后每版照抄）
 
 1. 冻结改动，跑 `node core/test.mjs` + `node core/akasha.mjs check` + 五个插件 selftest + 活树 `oss-release-check`。
