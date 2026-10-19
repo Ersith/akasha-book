@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { DATA, ROOT, parseJsonl, writeFileAtomic } from './lib.mjs';
+import { resolvePorts, healthOf } from './companion.mjs';
 import { SESSION_DEFAULTS, readSessionArchive, normalizeSid } from './session.mjs';
 
 const AKASHA_DIR = dirname(DATA);
@@ -140,6 +141,17 @@ run('数据根', () => {
   if (!existsSync(DATA)) return { status: 'fail', detail: DATA + ' 不存在', fix: '检查 AKASHA_ROOT；缺根时拒绝静默建空库' };
   try { readdirSync(DATA); } catch (e) { return { status: 'fail', detail: '不可读：' + String(e.message).slice(0, 80), fix: '权限 / 挂载' }; }
   return { status: 'pass', detail: DATA };
+});
+
+// ── 1.5 配套端口（只读契约）──
+run('配套端口', () => {
+  try {
+    const ports = resolvePorts();
+    const h = healthOf(ports);
+    const degraded = h.filter((x) => x.mode === 'degraded');
+    if (degraded.length) return { status: 'warn', detail: degraded.map((x) => x.kind + '=' + x.driver).join('；') + '（v1 adapter 未接）', fix: '接 adapter 前 driver 配置不生效；见 COMPANION.md' };
+    return { status: 'pass', detail: h.map((x) => x.kind + '=' + x.mode).join('；') };
+  } catch (e) { return { status: 'warn', detail: '读取失败：' + e.message }; }
 });
 
 // ── 2. 六库 ──

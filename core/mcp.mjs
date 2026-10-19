@@ -117,7 +117,7 @@ function handle(msg) {
         const bs = a.since ? normalizeDateArg(a.since) : { ok: true, day: null };
         const bu = a.until ? normalizeDateArg(a.until) : { ok: true, day: null };
         value = (!bs.ok || !bu.ok) ? { error: bs.error || bu.error }
-          : brief(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth ?? (a.reflect === true ? 'full' : 'summary'), doseThreshold: a.doseThreshold, perStore: a.perStore, since: bs.day, until: bu.day, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens ?? (a.depth === undefined && a.reflect !== true ? 6000 : undefined) });
+          : brief(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth ?? (a.reflect === true ? 'full' : 'summary'), doseThreshold: a.doseThreshold, perStore: a.perStore, since: bs.day, until: bu.day, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
       }
       else if (name === 'akasha_kit') value = kit(a);
       else if (name === 'akasha_promote') value = promoteInbox({ dry: a.dry === true });
@@ -132,7 +132,7 @@ function handle(msg) {
         const cs = a.since ? normalizeDateArg(a.since) : { ok: true, day: null };
         const cu = a.until ? normalizeDateArg(a.until) : { ok: true, day: null };
         value = (!cs.ok || !cu.ok) ? { error: cs.error || cu.error }
-          : cross(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth ?? (a.reflect === true ? 'full' : 'summary'), perStore: a.perStore, since: cs.day, until: cu.day, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens ?? (a.depth === undefined && a.reflect !== true ? 6000 : undefined) });
+          : cross(String(a.query ?? ''), { via: 'mcp', reflect: a.reflect === true, depth: a.depth ?? (a.reflect === true ? 'full' : 'summary'), perStore: a.perStore, since: cs.day, until: cu.day, includeRefuted: a.includeRefuted === true, today: a.today, loadBalance: a.loadBalance === true, offset: a.offset, maxTokens: a.maxTokens });
       }
       else if (name === 'akasha_summary') value = summary({ per: a.per });
       else if (name === 'akasha_show') value = show(String(a.id ?? ''), { reflect: a.reflect === true, depth: a.depth, today: a.today });
@@ -191,7 +191,7 @@ function handle(msg) {
       // 2026-10-15（GPT 复核 core N3 的**落地形态**）：不得对整段 JSON 剥皮（会改 source.ref / url 等证据字段）——
       //   改为**按字段剥**：递归只处理 schema 里的**叙事文本字段**（NARRATIVE_KEYS），机器字段（id/ref/url/ptr/path/store/…）一律原样。
       //   pretty 仍豁免（人工调试通道，保持缩进可读）。原先"整段 JSON 跳过"的中间版会让读面**完全不剥**（I-11 设计失效，测试能红）。
-      if (value && typeof value === 'object' && !Array.isArray(value) && !value.budget && ['akasha_lookup','akasha_brief','akasha_cross','akasha_session_lookup'].includes(name)) {
+      if (value && typeof value === 'object' && !Array.isArray(value) && !value.budget && ['akasha_session_lookup'].includes(name)) {
         value.budget = { usedChars: JSON.stringify(value).length, note: 'chars（非 token）；需要更细预算请显式传 maxTokens' };
       }
       if (a.pretty !== true && STRIP_TOOLS.has(name) && a.reflect !== true && a.rawProcess !== true && a.depth !== 'full') {

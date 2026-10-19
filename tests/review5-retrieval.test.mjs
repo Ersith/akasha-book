@@ -99,9 +99,12 @@ test('offset at/end/beyond and empty result terminate without duplicates', () =>
   seed({}); const empty = invoke('akasha_cross', { depth: 'summary' });
   assert.deepEqual(ids(empty), []); assert(empty.budget.exhausted);
 });
-test('default/full/reflect retain unbounded cross behavior', () => {
+test('full/reflect retain unbounded cross; default MCP is summary-bounded', () => {
   seed({ canon: 20 });
-  for (const args of [{}, { depth: 'full' }, { depth: 'pointer', reflect: true }, { perStore: 0 }]) {
+  // 2026-10-19：MCP 日常读默认 depth=summary（token 省），默认不再保证 20 条全量。
+  const dflt = invoke('akasha_cross', {});
+  assert.equal(dflt.depth, 'summary'); assert.ok(ids(dflt).length <= 20);
+  for (const args of [{ depth: 'full' }, { depth: 'pointer', reflect: true }, { depth: 'full', perStore: 0 }]) {
     const r = invoke('akasha_cross', args); assert.equal(ids(r).length, 20); assert.equal(r.depth, 'full'); assert.equal(r.budget, undefined);
   }
   assert.equal(lib.brief('needle', { contextBudget: false }).groups[0].hits.length, 3);

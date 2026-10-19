@@ -8,6 +8,7 @@ import * as zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
 import { runCheckerSelftest } from './tools-checker-selftest.mjs';
+import * as companion from './companion.mjs';
 
 // ── 可选依赖：akasha-gate 插件（D2，2026-10-19 发布面 P1）─────────────────────────────────
 // 原来这里是**静态** `import * as gateMod from '../plugins/akasha-gate/index.js'` ⇒ 扁平部署（core/ 单独拷到
@@ -211,6 +212,22 @@ if (lib) {
     assert.ok(s.frontier.total >= 68);
     assert.equal(Object.values(s.frontier.by_status).reduce((a, b) => a + b, 0), s.frontier.total);
     assert.ok(s.frontier.by_status['高引用'] >= 1);
+  });
+  t('CompanionPort v1：默认 skipTags 含未来标签；未配置 absent；配置 driver 为 degraded', () => {
+    const ports = companion.resolvePorts({ file: join(SCRATCH, 'no-such-companions.json') });
+    const tags = companion.skipTagsFor(ports);
+    for (const tag of ['<hindsight_knowledge', '<openviking-context', '<ledger_knowledge', '<persona_context']) {
+      assert.ok(tags.includes(tag), '默认 skipTags 缺少 ' + tag);
+    }
+    assert.ok(ports.every((p) => p.health().mode === 'absent'), '未配置时端口应为 absent');
+    const dir = mkdtempSync(join(SCRATCH, 'akasha-companion-'));
+    const f = join(dir, 'companions.json');
+    writeFileSync(f, JSON.stringify({ companions: { repo: { driver: 'ledger' } } }), 'utf8');
+    const ports2 = companion.resolvePorts({ file: f });
+    const repo = ports2.find((p) => p.kind === 'repo');
+    assert.equal(repo.health().mode, 'degraded', '配置了 driver 但 adapter 未接 ⇒ degraded');
+    assert.equal(companion.healthOf(ports2).length, 2);
+    rmSync(dir, { recursive: true, force: true });
   });
   t('appendRecord：追加后可读回（临时文件）', () => {
     const dir = mkdtempSync(join(SCRATCH, 'akasha-test-'));

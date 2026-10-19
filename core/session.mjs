@@ -6,6 +6,7 @@ import { readFileSync, appendFileSync, writeFileSync, readdirSync, mkdirSync } f
 import { dirname, join } from 'node:path';
 import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
+import { skipTagsFor, resolvePorts } from './companion.mjs';
 import { ROOT, DATA, STORES, loadStore, storePath, tokenize, scoreTokens, matchParts, redact, redactDeep, writeFileAtomic, appendRecord, retiredIds, withFileLock, quarantineTail, validateRecord, stripGenre, GENRE_DOSE_DEFAULTS, doseGate, doseSummary, recordQuery, readDepthOf, projectText, agePrefix, READ_TIER, genreRenderOf } from './lib.mjs';
 
 export const SESSION_DEFAULTS = {
@@ -267,7 +268,14 @@ const SEG_STRIP_KINDS = new Set(['conclusion', 'process', 'node']);
 // runtime context、库脉脉冲行、【起床包】、[坑前提示]…）会作为 `user/message` 落进 intent 段
 // ⇒ 框架注入污染检索与主题统计。故本常量提到模块级、**生成意图段时一并过滤**（DRY，一处定义两处用）。
 // 口径：**只影响派生索引**（session.jsonl），**原始会话日志一字不动** ✓（索引可重建，原文即真源）。
-export const SCAFFOLD_RE = /<system-reminder>|<hindsight_knowledge|<openviking-context|Current runtime context|【阿卡夏·起床包】|阿卡夏·睡眠：|阿卡夏·库脉搏|阿卡夏·称呼：|小阿卡夏·会话层：|\[极限观测|\[约定\]|\[坑前提示|<memory uri=|This is an automatically generated checkpoint/;
+const SCAFFOLD_BASE = [
+  '<system-reminder>', '<hindsight_knowledge', '<openviking-context', 'Current runtime context',
+  '【阿卡夏·起床包】', '阿卡夏·睡眠：', '阿卡夏·库脉搏', '阿卡夏·称呼：', '小阿卡夏·会话层：',
+  '[极限观测', '[约定]', '[坑前提示', '<memory uri=', 'This is an automatically generated checkpoint',
+];
+// 2026-10-19 CompanionPort：skipTags 由端口提供（默认含未来 ledger/persona 标签），不再写死单一品牌。
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const SCAFFOLD_RE = new RegExp([...SCAFFOLD_BASE, ...skipTagsFor(resolvePorts())].map(escapeRe).join('|'));
 
 /** 轻量内容指纹（djb2 → 8 hex）：同内容幂等、变内容追加新版（F2 漂移修复；不引 crypto）。 */
 function fp8(s) {
